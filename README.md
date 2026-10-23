@@ -4,6 +4,8 @@
 
 把随手复制的文字、链接和代码收进历史，整理成自己的星标与分组，再把值得分享的代码导出成一张星空卡片。
 
+![星笺 macOS 原生应用，使用原创示例记录](docs/preview.png)
+
 ## 已实现
 
 - **剪贴历史**：系统文本剪贴板监听、内容去重、SQLite 持久化、搜索、类型筛选。
@@ -53,3 +55,5 @@ cargo test --manifest-path src-tauri/Cargo.toml --no-default-features
 当前只保存文本。图片 / 文件剪贴板、富文本、跨设备同步、公开分享链接、多片段分享页、标签 / 备注、自动粘贴、在线运行和 AI 解释暂未实现。详见 [产品范围](docs/product.md)。
 
 MIT License.
+
+验证详情见 [首版验证记录](docs/verification.md)。
