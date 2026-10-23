@@ -1,0 +1,159 @@
+<script setup lang="ts">
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { api, isDesktop } from './api'
+import type { AppState, Clip, Settings } from './types'
+import Icon from './components/Icon.vue'
+import CodeStudio from './components/CodeStudio.vue'
+
+const state = ref<AppState>({ clips: [], groups: [], settings: { paused: true, theme: 'dark', layout: 'grid', maxHistory: 500, shortcut: 'CommandOrControl+Shift+V' }, clipboardError: null, shortcutError: null })
+const loading = ref(true)
+const busy = ref(false)
+const filter = ref('all')
+const query = ref('')
+const selected = ref<number | null>(null)
+const searchInput = ref<HTMLInputElement>()
+const fileInput = ref<HTMLInputElement>()
+const modal = ref<'' | 'clip' | 'group' | 'settings' | 'clear' | 'delete-group'>('')
+const dialog = ref<HTMLDialogElement>()
+const editing = ref<Clip | null>(null)
+const studioOpen = ref(false)
+const studioClip = ref<Clip | null>(null)
+const clipTitle = ref('')
+const clipContent = ref('')
+const clipGroup = ref<number | null>(null)
+const clipPinned = ref(false)
+const groupName = ref('')
+const groupColor = ref('#8b93d9')
+const settingsDraft = ref<Settings>({ ...state.value.settings })
+const toast = ref('')
+const toastError = ref(false)
+const copied = ref<number | null>(null)
+let toastTimer: ReturnType<typeof setTimeout>
+let copyTimer: ReturnType<typeof setTimeout>
+let unsubscribe: (() => void) | undefined
+const colors = ['#8b93d9', '#71baad', '#d7b678', '#d98eaa', '#89afd5', '#b3a192']
+const kindNames = { text: '文本', link: '链接', code: '代码', color: '色彩' }
+const navItems = [{ key: 'all', name: '全部记录', icon: 'grid' }, { key: 'pinned', name: '星标收藏', icon: 'star' }, { key: 'link', name: '链接', icon: 'link' }, { key: 'code', name: '代码小抄', icon: 'code' }]
+const visible = computed(() => {
+  const q = query.value.trim().toLocaleLowerCase()
+  return state.value.clips.filter(c => {
+    const inFilter = filter.value === 'all' || (filter.value === 'pinned' && c.pinned) || filter.value === c.kind || filter.value === `group-${c.groupId}`
+    return inFilter && (!q || `${c.title}\n${c.content}`.toLocaleLowerCase().includes(q))
+  }).sort((a, b) => b.updatedAt - a.updatedAt)
+})
+const sectionName = computed(() => navItems.find(n => n.key === filter.value)?.name || state.value.groups.find(g => `group-${g.id}` === filter.value)?.name || '全部记录')
+const currentGroup = computed(() => state.value.groups.find(g => `group-${g.id}` === filter.value))
+const selectedIndex = computed(() => visible.value.findIndex(c => c.id === selected.value))
+const dateLabel = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }).format(new Date())
+const pinnedCount = computed(() => state.value.clips.filter(c => c.pinned).length)
+const isMac = navigator.platform.toLowerCase().includes('mac')
+const modKey = isMac ? '⌘' : 'Ctrl'
+const shortcutLabel = computed(() => state.value.settings.shortcut.replace(/CommandOrControl|CmdOrCtrl/g, isMac ? '⌘' : 'Ctrl').replace(/Shift/g, '⇧').replaceAll('+', ' '))
+const currentTheme = ref('dark')
+const systemTheme = window.matchMedia('(prefers-color-scheme: dark)')
+function applyTheme() { currentTheme.value = state.value.settings.theme === 'system' ? (systemTheme.matches ? 'dark' : 'light') : state.value.settings.theme; document.documentElement.dataset.theme = currentTheme.value }
+watch(() => state.value.settings.theme, applyTheme)
+watch(filter, () => { selected.value = null; query.value = '' })
+watch(visible, clips => { if (!clips.some(c => c.id === selected.value)) selected.value = clips[0]?.id ?? null })
+watch(modal, async value => { await nextTick(); if (value && !dialog.value?.open) dialog.value?.showModal(); if (!value && dialog.value?.open) dialog.value?.close() })
+function notify(message: string, error = false) { clearTimeout(toastTimer); toast.value = message; toastError.value = error; toastTimer = setTimeout(() => { toast.value = '' }, 3600) }
+async function refresh() { try { state.value = await api.getState(); applyTheme() } catch (error) { notify(String(error), true) } finally { loading.value = false } }
+async function run(action: () => Promise<unknown>, success?: string) { if (busy.value) return; busy.value = true; try { await action(); await refresh(); if (success) notify(success) } catch (error) { notify(String(error), true) } finally { busy.value = false } }
+function count(key: string) { return state.value.clips.filter(c => key === 'all' || (key === 'pinned' && c.pinned) || c.kind === key).length }
+function groupFor(clip: Clip) { return state.value.groups.find(g => g.id === clip.groupId) }
+function relativeTime(time: number) { const minutes = Math.max(0, Math.floor((Date.now() - time) / 60000)); if (minutes < 1) return '刚刚'; if (minutes < 60) return `${minutes} 分钟前`; if (minutes < 1440) return `${Math.floor(minutes / 60)} 小时前`; if (minutes < 10080) return `${Math.floor(minutes / 1440)} 天前`; return new Date(time).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' }) }
+function titleFor(clip: Clip) { return clip.title || clip.content.trim().split('\n')[0]?.slice(0, 44) || '未命名片段' }
+function linkHost(content: string) { try { return new URL(content.trim()).hostname } catch { return '网页链接' } }
+function colorValue(content: string) { return /^#[\da-f]{3,8}$/i.test(content.trim()) ? content.trim() : '#8b93d9' }
+async function copy(clip: Clip) { try { await api.copyClip(clip.id); copied.value = clip.id; clearTimeout(copyTimer); copyTimer = setTimeout(() => { copied.value = null }, 1800); notify('已复制，切换到目标应用即可粘贴'); await refresh() } catch (error) { notify(String(error), true) } }
+async function togglePin(clip: Clip) { await run(() => api.updateClip(clip.id, clip.title, clip.groupId, !clip.pinned), clip.pinned ? '已取消星标' : '已收入星标收藏') }
+function openClip(clip?: Clip) { editing.value = clip ?? null; clipTitle.value = clip?.title || ''; clipContent.value = clip?.content || ''; clipGroup.value = clip?.groupId ?? currentGroup.value?.id ?? null; clipPinned.value = clip?.pinned ?? false; modal.value = 'clip' }
+function openStudio(clip: Clip | null = null) { modal.value = ''; studioClip.value = clip; studioOpen.value = true }
+async function saveClip() {
+  if (!clipContent.value.trim()) return notify('先写下一点内容吧', true)
+  await run(async () => {
+    if (editing.value) await api.updateClip(editing.value.id, clipTitle.value.trim(), clipGroup.value, clipPinned.value)
+    else { const clip = await api.addClip(clipContent.value, clipTitle.value.trim(), clipGroup.value); if (clipPinned.value) await api.updateClip(clip.id, clip.title, clipGroup.value, true) }
+    modal.value = ''
+  }, editing.value ? '片段已更新' : '新片段已收好')
+}
+function openGroup() { groupName.value = ''; groupColor.value = colors[state.value.groups.length % colors.length]!; modal.value = 'group' }
+async function saveGroup() { if (!groupName.value.trim()) return notify('请为星座起一个名字', true); await run(async () => { const group = await api.createGroup(groupName.value.trim(), groupColor.value); filter.value = `group-${group.id}`; modal.value = '' }, '分组已创建') }
+function openSettings() { settingsDraft.value = { ...state.value.settings }; modal.value = 'settings' }
+async function saveSettings() { await run(async () => { await api.saveSettings({ ...settingsDraft.value }); modal.value = '' }, '偏好设置已保存') }
+async function toggleCapture() { await run(() => api.saveSettings({ ...state.value.settings, paused: !state.value.settings.paused }), state.value.settings.paused ? '已开启记录，从下一次复制开始' : '已暂停记录') }
+async function changeLayout(layout: 'grid' | 'list') { await run(() => api.saveSettings({ ...state.value.settings, layout })) }
+async function exportBackup() { await run(async () => { if (isDesktop) { if (await api.saveBackup()) notify('备份已保存') } else { const url = URL.createObjectURL(new Blob([await api.exportBackup()], { type: 'application/json' })); const a = document.createElement('a'); a.href = url; a.download = `starclip-${new Date().toISOString().slice(0, 10)}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); notify('备份已导出') } }) }
+async function importBackup(event: Event) { const input = event.target as HTMLInputElement; const file = input.files?.[0]; if (!file) return; if (file.size > 20 * 1024 * 1024) { notify('备份文件过大，最大支持 20 MB', true); input.value = ''; return }; await run(async () => { const count = await api.importBackup(await file.text()); notify(`已导入 ${count} 条记录`) }); input.value = '' }
+async function deleteCurrentGroup() { const id = currentGroup.value?.id; if (id === undefined) return; await run(async () => { await api.deleteGroup(id); filter.value = 'all'; modal.value = '' }, '分组已删除，片段仍保留在全部记录中') }
+function keyboard(event: KeyboardEvent) {
+  const target = event.target as HTMLElement; const typing = target.matches('input, textarea, select') || target.isContentEditable
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k' && !modal.value && !studioOpen.value) { event.preventDefault(); searchInput.value?.focus(); return }
+  if (modal.value || studioOpen.value || typing || target.closest('button, a')) return
+  if ((event.metaKey || event.ctrlKey) && /^[1-9]$/.test(event.key)) { const clip = visible.value[Number(event.key) - 1]; if (clip) { event.preventDefault(); void copy(clip) }; return }
+  if (event.key.startsWith('Arrow') && visible.value.length) { event.preventDefault(); const columns = state.value.settings.layout === 'grid' && window.innerWidth > 1150 ? 3 : state.value.settings.layout === 'grid' ? 2 : 1; const delta = event.key === 'ArrowDown' ? columns : event.key === 'ArrowUp' ? -columns : event.key === 'ArrowRight' ? 1 : -1; const index = Math.min(visible.value.length - 1, Math.max(0, selectedIndex.value + delta)); selected.value = visible.value[index]?.id ?? null; document.querySelector(`[data-clip-id="${selected.value}"]`)?.scrollIntoView({ block: 'nearest' }) }
+  else if (event.key === 'Enter' && selected.value !== null) { const clip = visible.value.find(c => c.id === selected.value); if (clip) { event.preventDefault(); void copy(clip) } }
+  else if (event.key === 'Escape') { if (query.value) query.value = ''; else if (isDesktop) void api.hideWindow() }
+}
+onMounted(async () => { await refresh(); unsubscribe = await api.onChange(() => { void refresh() }); window.addEventListener('keydown', keyboard); systemTheme.addEventListener('change', applyTheme) })
+onUnmounted(() => { unsubscribe?.(); clearTimeout(toastTimer); clearTimeout(copyTimer); window.removeEventListener('keydown', keyboard); systemTheme.removeEventListener('change', applyTheme) })
+</script>
+
+<template>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#" @click.prevent="filter = 'all'" aria-label="星笺首页"><span class="brand-mark"><Icon name="spark" :size="27" /><i /></span><span><strong>星笺<span class="brand-dot">.</span></strong><small>STARCLIP</small></span></a>
+      <div class="workspace-label"><span class="workspace-orbit" />我的星空 <span class="local-badge">LOCAL</span></div>
+      <nav class="main-nav" aria-label="记录分类"><button v-for="item in navItems" :key="item.key" :class="['nav-item', { active: filter === item.key }]" @click="filter = item.key" :aria-current="filter === item.key ? 'page' : undefined"><Icon :name="item.icon" /><span>{{ item.name }}</span><span class="nav-count">{{ count(item.key) }}</span></button></nav>
+      <div class="group-heading"><span>我的星座</span><button class="icon-button" title="新建分组" aria-label="新建分组" @click="openGroup"><Icon name="plus" :size="16" /></button></div>
+      <nav class="group-nav" aria-label="分组"><button v-for="group in state.groups" :key="group.id" :class="['nav-item', { active: filter === `group-${group.id}` }]" @click="filter = `group-${group.id}`"><span class="group-dot" :style="{ background: group.color }" /><span class="truncate">{{ group.name }}</span><span class="nav-count">{{ state.clips.filter(c => c.groupId === group.id).length }}</span></button><button v-if="!state.groups.length" class="empty-group" @click="openGroup"><Icon name="plus" :size="14" />给灵感一个小分组</button></nav>
+      <div class="sidebar-bottom"><div class="night-note"><div class="tiny-stars">✦ <span>·</span> ✧</div><p>让散落的灵感，<br>在这里连成星座。</p><span>YOUR LITTLE UNIVERSE</span></div><button class="capture-toggle" :class="{ paused: state.settings.paused }" @click="toggleCapture" :disabled="busy"><span class="status-dot" /><span>{{ state.settings.paused ? '记录已暂停' : '正在拾取灵感' }}</span><Icon :name="state.settings.paused ? 'play' : 'pause'" :size="13" /></button><button class="nav-item settings-nav" @click="openSettings"><Icon name="sliders" /><span>偏好设置</span><span class="version">v0.1.0</span></button></div>
+    </aside>
+    <main class="main-panel">
+      <header class="topbar"><div class="breadcrumb"><Icon name="spark" :size="15" /><span>我的星空</span><Icon name="chevron" :size="12" /><strong>{{ sectionName }}</strong></div><div class="topbar-right"><span v-if="!isDesktop" class="demo-badge">交互演示 · 示例数据</span><span class="date-label">{{ dateLabel }}</span><button class="icon-button theme-toggle" :title="currentTheme === 'dark' ? '切换浅色主题' : '切换深色主题'" aria-label="切换主题" @click="run(() => api.saveSettings({ ...state.settings, theme: currentTheme === 'dark' ? 'light' : 'dark' }))"><Icon :name="currentTheme === 'dark' ? 'moon' : 'sun'" :size="17" /></button></div></header>
+      <div class="main-scroll">
+        <section class="hero"><div class="hero-copy"><div class="eyebrow"><span />A SPACE FOR YOUR THOUGHTS</div><h1>拾起每一次<span>灵感</span><span class="heading-star">✧</span></h1><p>复制的文字、遇见的链接，值得被好好收藏。</p><div class="hero-meta"><span><strong>{{ state.clips.length }}</strong> 颗灵感</span><i /><span><strong>{{ pinnedCount }}</strong> 颗星标</span><i /><span><Icon name="shield" :size="13" />只在本机，安心保存</span></div></div><svg class="constellation" viewBox="0 0 310 160" fill="none" aria-hidden="true"><ellipse cx="165" cy="83" rx="113" ry="52" transform="rotate(-18 165 83)" stroke="currentColor" stroke-dasharray="2 6" opacity=".2"/><path d="m51 113 57-69 68 34 57-52 35 80-92-28-30 64-38-98" stroke="currentColor" stroke-width=".8" opacity=".25"/><path d="m108 44 68 34 57-52" stroke="#b8aa84" stroke-width="1" opacity=".8"/><g fill="currentColor"><circle cx="51" cy="113" r="2"/><circle cx="108" cy="44" r="3"/><circle cx="176" cy="78" r="2.5"/><circle cx="233" cy="26" r="2"/><circle cx="268" cy="106" r="1.5"/><circle cx="146" cy="142" r="2"/><circle cx="80" cy="16" r="1" opacity=".4"/><circle cx="207" cy="126" r="1" opacity=".4"/><circle cx="288" cy="48" r="1" opacity=".4"/><circle cx="29" cy="53" r="1" opacity=".4"/></g><circle cx="108" cy="44" r="9" stroke="currentColor" opacity=".15"/><circle cx="176" cy="78" r="7" stroke="currentColor" opacity=".15"/><path d="m233 17 2.2 6.8L242 26l-6.8 2.2L233 35l-2.2-6.8L224 26l6.8-2.2L233 17Z" fill="#d7bc85"/><text x="209" y="153" fill="currentColor" font-size="8" letter-spacing="3" opacity=".45">STAY CURIOUS</text></svg></section>
+        <section v-if="state.settings.paused" class="capture-banner"><span class="banner-icon"><Icon name="pause" :size="17" /></span><div><strong>先留一点空间，给下一次灵感。</strong><p>{{ isDesktop ? '开启后自动保存新复制的文本。随时可以暂停。' : '这是交互演示。桌面版可自动保存你新复制的文本。' }}</p></div><button class="button subtle" @click="toggleCapture" :disabled="busy"><Icon name="play" :size="13" />开启记录</button></section>
+        <div v-if="state.clipboardError || state.shortcutError" class="error-banner" role="alert"><Icon name="alert" :size="16" /><span>{{ state.clipboardError || state.shortcutError }}</span><button @click="openSettings">查看设置</button></div>
+        <section class="collection" aria-label="剪贴板记录">
+          <div class="collection-heading"><div><h2>{{ sectionName }} <span>{{ visible.length }}</span></h2><p>{{ query ? `正在查找「${query}」` : filter === 'pinned' ? '那些想要再次遇见的片段' : currentGroup ? '把相近的灵感，放在同一片星空' : '好想法，总会再次闪光' }}</p></div><div class="collection-actions"><button v-if="currentGroup" class="icon-button" title="删除当前分组" aria-label="删除当前分组" @click="modal = 'delete-group'"><Icon name="trash" :size="16" /></button><button class="button subtle code-create" @click="openStudio()"><Icon name="code" :size="16" />写代码小抄</button><button class="button primary" @click="openClip()"><Icon name="plus" :size="16" />新建片段</button></div></div>
+          <div class="toolbar"><label class="search-box"><Icon name="search" :size="18" /><input ref="searchInput" v-model="query" placeholder="搜索你收藏的每一点灵感…" aria-label="搜索记录" /><button v-if="query" class="icon-button" @click="query = ''" title="清空搜索" aria-label="清空搜索"><Icon name="close" :size="14" /></button><kbd v-else>{{ modKey }} K</kbd></label><div class="layout-switch" role="group" aria-label="显示方式"><button :class="{ selected: state.settings.layout === 'grid' }" title="网格视图" aria-label="网格视图" :aria-pressed="state.settings.layout === 'grid'" @click="changeLayout('grid')"><Icon name="grid" :size="17" /></button><button :class="{ selected: state.settings.layout === 'list' }" title="列表视图" aria-label="列表视图" :aria-pressed="state.settings.layout === 'list'" @click="changeLayout('list')"><Icon name="list" :size="17" /></button></div></div>
+          <div class="results-label"><span>{{ query ? '搜索结果' : '最近收录' }}</span><span>按最近更新排序 <Icon name="clock" :size="12" /></span></div>
+          <div v-if="loading" class="empty-state"><span class="loading-orbit" /><h3>正在点亮你的星空…</h3></div>
+          <div v-else-if="!visible.length" class="empty-state"><div class="empty-illustration"><Icon :name="query ? 'search' : filter === 'pinned' ? 'star' : 'spark'" :size="38" /><i>✧</i><b>·</b></div><h3>{{ query ? '还没找到这颗星' : filter === 'pinned' ? '为喜欢的灵感点一颗星' : '你的第一颗灵感，还在路上' }}</h3><p>{{ query ? '换个关键词试试，或查看全部记录。' : filter === 'pinned' ? '点击片段上的星星，它就会出现在这里。' : '复制一段文字，或亲手写下一个新片段。' }}</p><button class="button subtle" @click="query ? query = '' : openClip()">{{ query ? '清空搜索' : '写下第一条片段' }}<Icon name="arrow" :size="15" /></button></div>
+          <div v-else :class="['clip-collection', state.settings.layout]">
+            <article v-for="(clip, index) in visible" :key="clip.id" :data-clip-id="clip.id" :class="['clip-card', `kind-${clip.kind}`, { 'is-selected': selected === clip.id, 'is-copied': copied === clip.id }]" tabindex="0" :aria-label="`${titleFor(clip)}，${kindNames[clip.kind]}，双击复制`" @click="selected = clip.id" @focus="selected = clip.id" @dblclick="copy(clip)" @keydown.enter="event => { if (event.target === event.currentTarget) { event.stopPropagation(); event.preventDefault(); copy(clip) } }">
+              <div class="card-top"><span :class="['kind-icon', clip.kind]"><Icon :name="clip.kind" :size="16" /></span><span class="kind-label">{{ clip.language || kindNames[clip.kind] }}</span><div class="card-top-actions" @dblclick.stop><button :class="['icon-button', 'pin-button', { pinned: clip.pinned }]" :title="clip.pinned ? '取消星标' : '收藏到星标'" :aria-label="clip.pinned ? '取消星标' : '收藏到星标'" :aria-pressed="clip.pinned" @click.stop="togglePin(clip)"><Icon name="star" :size="15" /></button><button class="icon-button edit-button" title="查看和编辑" aria-label="查看和编辑" @click.stop="openClip(clip)"><Icon name="more" :size="17" /></button></div></div>
+              <div class="card-main" @click="selected = clip.id"><template v-if="clip.kind === 'color'"><div class="color-preview" :style="{ background: colorValue(clip.content) }"><span>{{ clip.content.trim() }}</span></div><h3>{{ titleFor(clip) }}</h3></template><template v-else><h3>{{ titleFor(clip) }}</h3><div v-if="clip.kind === 'link'" class="link-preview"><span class="link-favicon">{{ linkHost(clip.content)[0]?.toUpperCase() }}</span><div><strong>{{ linkHost(clip.content) }}</strong><span>{{ clip.content }}</span></div><Icon name="arrow" :size="15" /></div><pre v-else-if="clip.kind === 'code'" class="code-preview">{{ clip.content }}</pre><p v-else class="text-preview">{{ clip.content }}</p></template></div>
+              <div class="card-bottom"><span v-if="groupFor(clip)" class="group-tag" :style="{ '--group-color': groupFor(clip)?.color }"><span />{{ groupFor(clip)?.name }}</span><span v-else class="time-label">{{ relativeTime(clip.updatedAt) }}</span><div class="card-copy-area" @dblclick.stop><kbd v-if="index < 9">{{ modKey }} {{ index + 1 }}</kbd><button :class="['copy-button', { copied: copied === clip.id }]" @click.stop="copy(clip)" :title="`复制${titleFor(clip)}`" :aria-label="`复制${titleFor(clip)}`"><Icon :name="copied === clip.id ? 'check' : 'copy'" :size="14" /><span>{{ copied === clip.id ? '已复制' : '复制' }}</span></button></div></div>
+            </article>
+          </div>
+        </section>
+        <div class="collection-end" v-if="visible.length"><span /> <Icon name="spark" :size="11" /> 每一点灵感，都有它的位置 <span /></div>
+      </div>
+      <footer class="statusbar"><span><span :class="['status-dot', { idle: state.settings.paused }]" />{{ state.settings.paused ? '记录已暂停' : '本地记录中' }}<span class="footer-divider">/</span>{{ state.clips.length }} 条记录</span><div><span><kbd>↑ ↓</kbd> 选择</span><span><kbd>↵</kbd> 复制</span><span class="shortcut-footer"><kbd>{{ shortcutLabel }}</kbd> 呼出星笺</span></div></footer>
+    </main>
+    <dialog ref="dialog" :class="['modal', { 'settings-modal': modal === 'settings' }]" @cancel="modal = ''" @close="modal = ''" @click="event => { if (event.target === dialog) modal = '' }">
+      <div class="modal-content" v-if="modal">
+        <div class="modal-heading"><div><div class="eyebrow">{{ modal === 'settings' ? 'MAKE IT YOURS' : modal === 'group' ? 'A NEW CONSTELLATION' : 'A LITTLE THOUGHT' }}</div><h2>{{ modal === 'clip' ? editing ? '这颗灵感的细节' : '留住一点灵感' : modal === 'group' ? '点亮一个新星座' : modal === 'settings' ? '偏好设置' : modal === 'clear' ? '清理历史记录' : '删除这个分组？' }}</h2></div><button class="icon-button" aria-label="关闭弹窗" @click="modal = ''"><Icon name="close" :size="20" /></button></div>
+        <form v-if="modal === 'clip'" @submit.prevent="saveClip" class="clip-form">
+          <label>片段名称 <span class="optional">选填</span><input v-model="clipTitle" maxlength="200" placeholder="为这颗灵感起个名字" autofocus /></label>
+          <label>内容 <span v-if="editing" class="optional">原始记录 · 只读</span><textarea v-model="clipContent" :readonly="!!editing" placeholder="写下一段文字、一个链接，或者几行代码…" rows="7" required /><span class="field-note">{{ clipContent.length }} 个字符{{ editing ? ` · 收录于 ${new Date(editing.createdAt).toLocaleString('zh-CN')}` : '' }}</span></label>
+          <div class="form-row"><label>所属星座<select v-model="clipGroup"><option :value="null">未分组</option><option v-for="group in state.groups" :value="group.id" :key="group.id">{{ group.name }}</option></select></label><label class="checkbox-label"><input type="checkbox" v-model="clipPinned" /><Icon name="star" :size="17" />加入星标收藏</label></div>
+          <div class="modal-actions"><button v-if="editing" type="button" class="button danger-quiet" @click="run(async () => { await api.deleteClip(editing!.id); modal = '' }, '片段已删除')" :disabled="busy"><Icon name="trash" :size="16" />删除</button><span class="spacer" /><button v-if="editing" type="button" class="button subtle" @click="openStudio(editing)"><Icon name="code" :size="15" />{{ editing.kind === 'code' ? '编辑代码' : '存为代码小抄' }}</button><button type="submit" class="button primary" :disabled="busy || !clipContent.trim()">{{ editing ? '保存修改' : '收下这颗灵感' }}<Icon name="check" :size="16" /></button></div>
+        </form>
+        <form v-else-if="modal === 'group'" @submit.prevent="saveGroup"><p class="modal-intro">把常用片段放在一起，下次相遇更容易。</p><label>星座名称<input v-model="groupName" maxlength="40" placeholder="例如：工作碎片、值得一读" required autofocus /></label><label class="color-label">标记颜色<div class="color-choices"><button v-for="color in colors" :key="color" type="button" :style="{ background: color }" :class="{ chosen: groupColor === color }" :aria-label="`选择颜色 ${color}`" :aria-pressed="groupColor === color" @click="groupColor = color"><Icon v-if="groupColor === color" name="check" :size="16" /></button></div></label><div class="modal-actions"><button type="button" class="button subtle" @click="modal = ''">取消</button><button class="button primary" :disabled="busy || !groupName.trim()">创建分组<Icon name="plus" :size="16" /></button></div></form>
+        <form v-else-if="modal === 'settings'" @submit.prevent="saveSettings" class="settings-form">
+          <div class="settings-section"><h3><Icon name="moon" :size="16" />外观与习惯</h3><div class="setting-row"><div><strong>主题</strong><p>选择你喜欢的星空底色</p></div><select v-model="settingsDraft.theme" aria-label="主题"><option value="dark">深邃夜空</option><option value="light">晨间微光</option><option value="system">跟随系统</option></select></div><div class="setting-row"><div><strong>默认布局</strong><p>灵感卡片，或紧凑列表</p></div><select v-model="settingsDraft.layout" aria-label="默认布局"><option value="grid">卡片网格</option><option value="list">紧凑列表</option></select></div><div class="setting-row"><div><strong>呼出快捷键</strong><p>从任何应用打开星笺</p></div><input class="shortcut-input" v-model="settingsDraft.shortcut" aria-label="呼出快捷键" placeholder="CommandOrControl+Shift+V" /></div></div>
+          <div class="settings-section"><h3><Icon name="shield" :size="16" />记录与隐私</h3><div class="setting-row"><div><strong>自动记录新复制的文本</strong><p>不捕获开启前的内容；随时可以暂停</p></div><button type="button" :class="['switch', { on: !settingsDraft.paused }]" role="switch" :aria-checked="!settingsDraft.paused" aria-label="自动记录新复制的文本" @click="settingsDraft.paused = !settingsDraft.paused"><span /></button></div><div class="setting-row"><div><strong>历史记录上限</strong><p>超出后清理最早记录，保留星标</p></div><select v-model.number="settingsDraft.maxHistory" aria-label="历史记录上限"><option :value="100">100 条</option><option :value="500">500 条</option><option :value="1000">1,000 条</option><option :value="5000">5,000 条</option></select></div><div class="privacy-note"><Icon name="shield" :size="16" /><p>内容仅保存在本机，不上传云端。剪贴板可能含有私密内容，复制密码等敏感信息前请先暂停记录。</p></div></div>
+          <div class="settings-section backup-section"><h3><Icon name="folder" :size="16" />你的数据，由你保管</h3><div class="backup-buttons"><button type="button" class="button subtle" @click="exportBackup" :disabled="busy"><Icon name="down" :size="16" />导出备份</button><button type="button" class="button subtle" @click="fileInput?.click()" :disabled="busy"><Icon name="upload" :size="16" />导入备份</button><button type="button" class="button danger-quiet" @click="modal = 'clear'">清理历史</button></div><p class="field-note">备份为可阅读的 JSON 文件，请妥善保存。导入会合并记录。</p></div><div class="modal-actions"><button type="button" class="button subtle" @click="modal = ''">取消</button><button class="button primary" :disabled="busy">保存偏好<Icon name="check" :size="16" /></button></div>
+        </form>
+        <template v-else-if="modal === 'clear'"><p class="modal-intro">将删除所有未星标记录，包括分组内记录；保留星标和分组名称。此操作无法撤回，建议先导出备份。</p><div class="modal-actions"><button class="button subtle" @click="openSettings">取消</button><button class="button danger" :disabled="busy" @click="run(async () => { await api.clearHistory(); modal = '' }, '历史已清理，星标收藏已保留')">清理未收藏记录</button></div></template>
+        <template v-else-if="modal === 'delete-group'"><p class="modal-intro">「{{ currentGroup?.name }}」中的片段仍保留在全部记录中，仅移除分组。</p><div class="modal-actions"><button class="button subtle" @click="modal = ''">取消</button><button class="button danger" @click="deleteCurrentGroup" :disabled="busy">删除分组</button></div></template>
+      </div>
+    </dialog>
+    <CodeStudio v-if="studioOpen" :clip="studioClip" :groups="state.groups" @close="studioOpen = false" @saved="refresh" />
+    <input ref="fileInput" type="file" accept="application/json,.json" hidden @change="importBackup" />
+    <Transition name="toast"><div v-if="toast" :class="['toast-message', { error: toastError }]" role="status"><Icon :name="toastError ? 'alert' : 'check'" :size="17" /><span>{{ toast }}</span><button class="icon-button" @click="toast = ''" aria-label="关闭提示"><Icon name="close" :size="14" /></button></div></Transition>
+  </div>
+</template>

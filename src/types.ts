@@ -1,0 +1,27 @@
+export interface Clip {
+  id: number;
+  content: string;
+  title: string;
+  kind: 'text' | 'link' | 'code' | 'color';
+  language: string | null;
+  pinned: boolean;
+  groupId: number | null;
+  createdAt: number;
+  updatedAt: number;
+  copyCount: number;
+}
+export interface Group { id: number; name: string; color: string }
+export interface Settings {
+  paused: boolean;
+  theme: 'dark' | 'light' | 'system';
+  layout: 'grid' | 'list';
+  maxHistory: number;
+  shortcut: string;
+}
+export interface AppState {
+  clips: Clip[];
+  groups: Group[];
+  settings: Settings;
+  clipboardError: string | null;
+  shortcutError: string | null;
+}

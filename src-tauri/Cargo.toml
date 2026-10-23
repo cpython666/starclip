@@ -1,0 +1,48 @@
+[package]
+name = "starclip"
+version = "0.1.0"
+description = "星笺 Starclip — a local-first clipboard manager"
+authors = ["Starclip contributors"]
+edition = "2021"
+rust-version = "1.88"
+license = "MIT"
+
+[lib]
+name = "starclip_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "starclip"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[features]
+default = ["desktop"]
+desktop = ["dep:tauri", "dep:tauri-build", "dep:arboard", "dep:tauri-plugin-global-shortcut", "dep:tauri-plugin-single-instance", "dep:tauri-plugin-dialog"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [], optional = true }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+rusqlite = { version = "0.32", features = ["bundled"] }
+tauri = { version = "2", features = ["tray-icon"], optional = true }
+arboard = { version = "3.6", default-features = false, optional = true }
+tauri-plugin-global-shortcut = { version = "2", optional = true }
+tauri-plugin-single-instance = { version = "2", optional = true }
+tauri-plugin-dialog = { version = "2", optional = true }
+
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.test]
+debug = 0
+incremental = false
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
