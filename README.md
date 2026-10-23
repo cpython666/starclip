@@ -18,10 +18,10 @@
 
 技术栈：**Rust + Tauri 2 + SQLite + Vue 3 + TypeScript + Vite**。语法高亮使用 highlight.js；无账户、云端后端或遥测。
 
-需要 Node.js 22.12+、Rust stable 和 [Tauri 平台构建依赖](https://v2.tauri.app/start/prerequisites/)。
+需要 Node.js 22.12+、Rust 1.90（仓库工具链文件自动选择）和 [Tauri 平台构建依赖](https://v2.tauri.app/start/prerequisites/)。
 
 ```sh
-npm install
+npm ci
 npm run tauri icon public/starclip.svg
 npm run tauri dev
 ```

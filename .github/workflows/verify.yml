@@ -16,11 +16,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: dtolnay/rust-toolchain@stable
-      - run: npm install --no-audit --no-fund
+      - uses: dtolnay/rust-toolchain@1.90.0
+      - run: npm ci --no-audit --no-fund
       - run: npm test
       - run: npm run build
-      - run: cargo test --manifest-path src-tauri/Cargo.toml --no-default-features
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features
       - uses: actions/upload-artifact@v4
         with:
           name: starclip-web-preview
@@ -50,13 +50,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.90.0
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-      - run: npm install --no-audit --no-fund
+      - run: npm ci --no-audit --no-fund
       - run: npm run tauri icon public/starclip.svg
       - run: npm run tauri build -- --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
       - uses: actions/upload-artifact@v4
