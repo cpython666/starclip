@@ -7,7 +7,7 @@ use std::{
     path::Path,
     sync::{Arc, Mutex, MutexGuard},
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{
     menu::{Menu, MenuItem},
@@ -27,6 +27,7 @@ struct Context {
     reader: Mutex<Reader>,
     clipboard_error: Mutex<Option<String>>,
     shortcut_error: Mutex<Option<String>>,
+    window_error: Mutex<Option<String>>,
 }
 type AppContext<'a> = State<'a, Arc<Context>>;
 fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>> {
@@ -62,6 +63,7 @@ struct AppState {
     settings: Settings,
     clipboard_error: Option<String>,
     shortcut_error: Option<String>,
+    window_error: Option<String>,
 }
 #[tauri::command]
 fn get_state(context: AppContext<'_>) -> Result<AppState> {
@@ -72,6 +74,7 @@ fn get_state(context: AppContext<'_>) -> Result<AppState> {
         settings: store.settings()?,
         clipboard_error: lock(&context.clipboard_error)?.clone(),
         shortcut_error: lock(&context.shortcut_error)?.clone(),
+        window_error: lock(&context.window_error)?.clone(),
     })
 }
 #[tauri::command]
@@ -167,10 +170,23 @@ fn save_settings(app: AppHandle, context: AppContext<'_>, settings: Settings) ->
         .map_err(|_| "快捷键格式无效，例如 CommandOrControl+Shift+V。")?;
     let old_shortcut = old.shortcut.parse::<Shortcut>().ok();
     let shortcut_changed = old_shortcut != Some(shortcut);
+    let window = app
+        .get_webview_window("main")
+        .ok_or("主窗口不存在，未保存偏好设置。")?;
+    let previous_top = window.is_always_on_top().unwrap_or(old.always_on_top);
     if shortcut_changed {
         app.global_shortcut()
             .register(shortcut)
             .map_err(|_| "该快捷键无法注册，可能被其他应用占用。")?;
+    }
+    if let Err(error) = window.set_always_on_top(settings.always_on_top) {
+        if shortcut_changed {
+            let _ = app.global_shortcut().unregister(shortcut);
+        }
+        let message = format!("无法应用窗口置顶，偏好设置未保存：{error}");
+        *lock(&context.window_error)? = Some(message.clone());
+        changed(&app);
+        return Err(message);
     }
     let save_result = (|| -> Result<()> {
         // Lock order is reader -> store, also used by the monitor. Pause cannot race with capture.
@@ -186,7 +202,16 @@ fn save_settings(app: AppHandle, context: AppContext<'_>, settings: Settings) ->
         if shortcut_changed {
             let _ = app.global_shortcut().unregister(shortcut);
         }
-        return Err(error);
+        let rollback_error = window
+            .set_always_on_top(previous_top)
+            .err()
+            .map(|error| format!("恢复原窗口置顶状态失败，请重试保存偏好：{error}"));
+        *lock(&context.window_error)? = rollback_error.clone();
+        changed(&app);
+        return Err(match rollback_error {
+            Some(rollback) => format!("{error}；{rollback}"),
+            None => error,
+        });
     }
     if shortcut_changed {
         if let Some(old_shortcut) = old_shortcut {
@@ -194,6 +219,7 @@ fn save_settings(app: AppHandle, context: AppContext<'_>, settings: Settings) ->
         }
         *lock(&context.shortcut_error)? = None;
     }
+    *lock(&context.window_error)? = None;
     changed(&app);
     Ok(())
 }
@@ -394,48 +420,65 @@ fn set_clipboard_error(app: &AppHandle, context: &Context, error: Option<String>
     }
 }
 fn monitor(app: AppHandle, context: Arc<Context>) {
-    thread::spawn(move || loop {
-        thread::sleep(Duration::from_millis(700));
-        let result: Result<bool> = (|| {
-            // ponytail: one lock order serializes this personal clipboard; no worker queue is needed.
-            let mut reader = lock(&context.reader)?;
-            let store = lock(&context.store)?;
-            if store.settings()?.paused {
-                return Ok(false);
+    thread::spawn(move || {
+        let mut maintenance_at = Instant::now() + Duration::from_secs(60);
+        loop {
+            thread::sleep(Duration::from_millis(700));
+            if Instant::now() >= maintenance_at {
+                maintenance_at = Instant::now() + Duration::from_secs(60);
+                let removed = lock(&context.store).and_then(|store| {
+                    if store.settings()?.retention_days == 0 {
+                        return Ok(0);
+                    }
+                    store.prune_history()
+                });
+                match removed {
+                    Ok(count) if count > 0 => changed(&app),
+                    Err(error) => set_clipboard_error(&app, &context, Some(error)),
+                    _ => {}
+                }
             }
-            if reader.clipboard.is_none() {
-                reader.clipboard =
-                    Some(Clipboard::new().map_err(|e| format!("无法访问剪贴板：{e}"))?);
+            let result: Result<bool> = (|| {
+                // ponytail: one lock order serializes this personal clipboard; no worker queue is needed.
+                let mut reader = lock(&context.reader)?;
+                let store = lock(&context.store)?;
+                if store.settings()?.paused {
+                    return Ok(false);
+                }
+                if reader.clipboard.is_none() {
+                    reader.clipboard =
+                        Some(Clipboard::new().map_err(|e| format!("无法访问剪贴板：{e}"))?);
+                }
+                let content = match reader.clipboard.as_mut().unwrap().get_text() {
+                    Ok(text) => Some(text),
+                    Err(arboard::Error::ContentNotAvailable) => None,
+                    Err(error) => return Err(format!("剪贴板读取失败：{error}")),
+                };
+                if !reader.armed {
+                    reader.armed = true;
+                    reader.previous = content;
+                    return Ok(false);
+                }
+                if reader.previous == content {
+                    return Ok(false);
+                }
+                if let Some(text) = content.as_ref().filter(|text| !text.trim().is_empty()) {
+                    store.add(text, "", None)?;
+                    reader.previous = content;
+                    Ok(true)
+                } else {
+                    reader.previous = content;
+                    Ok(false)
+                }
+            })();
+            match result {
+                Ok(true) => {
+                    set_clipboard_error(&app, &context, None);
+                    changed(&app);
+                }
+                Ok(false) => {}
+                Err(error) => set_clipboard_error(&app, &context, Some(error)),
             }
-            let content = match reader.clipboard.as_mut().unwrap().get_text() {
-                Ok(text) => Some(text),
-                Err(arboard::Error::ContentNotAvailable) => None,
-                Err(error) => return Err(format!("剪贴板读取失败：{error}")),
-            };
-            if !reader.armed {
-                reader.armed = true;
-                reader.previous = content;
-                return Ok(false);
-            }
-            if reader.previous == content {
-                return Ok(false);
-            }
-            if let Some(text) = content.as_ref().filter(|text| !text.trim().is_empty()) {
-                store.add(text, "", None)?;
-                reader.previous = content;
-                Ok(true)
-            } else {
-                reader.previous = content;
-                Ok(false)
-            }
-        })();
-        match result {
-            Ok(true) => {
-                set_clipboard_error(&app, &context, None);
-                changed(&app);
-            }
-            Ok(false) => {}
-            Err(error) => set_clipboard_error(&app, &context, Some(error)),
         }
     });
 }
@@ -482,6 +525,17 @@ pub fn run() {
                         .map_err(|_| "快捷键注册失败，可在偏好设置中更换。".to_string())
                 })
                 .err();
+            let window_error = store
+                .settings()
+                .and_then(|settings| {
+                    app.get_webview_window("main")
+                        .ok_or("主窗口不存在。".to_string())?
+                        .set_always_on_top(settings.always_on_top)
+                        .map_err(|error| {
+                            format!("无法应用已保存的窗口置顶设置，可在偏好设置中重试：{error}")
+                        })
+                })
+                .err();
             let context = Arc::new(Context {
                 store: Mutex::new(store),
                 reader: Mutex::new(Reader {
@@ -491,6 +545,7 @@ pub fn run() {
                 }),
                 clipboard_error: Mutex::new(None),
                 shortcut_error: Mutex::new(shortcut_error),
+                window_error: Mutex::new(window_error),
             });
             app.manage(context.clone());
             let show = MenuItem::with_id(app, "show", "打开星笺", true, None::<&str>)?;

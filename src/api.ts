@@ -16,11 +16,18 @@ const samples: Array<Pick<Clip, 'title' | 'content' | 'kind' | 'language' | 'gro
 let demo: AppState = {
   clips: samples.map((clip, i) => ({ ...clip, id: i + 1, createdAt: now - i * 1800000, updatedAt: now - i * 1800000, copyCount: i === 1 ? 12 : 0 })),
   groups: [{ id: 1, name: '灵感碎片', color: '#d9b780' }, { id: 2, name: '开发工具箱', color: '#87bab6' }, { id: 3, name: '设计收藏', color: '#b69bd7' }],
-  settings: { paused: true, theme: 'dark', layout: 'grid', maxHistory: 500, shortcut: 'CommandOrControl+Shift+V' },
-  clipboardError: null, shortcutError: null,
+  settings: { paused: true, theme: 'dark', layout: 'grid', maxHistory: 500, retentionDays: 0, alwaysOnTop: false, shortcut: 'CommandOrControl+Shift+V' },
+  clipboardError: null, shortcutError: null, windowError: null,
 };
 // ponytail: browser preview stays in memory; only the native app persists real history.
 const listeners = new Set<() => void>();
+function pruneDemo() {
+  const { retentionDays, maxHistory } = demo.settings;
+  const cutoff = retentionDays === 0 ? -Infinity : Date.now() - retentionDays * 86400000;
+  let historyCount = 0;
+  demo.clips = demo.clips.sort((a, b) => b.updatedAt - a.updatedAt || b.id - a.id).filter(clip =>
+    clip.pinned || clip.groupId !== null || (clip.updatedAt >= cutoff && ++historyCount <= maxHistory));
+}
 function changed() { listeners.forEach((listener) => listener()); }
 function id() { return Math.max(0, ...demo.clips.map((clip) => clip.id)) + 1; }
 function requiredClip(clipId: number) { const clip = demo.clips.find((item) => item.id === clipId); if (!clip) throw new Error('记录不存在'); return clip; }
@@ -49,13 +56,18 @@ export const api = {
     if (isDesktop) return invoke('add_clip', { content, title, groupId });
     validateContent(content);
     const existing = demo.clips.find((clip) => clip.content === content);
-    if (existing) return structuredClone(existing);
+    if (existing) {
+      existing.updatedAt = Date.now();
+      if (title.trim()) existing.title = title.trim();
+      if (groupId !== null) existing.groupId = groupId;
+      pruneDemo(); changed(); return structuredClone(existing);
+    }
     const clip: Clip = { id: id(), content, title, groupId, kind: classify(content), language: null, pinned: false, createdAt: Date.now(), updatedAt: Date.now(), copyCount: 0 };
-    demo.clips.unshift(clip); changed(); return structuredClone(clip);
+    demo.clips.unshift(clip); pruneDemo(); changed(); return structuredClone(clip);
   },
   async updateClip(id: number, title: string, groupId: number | null, pinned: boolean): Promise<void> {
     if (isDesktop) return invoke('update_clip', { id, title, groupId, pinned });
-    Object.assign(requiredClip(id), { title, groupId, pinned, updatedAt: Date.now() }); changed();
+    Object.assign(requiredClip(id), { title: title.trim(), groupId, pinned }); changed();
   },
   async deleteClip(id: number): Promise<void> { if (isDesktop) return invoke('delete_clip', { id }); demo.clips = demo.clips.filter((clip) => clip.id !== id); changed(); },
   async copyClip(id: number): Promise<void> {
@@ -70,7 +82,17 @@ export const api = {
     demo.groups.push(group); changed(); return structuredClone(group);
   },
   async deleteGroup(id: number): Promise<void> { if (isDesktop) return invoke('delete_group', { id }); demo.groups = demo.groups.filter((g) => g.id !== id); demo.clips.forEach((c) => { if (c.groupId === id) c.groupId = null; }); changed(); },
-  async saveSettings(settings: Settings): Promise<void> { if (isDesktop) return invoke('save_settings', { settings }); demo.settings = { ...settings }; changed(); },
+  async saveSettings(settings: Settings): Promise<void> {
+    if (isDesktop) return invoke('save_settings', { settings });
+    if (typeof settings.paused !== 'boolean' || typeof settings.alwaysOnTop !== 'boolean'
+      || !['dark', 'light', 'system'].includes(settings.theme) || !['grid', 'list', 'horizontal'].includes(settings.layout)
+      || !Number.isSafeInteger(settings.maxHistory) || settings.maxHistory < 50 || settings.maxHistory > 10000
+      || ![0, 1, 7, 30, 90, 180, 365].includes(settings.retentionDays)
+      || typeof settings.shortcut !== 'string' || !settings.shortcut.trim() || settings.shortcut.length > 80) {
+      throw new Error('设置无效：请检查布局、历史上限、保留时长与快捷键。');
+    }
+    demo.settings = { ...settings }; pruneDemo(); changed();
+  },
   async clearHistory(): Promise<void> { if (isDesktop) return invoke('clear_history'); demo.clips = demo.clips.filter((clip) => clip.pinned); changed(); },
   async exportBackup(): Promise<string> {
     if (isDesktop) return invoke('export_backup');
@@ -101,6 +123,7 @@ export const api = {
       if (next.clips.some((c) => c.content === clip.content)) continue;
       next.clips.push({ ...clip, id: Math.max(0, ...next.clips.map((c) => c.id)) + 1, groupId: clip.groupId == null ? null : groupMap.get(clip.groupId)!, language: clip.language ?? null, kind: clip.language ? 'code' : classify(clip.content) }); added++;
     }
+    // Import preserves the complete backup; only explicit capture/settings changes apply retention.
     demo = next; changed(); return added;
   },
   async saveBackup(): Promise<boolean> {
@@ -113,10 +136,12 @@ export const api = {
     if (!languages.some(([key]) => key === language)) throw new Error('未知的代码语言');
     const conflict = demo.clips.find((clip) => clip.content === content && clip.id !== id);
     if (conflict) throw new Error('相同内容已存在，请编辑已有记录');
-    const clip = id == null ? await api.addClip(content, title, groupId) : requiredClip(id);
-    const actual = requiredClip(clip.id);
-    Object.assign(actual, { title, content, language, kind: 'code', groupId, pinned: true, updatedAt: Date.now() });
-    changed(); return structuredClone(actual);
+    const actual: Clip = id == null
+      ? { id: Math.max(0, ...demo.clips.map(clip => clip.id)) + 1, content, title: title.trim(), groupId, kind: 'code', language, pinned: true, createdAt: Date.now(), updatedAt: Date.now(), copyCount: 0 }
+      : requiredClip(id);
+    Object.assign(actual, { title: title.trim(), content, language, kind: 'code', groupId, pinned: true, updatedAt: Date.now() });
+    if (id == null) demo.clips.unshift(actual);
+    pruneDemo(); changed(); return structuredClone(actual);
   },
   async saveExport(data: string, format: 'md' | 'png', filename: string): Promise<boolean> {
     if (isDesktop) return invoke('save_export', { data, format, filename });

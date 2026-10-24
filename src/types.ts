@@ -14,8 +14,10 @@ export interface Group { id: number; name: string; color: string }
 export interface Settings {
   paused: boolean;
   theme: 'dark' | 'light' | 'system';
-  layout: 'grid' | 'list';
+  layout: 'grid' | 'list' | 'horizontal';
   maxHistory: number;
+  retentionDays: number;
+  alwaysOnTop: boolean;
   shortcut: string;
 }
 export interface AppState {
@@ -24,6 +26,7 @@ export interface AppState {
   settings: Settings;
   clipboardError: string | null;
   shortcutError: string | null;
+  windowError: string | null;
 }
 export interface HandwritingAssets {
   available: boolean;

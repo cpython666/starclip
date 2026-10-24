@@ -51,6 +51,10 @@ pub struct Settings {
     pub layout: String,
     pub max_history: usize,
     pub shortcut: String,
+    #[serde(default)]
+    pub always_on_top: bool,
+    #[serde(default)]
+    pub retention_days: u32,
 }
 
 impl Default for Settings {
@@ -61,6 +65,8 @@ impl Default for Settings {
             layout: "grid".into(),
             max_history: 500,
             shortcut: "CommandOrControl+Shift+V".into(),
+            always_on_top: false,
+            retention_days: 0,
         }
     }
 }
@@ -68,12 +74,15 @@ impl Default for Settings {
 impl Settings {
     pub fn validate(&self) -> Result<()> {
         if !["dark", "light", "system"].contains(&self.theme.as_str())
-            || !["grid", "list"].contains(&self.layout.as_str())
+            || !["grid", "list", "horizontal"].contains(&self.layout.as_str())
             || !(50..=10_000).contains(&self.max_history)
             || self.shortcut.trim().is_empty()
             || self.shortcut.len() > 80
         {
             return Err("设置无效：历史上限需在 50–10000 之间。".into());
+        }
+        if ![0, 1, 7, 30, 90, 180, 365].contains(&self.retention_days) {
+            return Err("保留天数仅支持不限时间、1、7、30、90、180 或 365 天。".into());
         }
         Ok(())
     }
@@ -234,7 +243,9 @@ impl Store {
             conn.execute("ALTER TABLE clips ADD COLUMN language TEXT", [])
                 .map_err(sql_error)?;
         }
-        Ok(Self { conn })
+        let store = Self { conn };
+        store.prune_history()?;
+        Ok(store)
     }
 
     pub fn settings(&self) -> Result<Settings> {
@@ -263,8 +274,7 @@ impl Store {
         let json = serde_json::to_string(settings).map_err(|e| e.to_string())?;
         let tx = self.conn.unchecked_transaction().map_err(sql_error)?;
         tx.execute("INSERT INTO preferences(key,value) VALUES('settings',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [json]).map_err(sql_error)?;
-        tx.execute("DELETE FROM clips WHERE pinned=0 AND group_id IS NULL AND id NOT IN
-            (SELECT id FROM clips WHERE pinned=0 AND group_id IS NULL ORDER BY updated_at DESC,id DESC LIMIT ?1)", [settings.max_history as i64]).map_err(sql_error)?;
+        Self::prune_with_settings(&tx, settings, now())?;
         tx.commit().map_err(sql_error)
     }
 
@@ -310,7 +320,7 @@ impl Store {
                 row.get(0)
             })
             .map_err(sql_error)?;
-        self.prune(self.settings()?.max_history)?;
+        self.prune_history()?;
         self.clip(id)
     }
 
@@ -325,7 +335,7 @@ impl Store {
         validate_content(content, title)?;
         validate_language(language)?;
         let timestamp = now();
-        match id {
+        let clip = match id {
             Some(id) => {
                 self.clip(id)?;
                 self.conn.execute("UPDATE clips SET content=?1,title=?2,kind='code',language=?3,group_id=?4,updated_at=?5,pinned=1 WHERE id=?6", params![content,title.trim(),language,group_id,timestamp,id])
@@ -343,7 +353,9 @@ impl Store {
                     })?;
                 self.clip(self.conn.last_insert_rowid())
             }
-        }
+        }?;
+        self.prune_history()?;
+        Ok(clip)
     }
 
     pub fn update(&self, id: i64, title: &str, group_id: Option<i64>, pinned: bool) -> Result<()> {
@@ -384,11 +396,21 @@ impl Store {
         Ok(())
     }
 
-    fn prune(&self, limit: usize) -> Result<()> {
-        // ponytail: protect grouped snippets; a single bounded recent-history query is enough for a personal clipboard.
-        self.conn.execute("DELETE FROM clips WHERE pinned=0 AND group_id IS NULL AND id NOT IN
-            (SELECT id FROM clips WHERE pinned=0 AND group_id IS NULL ORDER BY updated_at DESC,id DESC LIMIT ?1)", [limit as i64]).map_err(sql_error)?;
-        Ok(())
+    pub fn prune_history(&self) -> Result<usize> {
+        Self::prune_with_settings(&self.conn, &self.settings()?, now())
+    }
+
+    fn prune_with_settings(
+        conn: &Connection,
+        settings: &Settings,
+        timestamp: i64,
+    ) -> Result<usize> {
+        let cutoff = timestamp.saturating_sub(i64::from(settings.retention_days) * 86_400_000);
+        // Keep both limits in one atomic delete. Pins and grouped snippets are never automatic cleanup targets.
+        conn.execute("DELETE FROM clips WHERE pinned=0 AND group_id IS NULL AND (
+            (?2 > 0 AND updated_at < ?3) OR id NOT IN
+            (SELECT id FROM clips WHERE pinned=0 AND group_id IS NULL ORDER BY updated_at DESC,id DESC LIMIT ?1))",
+            params![settings.max_history as i64, settings.retention_days, cutoff]).map_err(sql_error)
     }
 
     pub fn create_group(&self, name: &str, color: &str) -> Result<Group> {
@@ -496,7 +518,7 @@ impl Store {
                 imported += 1;
             }
         }
-        // Imported backups are retained in full. Normal capture resumes the configured history bound.
+        // Import keeps the entire backup; normal capture, startup and periodic maintenance apply the selected retention policy.
         tx.commit().map_err(sql_error)?;
         Ok(imported)
     }
@@ -622,6 +644,143 @@ mod tests {
         source.delete(extra.id).unwrap();
         source.create_group("overflow", "#ffffff").unwrap();
         assert!(source.export().is_err());
+    }
+
+    #[test]
+    fn legacy_settings_and_backup_keep_their_meaning() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE clips (
+            id INTEGER PRIMARY KEY, content TEXT NOT NULL UNIQUE, title TEXT NOT NULL DEFAULT '',
+            kind TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0, group_id INTEGER,
+            created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, copy_count INTEGER NOT NULL DEFAULT 0);
+            CREATE TABLE preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO clips(content,kind,pinned,created_at,updated_at) VALUES('旧版原创片段','text',1,0,0);").unwrap();
+        let legacy = r#"{"paused":true,"theme":"light","layout":"list","maxHistory":500,"shortcut":"CommandOrControl+Shift+V"}"#;
+        conn.execute(
+            "INSERT INTO preferences(key,value) VALUES('settings',?1)",
+            [legacy],
+        )
+        .unwrap();
+        let db = Store::from_connection(conn).unwrap();
+        let settings = db.settings().unwrap();
+        assert!(!settings.always_on_top);
+        assert_eq!(settings.retention_days, 0);
+        assert_eq!(settings.layout, "list");
+        assert_eq!(db.clips().unwrap()[0].language, None);
+        assert_eq!(
+            db.conn
+                .query_row(
+                    "SELECT value FROM preferences WHERE key='settings'",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+            legacy
+        );
+        let mut old_backup: serde_json::Value =
+            serde_json::from_str(&db.export().unwrap()).unwrap();
+        old_backup["clips"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("language");
+        let mut destination = store();
+        let mut updated = settings.clone();
+        updated.layout = "horizontal".into();
+        updated.always_on_top = true;
+        updated.retention_days = 7;
+        destination.save_settings(&updated).unwrap();
+        assert_eq!(destination.import(&old_backup.to_string()).unwrap(), 1);
+        assert_eq!(destination.settings().unwrap(), updated);
+        assert!(destination.clips().unwrap()[0].pinned);
+        updated.retention_days = 2;
+        assert!(destination.save_settings(&updated).is_err());
+        assert_eq!(destination.settings().unwrap().retention_days, 7);
+    }
+
+    #[test]
+    fn age_cleanup_preserves_protected_items_and_recapture_renews_history() {
+        let db = store();
+        let mut settings = db.settings().unwrap();
+        settings.retention_days = 7;
+        db.save_settings(&settings).unwrap();
+        let expired = db.add("过期片段", "", None).unwrap();
+        let renewed = db.add("再次收录", "", None).unwrap();
+        let pinned = db.add("重要星标", "", None).unwrap();
+        db.update(pinned.id, "", None, true).unwrap();
+        let group = db.create_group("常用片段", "#aabbcc").unwrap();
+        let grouped = db.add("分组保护", "", Some(group.id)).unwrap();
+        db.conn
+            .execute("UPDATE clips SET created_at=0,updated_at=0", [])
+            .unwrap();
+        let fresh = db.add("再次收录", "", None).unwrap();
+        assert_eq!(fresh.id, renewed.id);
+        assert_eq!(fresh.created_at, 0);
+        assert!(fresh.updated_at > 0);
+        assert!(db.clip(expired.id).is_err());
+        assert!(db.clip(pinned.id).is_ok());
+        assert!(db.clip(grouped.id).is_ok());
+        let boundary = fresh.updated_at - 7 * 86_400_000;
+        db.conn
+            .execute(
+                "UPDATE clips SET updated_at=?1 WHERE id=?2",
+                params![boundary, fresh.id],
+            )
+            .unwrap();
+        assert_eq!(
+            Store::prune_with_settings(&db.conn, &settings, fresh.updated_at).unwrap(),
+            0
+        );
+        assert_eq!(
+            Store::prune_with_settings(&db.conn, &settings, fresh.updated_at + 1).unwrap(),
+            1
+        );
+        assert_eq!(db.clips().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn age_and_capacity_apply_together_at_startup_and_settings_are_atomic() {
+        let db = store();
+        let mut settings = db.settings().unwrap();
+        settings.retention_days = 7;
+        settings.max_history = 50;
+        db.save_settings(&settings).unwrap();
+        let timestamp = now();
+        // Seed history directly so one maintenance pass exercises both limits together.
+        let tx = db.conn.unchecked_transaction().unwrap();
+        for index in 0..60 {
+            let updated = if index < 5 { 0 } else { timestamp + index };
+            tx.execute(
+                "INSERT INTO clips(content,kind,created_at,updated_at) VALUES(?1,'text',0,?2)",
+                params![format!("容量与时间测试 {index}"), updated],
+            )
+            .unwrap();
+        }
+        tx.execute("INSERT INTO clips(content,kind,pinned,created_at,updated_at) VALUES('受保护星标','text',1,0,0)", []).unwrap();
+        tx.commit().unwrap();
+        let reopened = Store::from_connection(db.conn).unwrap();
+        assert_eq!(reopened.clips().unwrap().len(), 51);
+        assert_eq!(reopened.prune_history().unwrap(), 0);
+        assert!(reopened
+            .clips()
+            .unwrap()
+            .iter()
+            .any(|clip| clip.content == "容量与时间测试 10"));
+        assert!(!reopened
+            .clips()
+            .unwrap()
+            .iter()
+            .any(|clip| clip.content == "容量与时间测试 9"));
+        reopened
+            .conn
+            .execute("UPDATE clips SET updated_at=0 WHERE pinned=0", [])
+            .unwrap();
+        reopened.conn.execute_batch("CREATE TRIGGER reject_cleanup BEFORE DELETE ON clips BEGIN SELECT RAISE(ABORT, 'test cleanup failure'); END;").unwrap();
+        let mut changed = settings.clone();
+        changed.retention_days = 1;
+        changed.always_on_top = true;
+        assert!(reopened.save_settings(&changed).is_err());
+        assert_eq!(reopened.settings().unwrap(), settings);
+        assert_eq!(reopened.clips().unwrap().len(), 51);
     }
 
     #[test]
