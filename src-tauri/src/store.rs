@@ -2,7 +2,9 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
+    fs,
     path::Path,
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -29,6 +31,8 @@ pub struct Clip {
     #[serde(default)]
     pub language: Option<String>,
     pub pinned: bool,
+    #[serde(default)]
+    pub keep_forever: bool,
     pub group_id: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -57,10 +61,15 @@ pub struct Settings {
     pub retention_days: u32,
     #[serde(default = "default_show_startup")]
     pub show_startup: bool,
+    #[serde(default = "default_sticker_pack")]
+    pub sticker_pack: String,
 }
 
 fn default_show_startup() -> bool {
     true
+}
+fn default_sticker_pack() -> String {
+    "auto".into()
 }
 
 impl Default for Settings {
@@ -69,11 +78,12 @@ impl Default for Settings {
             paused: true,
             theme: "dark".into(),
             layout: "grid".into(),
-            max_history: 500,
+            max_history: 0,
             shortcut: "CommandOrControl+Shift+V".into(),
             always_on_top: false,
             retention_days: 0,
             show_startup: true,
+            sticker_pack: default_sticker_pack(),
         }
     }
 }
@@ -82,17 +92,84 @@ impl Settings {
     pub fn validate(&self) -> Result<()> {
         if !["dark", "light", "forest", "rose", "system"].contains(&self.theme.as_str())
             || !["grid", "list", "horizontal"].contains(&self.layout.as_str())
-            || !(50..=10_000).contains(&self.max_history)
+            || (self.max_history != 0 && !(50..=10_000).contains(&self.max_history))
             || self.shortcut.trim().is_empty()
             || self.shortcut.len() > 80
         {
-            return Err("设置无效：历史上限需在 50–10000 之间。".into());
+            return Err("设置无效：历史上限可选不限条数（0）或 50–10000 条。".into());
+        }
+        if !["auto", "none", "cosmos", "cats", "puppies", "garden"]
+            .contains(&self.sticker_pack.as_str())
+        {
+            return Err("不支持的贴纸组合。".into());
         }
         if ![0, 1, 7, 30, 90, 180, 365].contains(&self.retention_days) {
             return Err("保留天数仅支持不限时间、1、7、30、90、180 或 365 天。".into());
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CleanupFilter {
+    pub min_bytes: u64,
+    pub older_than_days: u32,
+    pub kind: String,
+    pub include_grouped: bool,
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupItem {
+    pub id: i64,
+    pub title: String,
+    pub kind: String,
+    pub bytes: u64,
+    pub updated_at: i64,
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupPreview {
+    pub token: String,
+    pub total_count: usize,
+    pub protected_count: usize,
+    pub matched_count: usize,
+    pub content_bytes: u64,
+    pub database_bytes: u64,
+    pub reusable_bytes: u64,
+    pub items: Vec<CleanupItem>,
+    pub truncated: bool,
+}
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupResult {
+    pub deleted_count: usize,
+    pub content_bytes: u64,
+    pub database_bytes_before: u64,
+    pub database_bytes_after: u64,
+    pub released_bytes: u64,
+    pub warning: Option<String>,
+}
+pub struct CleanupSnapshot {
+    pub preview: CleanupPreview,
+    candidates: Vec<Clip>,
+}
+pub const STALE_CLEANUP: &str = "清理预览已过期，请重新预览后确认。";
+static CLEANUP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+fn clip_bytes(clip: &Clip) -> u64 {
+    (clip.content.len() + clip.title.len()) as u64
+}
+fn same_cleanup_record(before: &Clip, current: &Clip) -> bool {
+    before.id == current.id
+        && before.content == current.content
+        && before.title == current.title
+        && before.kind == current.kind
+        && before.language == current.language
+        && before.updated_at == current.updated_at
+        && before.created_at == current.created_at
+        && before.group_id == current.group_id
+        && before.pinned == current.pinned
+        && before.keep_forever == current.keep_forever
 }
 
 #[derive(Serialize, Deserialize)]
@@ -130,6 +207,7 @@ fn clip_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Clip> {
         updated_at: row.get(7)?,
         copy_count: row.get(8)?,
         language: row.get(9)?,
+        keep_forever: row.get(10)?,
     })
 }
 
@@ -284,13 +362,13 @@ impl Store {
             CREATE TABLE IF NOT EXISTS groups (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, color TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS clips (
                 id INTEGER PRIMARY KEY, content TEXT NOT NULL UNIQUE, title TEXT NOT NULL DEFAULT '',
-                kind TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0,
+                kind TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0, keep_forever INTEGER NOT NULL DEFAULT 0,
                 group_id INTEGER REFERENCES groups(id) ON DELETE SET NULL,
                 created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, copy_count INTEGER NOT NULL DEFAULT 0, language TEXT
             );
             CREATE INDEX IF NOT EXISTS clips_updated ON clips(updated_at DESC);
             CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);").map_err(sql_error)?;
-        let has_language = {
+        let columns = {
             let mut stmt = conn
                 .prepare("PRAGMA table_info(clips)")
                 .map_err(sql_error)?;
@@ -300,12 +378,17 @@ impl Store {
             columns
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(sql_error)?
-                .iter()
-                .any(|name| name == "language")
         };
-        if !has_language {
+        if !columns.iter().any(|name| name == "language") {
             conn.execute("ALTER TABLE clips ADD COLUMN language TEXT", [])
                 .map_err(sql_error)?;
+        }
+        if !columns.iter().any(|name| name == "keep_forever") {
+            conn.execute(
+                "ALTER TABLE clips ADD COLUMN keep_forever INTEGER NOT NULL DEFAULT 0",
+                [],
+            )
+            .map_err(sql_error)?;
         }
         let store = Self { conn };
         store.prune_history()?;
@@ -343,7 +426,7 @@ impl Store {
     }
 
     pub fn clips(&self) -> Result<Vec<Clip>> {
-        let mut stmt = self.conn.prepare("SELECT id,content,title,kind,pinned,group_id,created_at,updated_at,copy_count,language FROM clips ORDER BY updated_at DESC,id DESC").map_err(sql_error)?;
+        let mut stmt = self.conn.prepare("SELECT id,content,title,kind,pinned,group_id,created_at,updated_at,copy_count,language,keep_forever FROM clips ORDER BY updated_at DESC,id DESC").map_err(sql_error)?;
         let rows = stmt.query_map([], clip_from_row).map_err(sql_error)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(sql_error)
@@ -368,24 +451,37 @@ impl Store {
     }
 
     pub fn clip(&self, id: i64) -> Result<Clip> {
-        self.conn.query_row("SELECT id,content,title,kind,pinned,group_id,created_at,updated_at,copy_count,language FROM clips WHERE id=?1", [id], clip_from_row).optional().map_err(sql_error)?.ok_or_else(|| "这条星笺已被删除。".into())
+        self.conn.query_row("SELECT id,content,title,kind,pinned,group_id,created_at,updated_at,copy_count,language,keep_forever FROM clips WHERE id=?1", [id], clip_from_row).optional().map_err(sql_error)?.ok_or_else(|| "这条星笺已被删除。".into())
     }
 
     pub fn add(&self, content: &str, title: &str, group_id: Option<i64>) -> Result<Clip> {
+        self.add_protected(content, title, group_id, false)
+    }
+
+    pub fn add_protected(
+        &self,
+        content: &str,
+        title: &str,
+        group_id: Option<i64>,
+        keep_forever: bool,
+    ) -> Result<Clip> {
         validate_content(content, title)?;
         let timestamp = now();
-        self.conn.execute("INSERT INTO clips(content,title,kind,group_id,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?5)
+        let tx = self.conn.unchecked_transaction().map_err(sql_error)?;
+        tx.execute("INSERT INTO clips(content,title,kind,group_id,created_at,updated_at,keep_forever) VALUES(?1,?2,?3,?4,?5,?5,?6)
             ON CONFLICT(content) DO UPDATE SET updated_at=excluded.updated_at,
             title=CASE WHEN excluded.title<>'' THEN excluded.title ELSE clips.title END,
-            group_id=COALESCE(excluded.group_id,clips.group_id)", params![content, title.trim(), classify(content), group_id, timestamp]).map_err(sql_error)?;
-        let id = self
-            .conn
+            group_id=COALESCE(excluded.group_id,clips.group_id),
+            keep_forever=MAX(clips.keep_forever,excluded.keep_forever)", params![content, title.trim(), classify(content), group_id, timestamp, keep_forever]).map_err(sql_error)?;
+        let id = tx
             .query_row("SELECT id FROM clips WHERE content=?1", [content], |row| {
                 row.get(0)
             })
             .map_err(sql_error)?;
-        self.prune_history()?;
-        self.clip(id)
+        Self::prune_with_settings(&tx, &self.settings()?, timestamp)?;
+        let clip = self.clip(id)?;
+        tx.commit().map_err(sql_error)?;
+        Ok(clip)
     }
 
     pub fn save_code(
@@ -447,17 +543,201 @@ impl Store {
     }
 
     pub fn delete(&self, id: i64) -> Result<()> {
+        if self.clip(id)?.keep_forever {
+            return Err("这条星笺已设为永久保留，请先取消保留再删除。".into());
+        }
         self.conn
-            .execute("DELETE FROM clips WHERE id=?1", [id])
+            .execute("DELETE FROM clips WHERE id=?1 AND keep_forever=0", [id])
             .map_err(sql_error)?;
         Ok(())
     }
 
     pub fn clear_history(&self) -> Result<()> {
         self.conn
-            .execute("DELETE FROM clips WHERE pinned=0", [])
+            .execute("DELETE FROM clips WHERE pinned=0 AND keep_forever=0", [])
             .map_err(sql_error)?;
         Ok(())
+    }
+
+    pub fn set_keep_forever(&self, id: i64, keep_forever: bool) -> Result<()> {
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE clips SET keep_forever=?1 WHERE id=?2",
+                params![keep_forever, id],
+            )
+            .map_err(sql_error)?;
+        if changed == 0 {
+            return Err("这条星笺已被删除。".into());
+        }
+        Ok(())
+    }
+
+    fn database_bytes(&self) -> Result<u64> {
+        let Some(path) = self.conn.path().filter(|path| !path.is_empty()) else {
+            return Ok(0);
+        };
+        let database = fs::metadata(path)
+            .map_err(|error| format!("无法读取数据库占用：{error}"))?
+            .len();
+        let wal = match fs::metadata(format!("{path}-wal")) {
+            Ok(metadata) => metadata.len(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(error) => return Err(format!("无法读取数据库日志占用：{error}")),
+        };
+        Ok(database.saturating_add(wal))
+    }
+
+    /// This only reads rows, file sizes and SQLite page statistics; it never prunes.
+    pub fn preview_cleanup(&self, filter: &CleanupFilter) -> Result<CleanupSnapshot> {
+        if !["all", "text", "link", "code", "color"].contains(&filter.kind.as_str()) {
+            return Err("不支持的清理内容类型。".into());
+        }
+        let cutoff = now().saturating_sub(i64::from(filter.older_than_days) * 86_400_000);
+        let mut total_count = 0;
+        let mut protected_count = 0;
+        let mut content_bytes = 0;
+        let mut candidates = Vec::new();
+        let mut stmt = self.conn.prepare("SELECT id,content,title,kind,pinned,group_id,created_at,updated_at,copy_count,language,keep_forever FROM clips").map_err(sql_error)?;
+        for row in stmt.query_map([], clip_from_row).map_err(sql_error)? {
+            let clip = row.map_err(sql_error)?;
+            total_count += 1;
+            if clip.pinned || clip.keep_forever {
+                protected_count += 1;
+                continue;
+            }
+            let bytes = clip_bytes(&clip);
+            if (filter.min_bytes == 0 || bytes > filter.min_bytes)
+                && (filter.older_than_days == 0 || clip.updated_at < cutoff)
+                && (filter.kind == "all" || clip.kind == filter.kind)
+                && (filter.include_grouped || clip.group_id.is_none())
+            {
+                content_bytes += bytes;
+                candidates.push(clip);
+            }
+        }
+        // One exact in-memory snapshot avoids persistent preview tables and trusts no client IDs.
+        candidates.sort_by(|a, b| {
+            clip_bytes(b)
+                .cmp(&clip_bytes(a))
+                .then_with(|| b.id.cmp(&a.id))
+        });
+        let items = candidates
+            .iter()
+            .take(100)
+            .map(|clip| CleanupItem {
+                id: clip.id,
+                title: clip.title.clone(),
+                kind: clip.kind.clone(),
+                bytes: clip_bytes(clip),
+                updated_at: clip.updated_at,
+            })
+            .collect();
+        let page_size: u64 = self
+            .conn
+            .query_row("PRAGMA page_size", [], |row| row.get(0))
+            .map_err(sql_error)?;
+        let free_pages: u64 = self
+            .conn
+            .query_row("PRAGMA freelist_count", [], |row| row.get(0))
+            .map_err(sql_error)?;
+        let preview = CleanupPreview {
+            token: format!(
+                "{:x}-{:x}-{:x}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos(),
+                CLEANUP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ),
+            total_count,
+            protected_count,
+            matched_count: candidates.len(),
+            content_bytes,
+            database_bytes: self.database_bytes()?,
+            reusable_bytes: free_pages.saturating_mul(page_size),
+            items,
+            truncated: candidates.len() > 100,
+        };
+        Ok(CleanupSnapshot {
+            preview,
+            candidates,
+        })
+    }
+
+    fn compact_database(&self) -> Result<()> {
+        self.conn.execute_batch("VACUUM").map_err(sql_error)?;
+        let busy: i64 = self
+            .conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
+            .map_err(sql_error)?;
+        if busy != 0 {
+            return Err("数据库日志仍被其他读取占用，尚未全部释放磁盘空间。".into());
+        }
+        Ok(())
+    }
+
+    pub fn execute_cleanup(
+        &mut self,
+        snapshot: CleanupSnapshot,
+        compact: bool,
+    ) -> Result<CleanupResult> {
+        let before = self.database_bytes()?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(sql_error)?;
+        for expected in &snapshot.candidates {
+            let current = tx.query_row("SELECT id,content,title,kind,pinned,group_id,created_at,updated_at,copy_count,language,keep_forever FROM clips WHERE id=?1", [expected.id], clip_from_row).optional().map_err(sql_error)?;
+            if current.as_ref().is_none_or(|current| {
+                !same_cleanup_record(expected, current) || current.keep_forever || current.pinned
+            }) {
+                return Err(STALE_CLEANUP.into());
+            }
+        }
+        let mut deleted_count = 0;
+        for clip in &snapshot.candidates {
+            let deleted = tx
+                .execute(
+                    "DELETE FROM clips WHERE id=?1 AND pinned=0 AND keep_forever=0",
+                    [clip.id],
+                )
+                .map_err(sql_error)?;
+            if deleted != 1 {
+                return Err(STALE_CLEANUP.into());
+            }
+            deleted_count += deleted;
+        }
+        tx.commit().map_err(sql_error)?;
+        // After this point deletion succeeded. Compaction/stat failures are warnings,
+        // never a false failure that invites the user to repeat destructive work.
+        let mut warning = if compact {
+            self.compact_database()
+                .err()
+                .map(|error| format!("记录已清理，但磁盘整理未完成：{error}"))
+        } else {
+            None
+        };
+        let after = match self.database_bytes() {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let message = format!("{error}；最终占用暂沿用清理前数值，释放量尚无法测量。");
+                warning = Some(match warning {
+                    Some(warning) => format!("{warning}；{message}"),
+                    None => message,
+                });
+                before
+            }
+        };
+        Ok(CleanupResult {
+            deleted_count,
+            content_bytes: snapshot.preview.content_bytes,
+            database_bytes_before: before,
+            database_bytes_after: after,
+            released_bytes: before.saturating_sub(after),
+            warning,
+        })
     }
 
     pub fn prune_history(&self) -> Result<usize> {
@@ -469,11 +749,14 @@ impl Store {
         settings: &Settings,
         timestamp: i64,
     ) -> Result<usize> {
+        if settings.max_history == 0 && settings.retention_days == 0 {
+            return Ok(0);
+        }
         let cutoff = timestamp.saturating_sub(i64::from(settings.retention_days) * 86_400_000);
-        // Keep both limits in one atomic delete. Pins and grouped snippets are never automatic cleanup targets.
-        conn.execute("DELETE FROM clips WHERE pinned=0 AND group_id IS NULL AND (
-            (?2 > 0 AND updated_at < ?3) OR id NOT IN
-            (SELECT id FROM clips WHERE pinned=0 AND group_id IS NULL ORDER BY updated_at DESC,id DESC LIMIT ?1))",
+        // Protected and grouped snippets never consume the ordinary history quota.
+        conn.execute("DELETE FROM clips WHERE pinned=0 AND keep_forever=0 AND group_id IS NULL AND (
+            (?2 > 0 AND updated_at < ?3) OR (?1 > 0 AND id NOT IN
+            (SELECT id FROM clips WHERE pinned=0 AND keep_forever=0 AND group_id IS NULL ORDER BY updated_at DESC,id DESC LIMIT ?1)))",
             params![settings.max_history as i64, settings.retention_days, cutoff]).map_err(sql_error)
     }
 
@@ -571,13 +854,14 @@ impl Store {
                     |row| row.get(0),
                 )
                 .map_err(sql_error)?;
-            tx.execute("INSERT INTO clips(content,title,kind,pinned,group_id,created_at,updated_at,copy_count,language) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)
+            tx.execute("INSERT INTO clips(content,title,kind,pinned,group_id,created_at,updated_at,copy_count,language,keep_forever) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
                 ON CONFLICT(content) DO UPDATE SET pinned=MAX(clips.pinned,excluded.pinned),
+                keep_forever=MAX(clips.keep_forever,excluded.keep_forever),
                 group_id=COALESCE(clips.group_id,excluded.group_id),
                 title=CASE WHEN clips.title='' THEN excluded.title ELSE clips.title END,
                 language=COALESCE(clips.language,excluded.language),
                 kind=CASE WHEN clips.language IS NOT NULL OR excluded.language IS NOT NULL THEN 'code' ELSE clips.kind END",
-                params![clip.content, clip.title, if clip.language.is_some() { "code" } else { classify(&clip.content) }, clip.pinned, group_id, clip.created_at, clip.updated_at, clip.copy_count, clip.language]).map_err(sql_error)?;
+                params![clip.content, clip.title, if clip.language.is_some() { "code" } else { classify(&clip.content) }, clip.pinned, group_id, clip.created_at, clip.updated_at, clip.copy_count, clip.language, clip.keep_forever]).map_err(sql_error)?;
             if !existed {
                 imported += 1;
             }
@@ -593,6 +877,307 @@ mod tests {
     use super::*;
     fn store() -> Store {
         Store::from_connection(Connection::open_in_memory().unwrap()).unwrap()
+    }
+    fn all_cleanup() -> CleanupFilter {
+        CleanupFilter {
+            min_bytes: 0,
+            older_than_days: 0,
+            kind: "all".into(),
+            include_grouped: false,
+        }
+    }
+    struct Scratch(std::path::PathBuf);
+    impl Scratch {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "starclip-cleanup-test-{}-{}",
+                std::process::id(),
+                CLEANUP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn unlimited_history_and_new_protected_records_do_not_consume_capacity() {
+        let db = store();
+        assert_eq!(db.settings().unwrap().max_history, 0);
+        let mut bytes = 0;
+        for index in 0..550 {
+            let content = format!("不限历史：{index}");
+            bytes += content.len() as u64;
+            db.add(&content, "", None).unwrap();
+        }
+        assert_eq!(db.clips().unwrap().len(), 550);
+        let preview = db.preview_cleanup(&all_cleanup()).unwrap().preview;
+        assert_eq!(preview.matched_count, 550);
+        assert_eq!(preview.content_bytes, bytes);
+        assert_eq!(preview.items.len(), 100);
+        assert!(preview.truncated);
+        assert!(preview
+            .items
+            .windows(2)
+            .all(|items| items[0].bytes >= items[1].bytes));
+        let mut settings = db.settings().unwrap();
+        settings.max_history = 50;
+        db.save_settings(&settings).unwrap();
+        let ordinary: Vec<_> = db
+            .clips()
+            .unwrap()
+            .into_iter()
+            .map(|clip| clip.id)
+            .collect();
+        let keep = db
+            .add_protected("新增时即永久保留", "", None, true)
+            .unwrap();
+        assert!(keep.keep_forever);
+        assert_eq!(db.clips().unwrap().len(), 51);
+        for id in ordinary {
+            assert!(db.clip(id).is_ok());
+        }
+        settings.max_history = 0;
+        settings.retention_days = 1;
+        db.conn
+            .execute("UPDATE clips SET updated_at=0", [])
+            .unwrap();
+        db.save_settings(&settings).unwrap();
+        assert_eq!(
+            db.clips().unwrap().len(),
+            1,
+            "unlimited count does not disable the chosen age policy"
+        );
+        assert_eq!(db.clips().unwrap()[0].id, keep.id);
+    }
+
+    #[test]
+    fn permanent_protection_survives_every_mutation_and_backup_merge() {
+        let mut db = store();
+        let keep = db
+            .add_protected("保留原创片段", "初稿", None, true)
+            .unwrap();
+        let pinned = db.add("星标片段", "", None).unwrap();
+        db.update(pinned.id, "", None, true).unwrap();
+        assert!(db.add("保留原创片段", "备注", None).unwrap().keep_forever);
+        db.save_code(Some(keep.id), "代码", "println!(\"星光\");", "rust", None)
+            .unwrap();
+        db.update(keep.id, "取消星标仍保留", None, false).unwrap();
+        assert!(db.clip(keep.id).unwrap().keep_forever);
+        assert!(db.delete(keep.id).unwrap_err().contains("先取消保留"));
+        db.add("可以清理的片段", "", None).unwrap();
+        let mut backup: serde_json::Value = serde_json::from_str(&db.export().unwrap()).unwrap();
+        for clip in backup["clips"].as_array_mut().unwrap() {
+            clip["keepForever"] = false.into();
+        }
+        db.import(&backup.to_string()).unwrap();
+        assert!(
+            db.clip(keep.id).unwrap().keep_forever,
+            "import cannot downgrade existing protection"
+        );
+        let mut restored = store();
+        restored.import(&db.export().unwrap()).unwrap();
+        assert!(restored
+            .clips()
+            .unwrap()
+            .iter()
+            .any(|clip| clip.keep_forever));
+        db.clear_history().unwrap();
+        assert_eq!(db.clips().unwrap().len(), 2);
+        let preview = db.preview_cleanup(&all_cleanup()).unwrap();
+        assert_eq!(preview.preview.protected_count, 2);
+        assert_eq!(preview.preview.matched_count, 0);
+        assert_eq!(db.execute_cleanup(preview, false).unwrap().deleted_count, 0);
+        db.set_keep_forever(keep.id, false).unwrap();
+        db.delete(keep.id).unwrap();
+        assert!(db.clip(keep.id).is_err());
+    }
+
+    #[test]
+    fn cleanup_filters_are_utf8_strict_and_combined_and_preview_is_read_only() {
+        let db = store();
+        db.add("星", "月", None).unwrap(); // 6 UTF-8 bytes
+        db.add("abcd", "ef", None).unwrap(); // exactly the same byte threshold
+        let large = db.add("银河", "夜", None).unwrap(); // 9 bytes
+        let link = db.add("https://example.com", "", None).unwrap();
+        let group = db.create_group("清理测试分组", "#aabbcc").unwrap();
+        db.add("分组内容", "", Some(group.id)).unwrap();
+        let keep = db.add_protected("保留内容", "", None, true).unwrap();
+        db.update(keep.id, "", None, true).unwrap(); // overlapping protection counts once
+        let pin = db.add("星标内容", "", None).unwrap();
+        db.update(pin.id, "", None, true).unwrap();
+        db.conn
+            .execute("UPDATE clips SET updated_at=0", [])
+            .unwrap();
+        db.add("fresh text", "", None).unwrap();
+        let changes = db.conn.total_changes();
+        let mut filter = CleanupFilter {
+            min_bytes: 6,
+            older_than_days: 1,
+            kind: "text".into(),
+            include_grouped: false,
+        };
+        let preview = db.preview_cleanup(&filter).unwrap().preview;
+        assert_eq!(db.conn.total_changes(), changes);
+        assert_eq!(preview.total_count, 8);
+        assert_eq!(preview.protected_count, 2);
+        assert_eq!(preview.matched_count, 1);
+        assert_eq!(preview.content_bytes, 9);
+        assert_eq!(preview.items[0].id, large.id);
+        filter.include_grouped = true;
+        let grouped = db.preview_cleanup(&filter).unwrap().preview;
+        assert_eq!((grouped.matched_count, grouped.content_bytes), (2, 21));
+        filter.include_grouped = false;
+        filter.kind = "all".into();
+        let both = db.preview_cleanup(&filter).unwrap().preview;
+        assert_eq!(both.matched_count, 2);
+        assert!(both.items.iter().any(|item| item.id == link.id));
+        assert_eq!(
+            db.preview_cleanup(&all_cleanup())
+                .unwrap()
+                .preview
+                .matched_count,
+            5
+        );
+        filter.kind = "invalid".into();
+        assert!(db.preview_cleanup(&filter).is_err());
+    }
+
+    #[test]
+    fn stale_cleanup_checks_all_sensitive_fields_and_rolls_back() {
+        for change in [
+            "content='变更正文'",
+            "title='变更备注'",
+            "updated_at=updated_at+1",
+            "group_id=1",
+            "pinned=1",
+            "keep_forever=1",
+            "kind='code'",
+        ] {
+            let mut db = store();
+            db.create_group("备选分组", "#ffffff").unwrap();
+            db.add("未变化的原创片段", "", None).unwrap();
+            let clip = db.add("预览中的片段", "", None).unwrap();
+            let snapshot = db.preview_cleanup(&all_cleanup()).unwrap();
+            db.conn
+                .execute(&format!("UPDATE clips SET {change} WHERE id=?1"), [clip.id])
+                .unwrap();
+            assert_eq!(
+                db.execute_cleanup(snapshot, false).unwrap_err(),
+                STALE_CLEANUP
+            );
+            assert_eq!(
+                db.clips().unwrap().len(),
+                2,
+                "{change} must not partially delete other candidates"
+            );
+        }
+        let mut db = store();
+        let old = db.add("被删除的预览项", "", None).unwrap();
+        let snapshot = db.preview_cleanup(&all_cleanup()).unwrap();
+        db.delete(old.id).unwrap();
+        let replacement = db.add("新记录复用了最大编号", "", None).unwrap();
+        assert_eq!(replacement.id, old.id);
+        assert_eq!(
+            db.execute_cleanup(snapshot, false).unwrap_err(),
+            STALE_CLEANUP
+        );
+        assert!(db.clip(replacement.id).is_ok());
+    }
+
+    #[test]
+    fn cleanup_does_not_delete_new_records_and_failed_delete_is_atomic() {
+        let mut db = store();
+        let first = db.add("预览片段一", "", None).unwrap();
+        db.add("预览片段二", "", None).unwrap();
+        let preview = db.preview_cleanup(&all_cleanup()).unwrap();
+        let new = db.add("确认之前新收录", "", None).unwrap();
+        db.mark_copied(first.id).unwrap(); // copy statistics are not a content edit
+        let result = db.execute_cleanup(preview, false).unwrap();
+        assert_eq!(result.deleted_count, 2);
+        assert_eq!(db.clips().unwrap().len(), 1);
+        assert_eq!(db.clips().unwrap()[0].id, new.id);
+        db.add("另一条不能丢失的记录", "", None).unwrap();
+        let preview = db.preview_cleanup(&all_cleanup()).unwrap();
+        db.conn.execute_batch("CREATE TRIGGER fail_delete BEFORE DELETE ON clips WHEN old.content='确认之前新收录' BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END;").unwrap();
+        assert!(db.execute_cleanup(preview, false).is_err());
+        assert_eq!(db.clips().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn compaction_reports_actual_wal_file_reduction_and_handles_empty_match() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("cleanup.sqlite3");
+        let mut db = Store::open(&path).unwrap();
+        db.conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+        db.conn
+            .pragma_update(None, "wal_autocheckpoint", 0)
+            .unwrap();
+        let tx = db.conn.unchecked_transaction().unwrap();
+        for index in 0..128 {
+            tx.execute(
+                "INSERT INTO clips(content,kind,created_at,updated_at) VALUES(?1,'text',0,0)",
+                [format!("原创建库 {index} {}", "星".repeat(5500))],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+        let before_preview = db.preview_cleanup(&all_cleanup()).unwrap();
+        assert_eq!(
+            before_preview.preview.database_bytes,
+            fs::metadata(&path).unwrap().len()
+                + fs::metadata(format!("{}-wal", path.display()))
+                    .unwrap()
+                    .len()
+        );
+        let expected_content_bytes = before_preview.preview.content_bytes;
+        let result = db.execute_cleanup(before_preview, false).unwrap();
+        assert_eq!(result.deleted_count, 128);
+        assert_eq!(result.content_bytes, expected_content_bytes);
+        assert_eq!(
+            result.released_bytes, 0,
+            "deletion alone does not claim free disk space"
+        );
+        let empty = db.preview_cleanup(&all_cleanup()).unwrap();
+        assert_eq!(empty.preview.matched_count, 0);
+        assert!(empty.preview.reusable_bytes > 0);
+        let result = db.execute_cleanup(empty, true).unwrap();
+        assert_eq!(result.deleted_count, 0);
+        assert!(result.warning.is_none());
+        assert!(result.database_bytes_after < result.database_bytes_before);
+        assert_eq!(
+            result.released_bytes,
+            result.database_bytes_before - result.database_bytes_after
+        );
+        assert_eq!(result.database_bytes_after, db.database_bytes().unwrap());
+        assert!(db.clips().unwrap().is_empty());
+    }
+
+    #[test]
+    fn checkpoint_failure_returns_committed_deletion_with_warning() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("cleanup.sqlite3");
+        let mut db = Store::open(&path).unwrap();
+        db.conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+        db.conn
+            .busy_timeout(std::time::Duration::from_millis(20))
+            .unwrap();
+        db.add("整理失败但删除事务成功", "", None).unwrap();
+        let reader = Connection::open(&path).unwrap();
+        reader
+            .execute_batch("BEGIN; SELECT count(*) FROM clips;")
+            .unwrap();
+        let preview = db.preview_cleanup(&all_cleanup()).unwrap();
+        let result = db.execute_cleanup(preview, true).unwrap();
+        assert_eq!(result.deleted_count, 1);
+        assert!(result.warning.as_deref().unwrap().contains("整理未完成"));
+        assert!(db.clips().unwrap().is_empty());
+        assert_eq!(result.database_bytes_after, db.database_bytes().unwrap());
+        reader.execute_batch("ROLLBACK").unwrap();
     }
 
     #[test]
@@ -729,9 +1314,15 @@ mod tests {
         let settings = db.settings().unwrap();
         assert!(!settings.always_on_top);
         assert!(settings.show_startup);
+        assert_eq!(settings.sticker_pack, "auto");
+        assert_eq!(
+            settings.max_history, 500,
+            "legacy configured limits remain unchanged"
+        );
         assert_eq!(settings.retention_days, 0);
         assert_eq!(settings.layout, "list");
         assert_eq!(db.clips().unwrap()[0].language, None);
+        assert!(!db.clips().unwrap()[0].keep_forever);
         assert_eq!(
             db.conn
                 .query_row(
@@ -748,12 +1339,17 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("language");
+        old_backup["clips"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("keepForever");
         let mut destination = store();
         let mut updated = settings.clone();
         updated.layout = "horizontal".into();
         updated.always_on_top = true;
         updated.retention_days = 7;
         updated.show_startup = false;
+        updated.sticker_pack = "cats".into();
         for theme in ["forest", "rose"] {
             updated.theme = theme.into();
             destination.save_settings(&updated).unwrap();
@@ -763,6 +1359,7 @@ mod tests {
         assert_eq!(destination.import(&old_backup.to_string()).unwrap(), 1);
         assert_eq!(destination.settings().unwrap(), updated);
         assert!(destination.clips().unwrap()[0].pinned);
+        assert!(!destination.clips().unwrap()[0].keep_forever);
         updated.retention_days = 2;
         assert!(destination.save_settings(&updated).is_err());
         assert_eq!(destination.settings().unwrap().retention_days, 7);

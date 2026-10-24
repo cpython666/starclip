@@ -1,4 +1,4 @@
-import type { AppState, Clip, DataDirectoryMode, DataDirectoryPlan, DataLocation, Group, HandwritingAssets, HandwritingOptions, Settings } from './types';
+import type { AppState, Clip, CleanupFilter, CleanupPreview, CleanupResult, DataDirectoryMode, DataDirectoryPlan, DataLocation, Group, HandwritingAssets, HandwritingOptions, Settings } from './types';
 import { download, languages } from './snippets';
 
 export const isDesktop = '__TAURI_INTERNALS__' in window;
@@ -14,9 +14,9 @@ const samples: Array<Pick<Clip, 'title' | 'content' | 'kind' | 'language' | 'gro
   { title: 'MDN Web 文档', content: 'https://developer.mozilla.org/zh-CN/', kind: 'link', language: null, groupId: 2, pinned: false },
 ];
 let demo: AppState = {
-  clips: samples.map((clip, i) => ({ ...clip, id: i + 1, createdAt: now - i * 1800000, updatedAt: now - i * 1800000, copyCount: i === 1 ? 12 : 0 })),
+  clips: samples.map((clip, i) => ({ ...clip, keepForever: false, id: i + 1, createdAt: now - i * 1800000, updatedAt: now - i * 1800000, copyCount: i === 1 ? 12 : 0 })),
   groups: [{ id: 1, name: '灵感碎片', color: '#d9b780' }, { id: 2, name: '开发工具箱', color: '#87bab6' }, { id: 3, name: '设计收藏', color: '#b69bd7' }],
-  settings: { paused: true, showStartup: true, theme: 'dark', layout: 'grid', maxHistory: 500, retentionDays: 0, alwaysOnTop: false, shortcut: 'CommandOrControl+Shift+V' },
+  settings: { paused: true, showStartup: true, stickerPack: 'auto', theme: 'dark', layout: 'grid', maxHistory: 0, retentionDays: 0, alwaysOnTop: false, shortcut: 'CommandOrControl+Shift+V' },
   clipboardError: null, shortcutError: null, windowError: null,
 };
 // ponytail: browser preview stays in memory; only the native app persists real history.
@@ -26,8 +26,12 @@ function pruneDemo() {
   const cutoff = retentionDays === 0 ? -Infinity : Date.now() - retentionDays * 86400000;
   let historyCount = 0;
   demo.clips = demo.clips.sort((a, b) => b.updatedAt - a.updatedAt || b.id - a.id).filter(clip =>
-    clip.pinned || clip.groupId !== null || (clip.updatedAt >= cutoff && ++historyCount <= maxHistory));
+    clip.pinned || clip.keepForever || clip.groupId !== null || (clip.updatedAt >= cutoff && (maxHistory === 0 || ++historyCount <= maxHistory)));
 }
+let cleanupSequence = 0;
+let pendingCleanup: { token: string; clips: Clip[] } | null = null;
+const contentBytes = (clip: Clip) => new TextEncoder().encode(clip.content).length + new TextEncoder().encode(clip.title).length;
+const cleanupFingerprint = (clip: Clip) => JSON.stringify([clip.id, clip.content, clip.title, clip.kind, clip.language, clip.pinned, clip.keepForever, clip.groupId, clip.createdAt, clip.updatedAt]);
 function changed() { listeners.forEach((listener) => listener()); }
 function id() { return Math.max(0, ...demo.clips.map((clip) => clip.id)) + 1; }
 function requiredClip(clipId: number) { const clip = demo.clips.find((item) => item.id === clipId); if (!clip) throw new Error('记录不存在'); return clip; }
@@ -41,6 +45,33 @@ function classify(content: string): Clip['kind'] {
 async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> { return (await import('@tauri-apps/api/core')).invoke<T>(command, args); }
 
 export const api = {
+  async setKeepForever(id: number, keepForever: boolean): Promise<void> {
+    if (isDesktop) return invoke('set_keep_forever', { id, keepForever });
+    requiredClip(id).keepForever = keepForever; changed();
+  },
+  async previewCleanup(filter: CleanupFilter): Promise<CleanupPreview> {
+    if (isDesktop) return invoke('preview_cleanup', { filter });
+    if (!Number.isSafeInteger(filter.minBytes) || filter.minBytes < 0 || !Number.isSafeInteger(filter.olderThanDays) || filter.olderThanDays < 0 || filter.olderThanDays > 36500 || !['all', 'text', 'link', 'code', 'color'].includes(filter.kind) || typeof filter.includeGrouped !== 'boolean') throw new Error('清理条件无效，请检查大小和天数。');
+    const cutoff = Date.now() - filter.olderThanDays * 86400000;
+    const clips = demo.clips.filter(c => !c.pinned && !c.keepForever && (filter.includeGrouped || c.groupId === null)
+      && (filter.minBytes === 0 || contentBytes(c) > filter.minBytes)
+      && (filter.olderThanDays === 0 || c.updatedAt < cutoff) && (filter.kind === 'all' || c.kind === filter.kind));
+    const token = `demo-${++cleanupSequence}`;
+    pendingCleanup = { token, clips: structuredClone(clips) };
+    return { token, totalCount: demo.clips.length, protectedCount: demo.clips.filter(c => c.pinned || c.keepForever).length,
+      matchedCount: clips.length, contentBytes: clips.reduce((sum, c) => sum + contentBytes(c), 0), databaseBytes: 0, reusableBytes: 0,
+      items: clips.map(c => ({ id: c.id, title: c.title || c.content.slice(0, 44), kind: c.kind, bytes: contentBytes(c), updatedAt: c.updatedAt })).sort((a, b) => b.bytes - a.bytes || a.id - b.id).slice(0, 100), truncated: clips.length > 100 };
+  },
+  async executeCleanup(token: string, compact: boolean): Promise<CleanupResult> {
+    if (isDesktop) return invoke('execute_cleanup', { token, compact });
+    const pending = pendingCleanup; pendingCleanup = null;
+    if (!pending || pending.token !== token) throw new Error('预览已失效，请重新预览。');
+    const current = new Map(demo.clips.map(c => [c.id, c]));
+    if (pending.clips.some(c => !current.has(c.id) || cleanupFingerprint(current.get(c.id)!) !== cleanupFingerprint(c))) throw new Error('待清理记录已变化，请重新预览。');
+    const targets = new Set(pending.clips.map(c => c.id));
+    demo.clips = demo.clips.filter(c => !targets.has(c.id)); changed();
+    return { deletedCount: pending.clips.length, contentBytes: pending.clips.reduce((sum, c) => sum + contentBytes(c), 0), databaseBytesBefore: 0, databaseBytesAfter: 0, releasedBytes: 0, warning: '浏览器演示仅整理内存样例，不会释放本机磁盘空间。' };
+  },
   async getDataLocation(): Promise<DataLocation> {
     if (!isDesktop) throw new Error('请在桌面版查看和管理数据目录。');
     return invoke('get_data_location');
@@ -72,24 +103,25 @@ export const api = {
     return invoke('render_handwriting', { options });
   },
   async getState(): Promise<AppState> { return isDesktop ? invoke('get_state') : structuredClone(demo); },
-  async addClip(content: string, title: string, groupId: number | null): Promise<Clip> {
-    if (isDesktop) return invoke('add_clip', { content, title, groupId });
+  async addClip(content: string, title: string, groupId: number | null, keepForever = false): Promise<Clip> {
+    if (isDesktop) return invoke('add_clip', { content, title, groupId, keepForever });
     validateContent(content);
     const existing = demo.clips.find((clip) => clip.content === content);
     if (existing) {
       existing.updatedAt = Date.now();
+      existing.keepForever ||= keepForever;
       if (title.trim()) existing.title = title.trim();
       if (groupId !== null) existing.groupId = groupId;
       pruneDemo(); changed(); return structuredClone(existing);
     }
-    const clip: Clip = { id: id(), content, title, groupId, kind: classify(content), language: null, pinned: false, createdAt: Date.now(), updatedAt: Date.now(), copyCount: 0 };
+    const clip: Clip = { id: id(), content, title, groupId, kind: classify(content), language: null, pinned: false, keepForever, createdAt: Date.now(), updatedAt: Date.now(), copyCount: 0 };
     demo.clips.unshift(clip); pruneDemo(); changed(); return structuredClone(clip);
   },
   async updateClip(id: number, title: string, groupId: number | null, pinned: boolean): Promise<void> {
     if (isDesktop) return invoke('update_clip', { id, title, groupId, pinned });
     Object.assign(requiredClip(id), { title: title.trim(), groupId, pinned }); changed();
   },
-  async deleteClip(id: number): Promise<void> { if (isDesktop) return invoke('delete_clip', { id }); demo.clips = demo.clips.filter((clip) => clip.id !== id); changed(); },
+  async deleteClip(id: number): Promise<void> { if (isDesktop) return invoke('delete_clip', { id }); if (requiredClip(id).keepForever) throw new Error('请先取消这条记录的永久保留，再删除。'); demo.clips = demo.clips.filter((clip) => clip.id !== id); pendingCleanup = null; changed(); },
   async copyClip(id: number): Promise<void> {
     if (isDesktop) return invoke('copy_clip', { id });
     const clip = requiredClip(id); await navigator.clipboard.writeText(clip.content); clip.copyCount++; changed();
@@ -106,14 +138,15 @@ export const api = {
     if (isDesktop) return invoke('save_settings', { settings });
     if (typeof settings.paused !== 'boolean' || typeof settings.alwaysOnTop !== 'boolean' || typeof settings.showStartup !== 'boolean'
       || !['dark', 'light', 'forest', 'rose', 'system'].includes(settings.theme) || !['grid', 'list', 'horizontal'].includes(settings.layout)
-      || !Number.isSafeInteger(settings.maxHistory) || settings.maxHistory < 50 || settings.maxHistory > 10000
+      || !['auto', 'none', 'cosmos', 'cats', 'puppies', 'garden'].includes(settings.stickerPack)
+      || !Number.isSafeInteger(settings.maxHistory) || (settings.maxHistory !== 0 && (settings.maxHistory < 50 || settings.maxHistory > 10000))
       || ![0, 1, 7, 30, 90, 180, 365].includes(settings.retentionDays)
       || typeof settings.shortcut !== 'string' || !settings.shortcut.trim() || settings.shortcut.length > 80) {
       throw new Error('设置无效：请检查布局、历史上限、保留时长与快捷键。');
     }
     demo.settings = { ...settings }; pruneDemo(); changed();
   },
-  async clearHistory(): Promise<void> { if (isDesktop) return invoke('clear_history'); demo.clips = demo.clips.filter((clip) => clip.pinned); changed(); },
+  async clearHistory(): Promise<void> { if (isDesktop) return invoke('clear_history'); demo.clips = demo.clips.filter((clip) => clip.pinned || clip.keepForever); pendingCleanup = null; changed(); },
   async exportBackup(): Promise<string> {
     if (isDesktop) return invoke('export_backup');
     const data = JSON.stringify({ format: 'starclip', version: 1, exportedAt: Date.now(), clips: demo.clips, groups: demo.groups }, null, 2);
@@ -138,13 +171,23 @@ export const api = {
     for (const clip of backup.clips as Clip[]) {
       if (!clip || typeof clip.content !== 'string' || typeof clip.title !== 'string' || clip.title.length > 200 || typeof clip.pinned !== 'boolean' || !Number.isFinite(clip.createdAt) || !Number.isFinite(clip.updatedAt) || !Number.isSafeInteger(clip.copyCount) || clip.copyCount < 0) throw new Error('备份条目无效');
       validateContent(clip.content);
+      if (clip.keepForever !== undefined && typeof clip.keepForever !== 'boolean') throw new Error('备份保留标记无效');
       if (clip.language != null && !languages.some(([key]) => key === clip.language)) throw new Error('未知的代码语言');
       if (clip.groupId != null && !groupMap.has(clip.groupId)) throw new Error('分组引用无效');
-      if (next.clips.some((c) => c.content === clip.content)) continue;
-      next.clips.push({ ...clip, id: Math.max(0, ...next.clips.map((c) => c.id)) + 1, groupId: clip.groupId == null ? null : groupMap.get(clip.groupId)!, language: clip.language ?? null, kind: clip.language ? 'code' : classify(clip.content) }); added++;
+      const existing = next.clips.find(c => c.content === clip.content);
+      if (existing) {
+        existing.keepForever ||= clip.keepForever ?? false;
+        existing.pinned ||= clip.pinned;
+        existing.groupId ??= clip.groupId == null ? null : groupMap.get(clip.groupId)!;
+        if (!existing.title) existing.title = clip.title;
+        existing.language ??= clip.language ?? null;
+        if (existing.language) existing.kind = 'code';
+        continue;
+      }
+      next.clips.push({ ...clip, keepForever: clip.keepForever ?? false, id: Math.max(0, ...next.clips.map((c) => c.id)) + 1, groupId: clip.groupId == null ? null : groupMap.get(clip.groupId)!, language: clip.language ?? null, kind: clip.language ? 'code' : classify(clip.content) }); added++;
     }
     // Import preserves the complete backup; only explicit capture/settings changes apply retention.
-    demo = next; changed(); return added;
+    demo = next; pendingCleanup = null; changed(); return added;
   },
   async saveBackup(): Promise<boolean> {
     if (isDesktop) return invoke('save_backup');
@@ -157,7 +200,7 @@ export const api = {
     const conflict = demo.clips.find((clip) => clip.content === content && clip.id !== id);
     if (conflict) throw new Error('相同内容已存在，请编辑已有记录');
     const actual: Clip = id == null
-      ? { id: Math.max(0, ...demo.clips.map(clip => clip.id)) + 1, content, title: title.trim(), groupId, kind: 'code', language, pinned: true, createdAt: Date.now(), updatedAt: Date.now(), copyCount: 0 }
+      ? { id: Math.max(0, ...demo.clips.map(clip => clip.id)) + 1, content, title: title.trim(), groupId, kind: 'code', language, pinned: true, keepForever: false, createdAt: Date.now(), updatedAt: Date.now(), copyCount: 0 }
       : requiredClip(id);
     Object.assign(actual, { title: title.trim(), content, language, kind: 'code', groupId, pinned: true, updatedAt: Date.now() });
     if (id == null) demo.clips.unshift(actual);

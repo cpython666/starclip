@@ -42,10 +42,10 @@ test('demo backup import keeps all records and only explicit capture/settings ch
   assert.equal(groupedAgain.groupId, grouped.groupId, 'empty capture group preserves existing group');
   assert.equal(groupedAgain.title, grouped.title);
 
-  await api.saveSettings({ ...original.settings, retentionDays: 0 });
+  await api.saveSettings({ ...original.settings, retentionDays: 0, maxHistory: 500 });
   assert.equal(await api.importBackup(backup('超过五百条', Date.now())), 600);
   assert((await api.getState()).clips.filter((clip: { content: string }) => clip.content.startsWith('超过五百条')).length === 600);
-  await api.saveSettings({ ...original.settings, retentionDays: 0 });
+  await api.saveSettings({ ...original.settings, retentionDays: 0, maxHistory: 500 });
   const ordinaryCount = async () => (await api.getState()).clips.filter((clip: { pinned: boolean; groupId: number | null }) => !clip.pinned && clip.groupId === null).length;
   assert.equal(await ordinaryCount(), 500, 'saving settings explicitly applies capacity');
   await api.saveCode(null, '新收藏不会挤出历史', 'const stars = 42;', 'javascript', null);

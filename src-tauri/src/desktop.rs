@@ -1,5 +1,8 @@
 use crate::storage::{DataDirectoryPlan, DataLocation, DirectoryMode, Storage};
-use crate::store::{Clip, Group, Result, Settings, Store};
+use crate::store::{
+    CleanupFilter, CleanupPreview, CleanupResult, CleanupSnapshot, Clip, Group, Result, Settings,
+    Store, STALE_CLEANUP,
+};
 use arboard::Clipboard;
 use serde::Serialize;
 use std::{
@@ -30,6 +33,7 @@ struct Context {
     clipboard_error: Mutex<Option<String>>,
     shortcut_error: Mutex<Option<String>>,
     window_error: Mutex<Option<String>>,
+    cleanup: Mutex<Option<CleanupSnapshot>>,
 }
 type AppContext<'a> = State<'a, Arc<Context>>;
 fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>> {
@@ -91,9 +95,15 @@ fn add_clip(
     content: String,
     title: String,
     group_id: Option<i64>,
+    keep_forever: Option<bool>,
 ) -> Result<Clip> {
     let _write = write_guard(&context)?;
-    let clip = lock(&context.store)?.add(&content, &title, group_id)?;
+    let clip = lock(&context.store)?.add_protected(
+        &content,
+        &title,
+        group_id,
+        keep_forever.unwrap_or(false),
+    )?;
     changed(&app);
     Ok(clip)
 }
@@ -130,6 +140,7 @@ fn save_code(
 fn delete_clip(app: AppHandle, context: AppContext<'_>, id: i64) -> Result<()> {
     let _write = write_guard(&context)?;
     lock(&context.store)?.delete(id)?;
+    *lock(&context.cleanup)? = None;
     changed(&app);
     Ok(())
 }
@@ -242,8 +253,62 @@ fn save_settings(app: AppHandle, context: AppContext<'_>, settings: Settings) ->
 fn clear_history(app: AppHandle, context: AppContext<'_>) -> Result<()> {
     let _write = write_guard(&context)?;
     lock(&context.store)?.clear_history()?;
+    *lock(&context.cleanup)? = None;
     changed(&app);
     Ok(())
+}
+#[tauri::command]
+fn set_keep_forever(
+    app: AppHandle,
+    context: AppContext<'_>,
+    id: i64,
+    keep_forever: bool,
+) -> Result<()> {
+    let _write = write_guard(&context)?;
+    lock(&context.store)?.set_keep_forever(id, keep_forever)?;
+    changed(&app);
+    Ok(())
+}
+#[tauri::command]
+async fn preview_cleanup(context: AppContext<'_>, filter: CleanupFilter) -> Result<CleanupPreview> {
+    let context = context.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _write = write_guard(&context)?;
+        let mut pending = lock(&context.cleanup)?;
+        // A failed replacement preview also invalidates the old confirmation.
+        *pending = None;
+        let snapshot = lock(&context.store)?.preview_cleanup(&filter)?;
+        let preview = snapshot.preview.clone();
+        *pending = Some(snapshot);
+        Ok(preview)
+    })
+    .await
+    .map_err(|_| "清理预览任务失败。".to_string())?
+}
+#[tauri::command]
+async fn execute_cleanup(
+    app: AppHandle,
+    context: AppContext<'_>,
+    token: String,
+    compact: bool,
+) -> Result<CleanupResult> {
+    let context = context.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _write = write_guard(&context)?;
+        let mut pending = lock(&context.cleanup)?;
+        if pending
+            .as_ref()
+            .is_none_or(|snapshot| snapshot.preview.token != token)
+        {
+            return Err(STALE_CLEANUP.into());
+        }
+        let snapshot = pending.take().ok_or(STALE_CLEANUP)?;
+        let result = lock(&context.store)?.execute_cleanup(snapshot, compact)?;
+        changed(&app);
+        Ok(result)
+    })
+    .await
+    .map_err(|_| "清理任务失败，请刷新预览确认当前状态。".to_string())?
 }
 #[tauri::command]
 fn export_backup(context: AppContext<'_>) -> Result<String> {
@@ -253,6 +318,7 @@ fn export_backup(context: AppContext<'_>) -> Result<String> {
 fn import_backup(app: AppHandle, context: AppContext<'_>, data: String) -> Result<usize> {
     let _write = write_guard(&context)?;
     let count = lock(&context.store)?.import(&data)?;
+    *lock(&context.cleanup)? = None;
     changed(&app);
     Ok(count)
 }
@@ -678,6 +744,7 @@ pub fn run() {
                 clipboard_error: Mutex::new(None),
                 shortcut_error: Mutex::new(shortcut_error),
                 window_error: Mutex::new(window_error),
+                cleanup: Mutex::new(None),
             });
             app.manage(context.clone());
             let show = MenuItem::with_id(app, "show", "打开星笺", true, None::<&str>)?;
@@ -741,6 +808,9 @@ pub fn run() {
             delete_group,
             save_settings,
             clear_history,
+            set_keep_forever,
+            preview_cleanup,
+            execute_cleanup,
             export_backup,
             import_backup,
             save_backup,
