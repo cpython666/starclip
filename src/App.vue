@@ -8,12 +8,18 @@ import StartupScreen from './components/StartupScreen.vue'
 import DataSettings from './components/DataSettings.vue'
 import CleanupPanel from './components/CleanupPanel.vue'
 import StickerScene from './components/StickerScene.vue'
+import OnboardingGuide from './components/OnboardingGuide.vue'
 
-const state = ref<AppState>({ clips: [], groups: [], settings: { paused: true, theme: 'dark', layout: 'grid', maxHistory: 0, retentionDays: 0, alwaysOnTop: false, showStartup: true, stickerPack: 'auto', shortcut: 'CommandOrControl+Shift+V' }, clipboardError: null, shortcutError: null, windowError: null })
+const state = ref<AppState>({ onboardingCompleted: true, clips: [], groups: [], settings: { paused: true, theme: 'dark', layout: 'grid', maxHistory: 0, retentionDays: 0, alwaysOnTop: false, showStartup: true, stickerPack: 'auto', shortcut: 'CommandOrControl+Shift+V' }, clipboardError: null, shortcutError: null, windowError: null })
 const loading = ref(true)
 const busy = ref(false)
 const dataBusy = ref(false)
 const startupVisible = ref(false)
+const firstGuidePending = ref(false)
+const guideVisible = ref(false)
+const guideBusy = ref(false)
+const guideError = ref('')
+const tutorialButton = ref<HTMLButtonElement>()
 const filter = ref('all')
 const query = ref('')
 const selected = ref<number | null>(null)
@@ -33,6 +39,17 @@ const groupName = ref('')
 const groupColor = ref('#8b93d9')
 const settingsDraft = ref<Settings>({ ...state.value.settings })
 const settingsSaving = ref(false)
+const settingsTabs = [
+  { key: 'appearance', label: '外观', icon: 'moon' },
+  { key: 'habits', label: '使用习惯', icon: 'sliders' },
+  { key: 'privacy', label: '记录与隐私', icon: 'shield' },
+  { key: 'data', label: '数据管理', icon: 'folder' },
+  { key: 'help', label: '帮助', icon: 'spark' },
+] as const
+type SettingsTab = typeof settingsTabs[number]['key']
+const settingsTab = ref<SettingsTab>('appearance')
+const settingsScroll = ref<HTMLElement>()
+const dataTabVisited = ref(false)
 const settingsDirty = computed(() => (Object.keys(settingsDraft.value) as Array<keyof Settings>).some(key => settingsDraft.value[key] !== state.value.settings[key]))
 const toast = ref('')
 const toastError = ref(false)
@@ -111,7 +128,45 @@ function openGroup() { groupName.value = ''; groupColor.value = colors[state.val
 async function saveGroup() { if (!groupName.value.trim()) return notify('请为星座起一个名字', true); await run(async () => { const group = await api.createGroup(groupName.value.trim(), groupColor.value); filter.value = `group-${group.id}`; modal.value = '' }, '分组已创建') }
 function closeModal() { if (!dataBusy.value && !busy.value) modal.value = '' }
 function replayStartup() { if (!dataBusy.value) startupVisible.value = true }
-function openSettings() { settingsDraft.value = { ...state.value.settings }; modal.value = 'settings' }
+function openSettings() { settingsDraft.value = { ...state.value.settings }; dataTabVisited.value = settingsTab.value === 'data'; modal.value = 'settings' }
+function changeSettingsTab(tab: SettingsTab) {
+  if (busy.value || dataBusy.value) return
+  settingsTab.value = tab
+  if (tab === 'data') dataTabVisited.value = true
+  void nextTick(() => settingsScroll.value?.scrollTo({ top: 0 }))
+}
+function settingsTabKeyboard(event: KeyboardEvent) {
+  if (event.altKey || event.ctrlKey || event.metaKey || event.isComposing || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+  event.preventDefault()
+  if (busy.value || dataBusy.value) return
+  const index = settingsTabs.findIndex(tab => tab.key === settingsTab.value)
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? settingsTabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + settingsTabs.length) % settingsTabs.length
+  const tab = settingsTabs[next]!.key
+  changeSettingsTab(tab)
+  void nextTick(() => dialog.value?.querySelector<HTMLButtonElement>(`#settings-tab-${tab}`)?.focus())
+}
+function finishStartup() {
+  startupVisible.value = false
+  if (firstGuidePending.value) { firstGuidePending.value = false; guideVisible.value = true }
+}
+function openGuide() {
+  if (busy.value || dataBusy.value) return
+  guideError.value = ''; guideVisible.value = true
+}
+function dismissGuide() {
+  guideVisible.value = false; guideError.value = ''
+  void nextTick(() => tutorialButton.value?.focus())
+}
+async function finishGuide() {
+  if (guideBusy.value) return
+  guideBusy.value = true; guideError.value = ''
+  try {
+    if (!state.value.onboardingCompleted) await api.completeOnboarding()
+    state.value.onboardingCompleted = true
+    dismissGuide()
+  } catch (error) { guideError.value = String(error) }
+  finally { guideBusy.value = false }
+}
 async function saveSettings() {
   if (busy.value || dataBusy.value || !settingsDirty.value) return
   settingsSaving.value = true
@@ -142,6 +197,7 @@ function keyboard(event: KeyboardEvent) {
   const target = event.target as HTMLElement
   const typing = target.matches('input, textarea, select') || target.isContentEditable
   const modifier = event.metaKey || event.ctrlKey
+  if (guideVisible.value) { if (modifier && event.key.toLowerCase() === 's') event.preventDefault(); return }
   if (startupVisible.value || studioOpen.value || event.isComposing) return
   if (modal.value === 'settings' && modifier && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 's') {
     event.preventDefault()
@@ -175,13 +231,14 @@ function keyboard(event: KeyboardEvent) {
     if (clip) { event.preventDefault(); void copy(clip) }
   } else if (event.key === 'Escape') { if (query.value) query.value = ''; else if (isDesktop) void api.hideWindow() }
 }
-onMounted(async () => { await refresh(); startupVisible.value = state.value.settings.showStartup; unsubscribe = await api.onChange(() => { void refresh() }); window.addEventListener('keydown', keyboard); systemTheme.addEventListener('change', applyTheme) })
+onMounted(async () => { await refresh(); firstGuidePending.value = !state.value.onboardingCompleted; startupVisible.value = state.value.settings.showStartup; if (!startupVisible.value) finishStartup(); unsubscribe = await api.onChange(() => { void refresh() }); window.addEventListener('keydown', keyboard); systemTheme.addEventListener('change', applyTheme) })
 onUnmounted(() => { unsubscribe?.(); clearTimeout(toastTimer); clearTimeout(copyTimer); window.removeEventListener('keydown', keyboard); systemTheme.removeEventListener('change', applyTheme) })
 </script>
 
 <template>
-  <StartupScreen v-if="startupVisible" @done="startupVisible = false" />
-  <div class="app-shell" :inert="startupVisible">
+  <StartupScreen v-if="startupVisible" @done="finishStartup" />
+  <OnboardingGuide v-if="guideVisible" :busy="guideBusy" :error="guideError" :theme="resolvedTheme" @finish="finishGuide" @dismiss="dismissGuide" />
+  <div class="app-shell" :inert="startupVisible || guideVisible">
     <aside class="sidebar">
       <a class="brand" href="#" @click.prevent="filter = 'all'" aria-label="星笺首页"><span class="brand-mark"><Icon name="spark" :size="27" /><i /></span><span><strong>星笺<span class="brand-dot">.</span></strong><small>STARCLIP</small></span></a>
       <div class="workspace-label"><span class="workspace-orbit" />我的星空 <span class="local-badge">LOCAL</span></div>
@@ -225,15 +282,40 @@ onUnmounted(() => { unsubscribe?.(); clearTimeout(toastTimer); clearTimeout(copy
         </form>
         <form v-else-if="modal === 'group'" @submit.prevent="saveGroup"><p class="modal-intro">把常用片段放在一起，下次相遇更容易。</p><label>星座名称<input v-model="groupName" maxlength="40" placeholder="例如：工作碎片、值得一读" required autofocus /></label><label class="color-label">标记颜色<div class="color-choices"><button v-for="color in colors" :key="color" type="button" :style="{ background: color }" :class="{ chosen: groupColor === color }" :aria-label="`选择颜色 ${color}`" :aria-pressed="groupColor === color" @click="groupColor = color"><Icon v-if="groupColor === color" name="check" :size="16" /></button></div></label><div class="modal-actions"><button type="button" class="button subtle" :disabled="dataBusy" @click="closeModal">取消</button><button class="button primary" :disabled="busy || dataBusy || !groupName.trim()">创建分组<Icon name="plus" :size="16" /></button></div></form>
         <form v-else-if="modal === 'settings'" @submit.prevent="saveSettings" class="settings-form">
-          <div class="settings-scroll" role="region" aria-label="偏好设置内容" tabindex="0">
-          <fieldset class="settings-section preferences-boundary" :disabled="busy || dataBusy" aria-label="外观与习惯"><h3><Icon name="moon" :size="16" />外观与习惯</h3><div class="setting-row"><div><strong>主题</strong><p>选择你喜欢的星空底色</p></div><select v-model="settingsDraft.theme" aria-label="主题"><option v-for="option in themeOptions" :key="option.value" :value="option.value">{{ option.name }} · {{ option.description }}</option></select></div><div class="sticker-settings"><div class="sticker-settings-heading"><strong>贴纸小伙伴</strong><span>原创小图案，陪你收好灵感</span></div><div class="sticker-options" role="group" aria-label="贴纸风格"><button v-for="option in stickerOptions" :key="option.value" type="button" :class="['sticker-option', { chosen: settingsDraft.stickerPack === option.value }]" :aria-pressed="settingsDraft.stickerPack === option.value" :aria-label="option.name" :title="option.description" @click="settingsDraft.stickerPack = option.value"><StickerScene v-if="option.value !== 'none'" :pack="option.value" :theme="settingsDraft.theme === 'system' ? resolvedTheme : settingsDraft.theme" placement="preview" /><span v-else class="sticker-none" aria-hidden="true">—</span><strong>{{ option.name }}</strong><span>{{ option.description }}</span></button></div></div><div class="setting-row"><div><strong>流星启动画面</strong><p>仅首次打开短暂显示，可随时跳过</p></div><div class="startup-preference"><button type="button" class="startup-replay" :disabled="dataBusy" @click="replayStartup">重看一次</button><button type="button" :class="['switch', { on: settingsDraft.showStartup }]" role="switch" :aria-checked="settingsDraft.showStartup" aria-label="流星启动画面" :disabled="dataBusy" @click="settingsDraft.showStartup = !settingsDraft.showStartup"><span /></button></div></div><div class="setting-row"><div><strong>默认布局</strong><p>网格、列表，或横向快取的流星栏</p></div><select v-model="settingsDraft.layout" aria-label="默认布局"><option value="grid">卡片网格</option><option value="list">紧凑列表</option><option value="horizontal">流星栏 · 横向快取</option></select></div><div class="setting-row"><div><strong>窗口置顶</strong><p>{{ isDesktop ? '保持在其他应用窗口上方' : '桌面版生效；此处仅预览设置' }}</p></div><button type="button" :class="['switch', { on: settingsDraft.alwaysOnTop }]" role="switch" :aria-checked="settingsDraft.alwaysOnTop" aria-label="窗口置顶" @click="settingsDraft.alwaysOnTop = !settingsDraft.alwaysOnTop"><span /></button></div><div class="setting-row"><div><strong>呼出快捷键</strong><p>从任何应用打开星笺</p></div><input class="shortcut-input" v-model="settingsDraft.shortcut" aria-label="呼出快捷键" placeholder="CommandOrControl+Shift+V" /></div><div class="setting-row"><div><strong>分类 / 分组切换</strong><p>窗口内循环切换；输入文字和弹窗内不触发</p></div><kbd class="setting-shortcut">{{ modKey }} ⇧ ← / →</kbd></div></fieldset>
-          <fieldset class="settings-section preferences-boundary" :disabled="busy || dataBusy" aria-label="记录与隐私"><h3><Icon name="shield" :size="16" />记录与隐私</h3><div class="setting-row"><div><strong>自动记录新复制的文本</strong><p>不捕获开启前的内容；随时可以暂停</p></div><button type="button" :class="['switch', { on: !settingsDraft.paused }]" role="switch" :aria-checked="!settingsDraft.paused" aria-label="自动记录新复制的文本" @click="settingsDraft.paused = !settingsDraft.paused"><span /></button></div><div class="setting-row"><div><strong>历史记录上限</strong><p>星标、永久保留与分组记录不计入上限</p></div><select v-model.number="settingsDraft.maxHistory" aria-label="历史记录上限"><option :value="0">不限条数</option><option :value="100">100 条</option><option :value="500">500 条</option><option :value="1000">1,000 条</option><option :value="5000">5,000 条</option></select></div><div class="setting-row"><div><strong>历史保留时长</strong><p>按最近更新时间计算；星标、永久保留与分组受保护</p></div><select v-model.number="settingsDraft.retentionDays" aria-label="历史保留时长"><option :value="0">不限天数</option><option :value="1">1 天</option><option :value="7">7 天</option><option :value="30">30 天</option><option :value="90">90 天</option><option :value="180">180 天</option><option :value="365">365 天</option></select></div><p class="retention-note">保存偏好后立即应用清理规则。桌面版还会在启动、新记录和约每分钟检查；暂停记录时也会按已选时长清理。浏览器演示只在保存偏好或新增内容时检查。永久保留、星标和已分组内容不会自动清理；重新捕获相同内容会更新保留起点。清理无法撤回，可先导出备份。同时选择「不限条数」和「不限天数」可关闭自动淘汰；重要内容也可单独标记永久保留。</p><div class="privacy-note"><Icon name="shield" :size="16" /><p>内容仅保存在本机，不上传云端。剪贴板可能含有私密内容，复制密码等敏感信息前请先暂停记录。</p></div></fieldset>
-          <div class="settings-section backup-section"><h3><Icon name="folder" :size="16" />你的数据，由你保管</h3><fieldset class="data-settings-boundary" :disabled="busy"><DataSettings @busy="dataBusy = $event" /></fieldset><div class="backup-buttons"><button type="button" class="button subtle" @click="exportBackup" :disabled="busy || dataBusy"><Icon name="down" :size="16" />导出备份</button><button type="button" class="button subtle" @click="fileInput?.click()" :disabled="busy || dataBusy"><Icon name="upload" :size="16" />导入备份</button><button type="button" class="button subtle" :disabled="busy || dataBusy" @click="openCleanup">星尘整理</button></div><p class="field-note">备份为可阅读的 JSON 文件，请妥善保存。导入会合并记录。</p></div>
+          <nav class="settings-tabs" role="tablist" aria-label="偏好分类" @keydown="settingsTabKeyboard">
+            <button v-for="tab in settingsTabs" :key="tab.key" :id="`settings-tab-${tab.key}`" type="button" role="tab" :aria-selected="settingsTab === tab.key" :aria-controls="`settings-panel-${tab.key}`" :tabindex="settingsTab === tab.key ? 0 : -1" :disabled="busy || dataBusy" @click="changeSettingsTab(tab.key)"><Icon :name="tab.icon" :size="15" /><span>{{ tab.label }}</span></button>
+          </nav>
+          <div ref="settingsScroll" class="settings-scroll">
+            <section v-show="settingsTab === 'appearance'" id="settings-panel-appearance" role="tabpanel" aria-labelledby="settings-tab-appearance" class="settings-panel">
+              <fieldset class="settings-section preferences-boundary" :disabled="busy || dataBusy" aria-label="外观"><div class="setting-row"><div><strong>主题</strong><p>选择你喜欢的星空底色</p></div><select v-model="settingsDraft.theme" aria-label="主题"><option v-for="option in themeOptions" :key="option.value" :value="option.value">{{ option.name }} · {{ option.description }}</option></select></div><div class="sticker-settings"><div class="sticker-settings-heading"><strong>贴纸小伙伴</strong><span>原创小图案，陪你收好灵感</span></div><div class="sticker-options" role="group" aria-label="贴纸风格"><button v-for="option in stickerOptions" :key="option.value" type="button" :class="['sticker-option', { chosen: settingsDraft.stickerPack === option.value }]" :aria-pressed="settingsDraft.stickerPack === option.value" :aria-label="option.name" :title="option.description" @click="settingsDraft.stickerPack = option.value"><StickerScene v-if="option.value !== 'none'" :pack="option.value" :theme="settingsDraft.theme === 'system' ? resolvedTheme : settingsDraft.theme" placement="preview" /><span v-else class="sticker-none" aria-hidden="true">—</span><strong>{{ option.name }}</strong><span>{{ option.description }}</span></button></div></div></fieldset>
+            </section>
+            <section v-show="settingsTab === 'habits'" id="settings-panel-habits" role="tabpanel" aria-labelledby="settings-tab-habits" class="settings-panel">
+              <fieldset class="settings-section preferences-boundary" :disabled="busy || dataBusy" aria-label="使用习惯"><h3><Icon name="sliders" :size="16" />使用习惯</h3><div class="setting-row"><div><strong>流星启动画面</strong><p>仅首次打开短暂显示，可随时跳过</p></div><div class="startup-preference"><button type="button" class="startup-replay" :disabled="dataBusy" @click="replayStartup">重看一次</button><button type="button" :class="['switch', { on: settingsDraft.showStartup }]" role="switch" :aria-checked="settingsDraft.showStartup" aria-label="流星启动画面" :disabled="dataBusy" @click="settingsDraft.showStartup = !settingsDraft.showStartup"><span /></button></div></div><div class="setting-row"><div><strong>默认布局</strong><p>网格、列表，或横向快取的流星栏</p></div><select v-model="settingsDraft.layout" aria-label="默认布局"><option value="grid">卡片网格</option><option value="list">紧凑列表</option><option value="horizontal">流星栏 · 横向快取</option></select></div><div class="setting-row"><div><strong>窗口置顶</strong><p>{{ isDesktop ? '保持在其他应用窗口上方' : '桌面版生效；此处仅预览设置' }}</p></div><button type="button" :class="['switch', { on: settingsDraft.alwaysOnTop }]" role="switch" :aria-checked="settingsDraft.alwaysOnTop" aria-label="窗口置顶" @click="settingsDraft.alwaysOnTop = !settingsDraft.alwaysOnTop"><span /></button></div><div class="setting-row"><div><strong>呼出快捷键</strong><p>从任何应用打开星笺</p></div><input class="shortcut-input" v-model="settingsDraft.shortcut" aria-label="呼出快捷键" placeholder="CommandOrControl+Shift+V" /></div><div class="setting-row"><div><strong>分类 / 分组切换</strong><p>窗口内循环切换；输入文字和弹窗内不触发</p></div><kbd class="setting-shortcut">{{ modKey }} ⇧ ← / →</kbd></div></fieldset>
+            </section>
+            <section v-show="settingsTab === 'privacy'" id="settings-panel-privacy" role="tabpanel" aria-labelledby="settings-tab-privacy" class="settings-panel">
+              <fieldset class="settings-section preferences-boundary" :disabled="busy || dataBusy" aria-label="记录与隐私"><h3><Icon name="shield" :size="16" />记录与隐私</h3><div class="setting-row"><div><strong>自动记录新复制的文本</strong><p>不捕获开启前的内容；随时可以暂停</p></div><button type="button" :class="['switch', { on: !settingsDraft.paused }]" role="switch" :aria-checked="!settingsDraft.paused" aria-label="自动记录新复制的文本" @click="settingsDraft.paused = !settingsDraft.paused"><span /></button></div><div class="setting-row"><div><strong>历史记录上限</strong><p>星标、永久保留与分组记录不计入上限</p></div><select v-model.number="settingsDraft.maxHistory" aria-label="历史记录上限"><option :value="0">不限条数</option><option :value="100">100 条</option><option :value="500">500 条</option><option :value="1000">1,000 条</option><option :value="5000">5,000 条</option></select></div><div class="setting-row"><div><strong>历史保留时长</strong><p>按最近更新时间计算；星标、永久保留与分组受保护</p></div><select v-model.number="settingsDraft.retentionDays" aria-label="历史保留时长"><option :value="0">不限天数</option><option :value="1">1 天</option><option :value="7">7 天</option><option :value="30">30 天</option><option :value="90">90 天</option><option :value="180">180 天</option><option :value="365">365 天</option></select></div><p class="retention-note">保存偏好后立即应用清理规则。桌面版还会在启动、新记录和约每分钟检查；暂停记录时也会按已选时长清理。浏览器演示只在保存偏好或新增内容时检查。永久保留、星标和已分组内容不会自动清理；重新捕获相同内容会更新保留起点。清理无法撤回，可先导出备份。同时选择「不限条数」和「不限天数」可关闭自动淘汰；重要内容也可单独标记永久保留。</p><div class="privacy-note"><Icon name="shield" :size="16" /><p>内容仅保存在本机，不上传云端。剪贴板可能含有私密内容，复制密码等敏感信息前请先暂停记录。</p></div></fieldset>
+            </section>
+            <section v-show="settingsTab === 'data'" id="settings-panel-data" role="tabpanel" aria-labelledby="settings-tab-data" class="settings-panel">
+              <div class="settings-section backup-section"><h3><Icon name="folder" :size="16" />你的数据，由你保管</h3><fieldset class="data-settings-boundary" :disabled="busy"><DataSettings v-if="dataTabVisited" @busy="dataBusy = $event" /></fieldset><div class="backup-buttons"><button type="button" class="button subtle" @click="exportBackup" :disabled="busy || dataBusy"><Icon name="down" :size="16" />导出备份</button><button type="button" class="button subtle" @click="fileInput?.click()" :disabled="busy || dataBusy"><Icon name="upload" :size="16" />导入备份</button><button type="button" class="button subtle" :disabled="busy || dataBusy" @click="openCleanup">星尘整理</button></div><p class="field-note">导入、清理与目录操作会单独执行，不会替你保存其他 Tab 的修改。备份是可阅读的 JSON 文件，导入会合并记录。</p></div>
+            </section>
+            <section v-show="settingsTab === 'help'" id="settings-panel-help" role="tabpanel" aria-labelledby="settings-tab-help" class="settings-panel">
+              <div class="settings-help-intro"><span class="settings-help-icon"><Icon name="spark" :size="24" /></span><div><h3>初见星笺</h3><p>四步认识记录、收藏、卡片和数据管理。随时重看，按自己的节奏熟悉。</p></div></div>
+              <button ref="tutorialButton" type="button" class="button subtle tutorial-replay" :disabled="busy || dataBusy" @click="openGuide"><Icon name="play" :size="15" />重看新手教程</button>
+              <p class="field-note">重看教程不会开启记录或改动设置，也会保留你在各个 Tab 中尚未保存的修改。</p>
+              <div class="settings-help-shortcuts"><h3>常用快捷键</h3><dl>
+                <div><dt>从其他应用呼出星笺</dt><dd><kbd>{{ shortcutLabel }}</kbd></dd></div>
+                <div><dt>搜索记录</dt><dd><kbd>{{ modKey }} K</kbd></dd></div>
+                <div><dt>切换分类与分组</dt><dd><kbd>{{ modKey }} ⇧ ← / →</kbd></dd></div>
+                <div><dt>选择 / 复制记录</dt><dd><kbd>方向键 / Enter</kbd></dd></div>
+                <div><dt>复制前九条记录</dt><dd><kbd>{{ modKey }} 1–9</kbd></dd></div>
+                <div><dt>保存全部偏好</dt><dd><kbd>{{ modKey }} S</kbd></dd></div>
+              </dl><p class="field-note">除全局呼出键外，请在星笺窗口中使用。输入文字、教程和弹窗中不会触发记录复制或分类切换。</p></div>
+            </section>
           </div>
           <div class="modal-actions settings-actions">
-            <div class="settings-save-state"><span role="status" aria-live="polite" :class="{ dirty: settingsDirty }">{{ settingsSaving ? '正在保存…' : settingsDirty ? '有未保存的修改' : '设置已同步' }}</span><small><kbd>{{ modKey }} S</kbd> 保存偏好</small></div>
+            <div class="settings-save-state"><span role="status" aria-live="polite" :class="{ dirty: settingsDirty }">{{ settingsSaving ? '正在保存…' : settingsDirty ? '有未保存的修改' : '设置已同步' }}</span><small><kbd>{{ modKey }} S</kbd> 保存所有 Tab 的修改</small></div>
             <button type="button" class="button subtle" :disabled="busy || dataBusy" @click="closeModal">{{ settingsDirty ? '取消修改' : '完成' }}</button>
-            <button type="submit" class="button primary" :disabled="busy || dataBusy || !settingsDirty">{{ settingsSaving ? '保存中…' : '保存偏好' }}<Icon name="check" :size="16" /></button>
+            <button type="submit" class="button primary" :disabled="busy || dataBusy || !settingsDirty">{{ settingsSaving ? '保存中…' : '保存全部偏好' }}<Icon name="check" :size="16" /></button>
           </div>
         </form>
         <CleanupPanel v-else-if="modal === 'clear'" @busy="dataBusy = $event" @changed="refresh" />

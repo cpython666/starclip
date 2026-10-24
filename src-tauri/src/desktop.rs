@@ -72,6 +72,7 @@ struct AppState {
     clips: Vec<Clip>,
     groups: Vec<Group>,
     settings: Settings,
+    onboarding_completed: bool,
     clipboard_error: Option<String>,
     shortcut_error: Option<String>,
     window_error: Option<String>,
@@ -83,10 +84,18 @@ fn get_state(context: AppContext<'_>) -> Result<AppState> {
         clips: store.clips()?,
         groups: store.groups()?,
         settings: store.settings()?,
+        onboarding_completed: store.onboarding_completed()?,
         clipboard_error: lock(&context.clipboard_error)?.clone(),
         shortcut_error: lock(&context.shortcut_error)?.clone(),
         window_error: lock(&context.window_error)?.clone(),
     })
+}
+#[tauri::command]
+fn complete_onboarding(app: AppHandle, context: AppContext<'_>) -> Result<()> {
+    let _write = write_guard(&context)?;
+    lock(&context.store)?.complete_onboarding()?;
+    changed(&app);
+    Ok(())
 }
 #[tauri::command]
 fn add_clip(
@@ -799,6 +808,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_state,
+            complete_onboarding,
             add_clip,
             update_clip,
             save_code,

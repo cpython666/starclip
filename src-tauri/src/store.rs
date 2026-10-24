@@ -357,6 +357,13 @@ impl Store {
     fn from_connection(conn: Connection) -> Result<Self> {
         conn.busy_timeout(std::time::Duration::from_secs(3))
             .map_err(sql_error)?;
+        let existing_database: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='clips')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
         conn.execute_batch("PRAGMA foreign_keys=ON;
             PRAGMA secure_delete=ON;
             CREATE TABLE IF NOT EXISTS groups (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, color TEXT NOT NULL);
@@ -368,6 +375,9 @@ impl Store {
             );
             CREATE INDEX IF NOT EXISTS clips_updated ON clips(updated_at DESC);
             CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);").map_err(sql_error)?;
+        if !existing_database {
+            conn.execute("INSERT INTO preferences(key,value) VALUES('onboarding_v1','false') ON CONFLICT(key) DO NOTHING", []).map_err(sql_error)?;
+        }
         let columns = {
             let mut stmt = conn
                 .prepare("PRAGMA table_info(clips)")
@@ -414,6 +424,28 @@ impl Store {
             }
             None => Ok(Settings::default()),
         }
+    }
+
+    pub fn onboarding_completed(&self) -> Result<bool> {
+        self.conn
+            .query_row(
+                "SELECT COALESCE((SELECT value='true' FROM preferences WHERE key='onboarding_v1'), 1)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)
+    }
+
+    pub fn complete_onboarding(&self) -> Result<()> {
+        // This marker must not run save_settings, pruning, or clipboard transitions.
+        self.conn
+            .execute(
+                "INSERT INTO preferences(key,value) VALUES('onboarding_v1','true')
+            ON CONFLICT(key) DO UPDATE SET value='true'",
+                [],
+            )
+            .map_err(sql_error)?;
+        Ok(())
     }
 
     pub fn save_settings(&self, settings: &Settings) -> Result<()> {
@@ -902,6 +934,85 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn onboarding_is_upgrade_safe_persistent_and_has_no_retention_or_settings_side_effects() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("onboarding.sqlite3");
+        let fresh = Store::open(&path).unwrap();
+        assert!(!fresh.onboarding_completed().unwrap());
+        drop(fresh);
+        let fresh = Store::open(&path).unwrap();
+        assert!(
+            !fresh.onboarding_completed().unwrap(),
+            "unfinished first-run status survives restart"
+        );
+        fresh.complete_onboarding().unwrap();
+        drop(fresh);
+        let reopened = Store::open(&path).unwrap();
+        assert!(reopened.onboarding_completed().unwrap());
+        assert_eq!(reopened.settings().unwrap(), Settings::default());
+        assert_eq!(
+            reopened
+                .conn
+                .query_row(
+                    "SELECT count(*) FROM preferences WHERE key='settings'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+
+        let old_empty = store();
+        old_empty
+            .conn
+            .execute("DELETE FROM preferences WHERE key='onboarding_v1'", [])
+            .unwrap();
+        let old_empty = Store::from_connection(old_empty.conn).unwrap();
+        assert!(
+            old_empty.onboarding_completed().unwrap(),
+            "an existing empty database is still an upgrade"
+        );
+
+        let existing = store();
+        existing
+            .conn
+            .execute("DELETE FROM preferences WHERE key='onboarding_v1'", [])
+            .unwrap();
+        let settings = Settings {
+            paused: false,
+            max_history: 50,
+            retention_days: 1,
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        existing
+            .conn
+            .execute(
+                "INSERT INTO preferences(key,value) VALUES('settings',?1)",
+                [&json],
+            )
+            .unwrap();
+        existing.conn.execute("INSERT INTO clips(content,kind,created_at,updated_at) VALUES('引导操作不得清理这条超期片段','text',0,0)", []).unwrap();
+        existing.conn.execute_batch("CREATE TRIGGER forbid_onboarding_prune BEFORE DELETE ON clips BEGIN SELECT RAISE(ABORT, 'onboarding must not prune'); END;").unwrap();
+        assert!(existing.onboarding_completed().unwrap());
+        existing.complete_onboarding().unwrap();
+        assert!(existing.onboarding_completed().unwrap());
+        assert_eq!(existing.clips().unwrap().len(), 1);
+        assert_eq!(existing.settings().unwrap(), settings);
+        assert_eq!(
+            existing
+                .conn
+                .query_row(
+                    "SELECT value FROM preferences WHERE key='settings'",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+            json
+        );
     }
 
     #[test]

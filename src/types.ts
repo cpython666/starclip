@@ -24,6 +24,7 @@ export interface Settings {
   shortcut: string;
 }
 export interface AppState {
+  onboardingCompleted: boolean;
   clips: Clip[];
   groups: Group[];
   settings: Settings;

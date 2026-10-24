@@ -14,6 +14,7 @@ const samples: Array<Pick<Clip, 'title' | 'content' | 'kind' | 'language' | 'gro
   { title: 'MDN Web 文档', content: 'https://developer.mozilla.org/zh-CN/', kind: 'link', language: null, groupId: 2, pinned: false },
 ];
 let demo: AppState = {
+  onboardingCompleted: false,
   clips: samples.map((clip, i) => ({ ...clip, keepForever: false, id: i + 1, createdAt: now - i * 1800000, updatedAt: now - i * 1800000, copyCount: i === 1 ? 12 : 0 })),
   groups: [{ id: 1, name: '灵感碎片', color: '#d9b780' }, { id: 2, name: '开发工具箱', color: '#87bab6' }, { id: 3, name: '设计收藏', color: '#b69bd7' }],
   settings: { paused: true, showStartup: true, stickerPack: 'auto', theme: 'dark', layout: 'grid', maxHistory: 0, retentionDays: 0, alwaysOnTop: false, shortcut: 'CommandOrControl+Shift+V' },
@@ -45,6 +46,10 @@ function classify(content: string): Clip['kind'] {
 async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> { return (await import('@tauri-apps/api/core')).invoke<T>(command, args); }
 
 export const api = {
+  async completeOnboarding(): Promise<void> {
+    if (isDesktop) return invoke('complete_onboarding');
+    demo.onboardingCompleted = true; changed();
+  },
   async setKeepForever(id: number, keepForever: boolean): Promise<void> {
     if (isDesktop) return invoke('set_keep_forever', { id, keepForever });
     requiredClip(id).keepForever = keepForever; changed();

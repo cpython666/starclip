@@ -504,13 +504,16 @@ impl Storage {
 mod tests {
     use super::*;
     use rusqlite::Connection;
+    use std::sync::atomic::{AtomicU64, Ordering};
     struct Scratch(PathBuf);
     impl Scratch {
         fn new() -> Self {
+            static SEQUENCE: AtomicU64 = AtomicU64::new(0);
             let path = std::env::temp_dir().join(format!(
-                "starclip-storage-test-{}-{}",
+                "starclip-storage-test-{}-{}-{}",
                 std::process::id(),
-                nonce()
+                nonce(),
+                SEQUENCE.fetch_add(1, Ordering::Relaxed)
             ));
             create_private_directory(&path).unwrap();
             Self(path.canonicalize().unwrap())
