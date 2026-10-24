@@ -24,7 +24,7 @@ const props = withDefaults(defineProps<{ clip: Clip | null; groups: Group[]; ini
 const emit = defineEmits<{ saved: []; close: [] }>();
 const dialog = ref<HTMLDialogElement>();
 const mode = ref<'code' | 'handwriting'>(props.initialMode);
-const title = ref(props.clip?.title || (props.initialMode === 'handwriting' ? '写给星空的信' : '未命名的小抄'));
+const title = ref(props.clip?.title || (props.initialMode === 'handwriting' ? '写给星空的信' : '未命名的代码片段'));
 // Switching modes shares the user's original text; neither tab replaces or rewrites it.
 const content = ref(props.clip?.content ?? (props.initialMode === 'handwriting' ? '让散落的灵感，\n在这里连成星座。' : 'fn main() {\n    println!("Hello, stars. ✦");\n}'));
 const language = ref(props.clip?.language || (props.clip || props.initialMode === 'handwriting' ? 'plaintext' : 'rust'));
@@ -92,7 +92,7 @@ function exportImage() {
     <div class="studio-heading"><div><span class="studio-eyebrow">A LITTLE PIECE OF YOUR UNIVERSE</span><h2>卡片工坊 <span>✦</span></h2><p>同一份灵感，换一种值得收藏的模样。</p></div><button class="studio-close" aria-label="关闭卡片工坊" @click="emit('close')">×</button></div>
     <div class="studio-tabs" role="tablist" aria-label="卡片类型"><button id="code-tab" role="tab" :aria-selected="mode === 'code'" aria-controls="studio-workspace" :class="{ active: mode === 'code' }" @click="mode = 'code'"><span aria-hidden="true">〈/〉</span>代码卡片</button><button id="handwriting-tab" role="tab" :aria-selected="mode === 'handwriting'" aria-controls="studio-workspace" :class="{ active: mode === 'handwriting' }" @click="mode = 'handwriting'"><span aria-hidden="true">✎</span>手写纸笺</button><small>切换样式，正文保留</small></div>
     <div id="studio-workspace" role="tabpanel" :aria-labelledby="mode === 'code' ? 'code-tab' : 'handwriting-tab'">
-      <div class="studio-meta" :class="{ 'handwriting-meta': mode === 'handwriting' }"><label>标题<input v-model="title" maxlength="200" aria-label="卡片标题" /></label><template v-if="mode === 'code'"><label>语言<select v-model="language" aria-label="代码语言"><option v-for="[value, label] in languages" :key="value" :value="value">{{ label }}</option></select></label><label>分组<select v-model="groupId" aria-label="小抄分组"><option :value="null">未分组</option><option v-for="group in groups" :key="group.id" :value="group.id">{{ group.name }}</option></select></label></template><p v-else>把文字变成一张纸笺。选择字体与纸张，再生成预览。</p></div>
+      <div class="studio-meta" :class="{ 'handwriting-meta': mode === 'handwriting' }"><label>标题<input v-model="title" maxlength="200" aria-label="卡片标题" /></label><template v-if="mode === 'code'"><label>语言<select v-model="language" aria-label="代码语言"><option v-for="[value, label] in languages" :key="value" :value="value">{{ label }}</option></select></label><label>分组<select v-model="groupId" aria-label="代码分组"><option :value="null">未分组</option><option v-for="group in groups" :key="group.id" :value="group.id">{{ group.name }}</option></select></label></template><p v-else>把文字变成一张纸笺。选择字体与纸张，再生成预览。</p></div>
       <div class="studio-panels" :class="{ 'handwriting-workspace': mode === 'handwriting' }">
         <section class="studio-editor"><div class="studio-panel-label">{{ mode === 'code' ? '编辑代码' : '纸笺正文' }}<button v-if="mode === 'code' && language === 'json'" @click="format">格式化 JSON</button><span v-else>{{ content.split('\n').length }} 行 · {{ [...content].length }} 字符</span></div><textarea v-model="content" :aria-label="mode === 'code' ? '代码内容' : '纸笺正文'" :class="{ 'handwriting-text': mode === 'handwriting' }" spellcheck="false" autocomplete="off" autocapitalize="off" @keydown="insertTab" /><p class="editor-note">{{ mode === 'code' ? 'Tab 插入两个空格 · 原文只在本机处理' : '切换卡片类型不会改写正文，也不会保存为代码。' }}</p></section>
         <section v-if="mode === 'code'" class="studio-preview"><div class="studio-panel-label">导出效果预览 <span v-if="preview">{{ preview.width }} × {{ preview.height }}</span></div><div class="canvas-preview"><img v-if="preview" :src="preview.url" :alt="`${title}，代码卡片导出预览`" /><div v-else class="preview-placeholder"><span>✦</span><p>{{ previewError || '正在点亮这张卡片…' }}</p></div></div><p class="preview-note">预览即导出 · PNG 以 2 倍分辨率生成</p></section>
@@ -112,8 +112,8 @@ function exportImage() {
         </div>
       </section>
     </div>
-    <div v-if="mode === 'code'" class="studio-message" aria-live="polite"><span v-if="error" class="studio-error">{{ error }}</span><span v-else-if="notice">{{ notice }}</span><span v-else-if="previewError" class="studio-error">{{ previewError }}</span><span v-else>本地保存 · 不上传代码 · 新建小抄自动星标</span></div>
-    <footer v-if="mode === 'code'" class="studio-footer"><div class="studio-export"><button :disabled="busy || !content.trim()" @click="exportMarkdown">导出 Markdown</button><button :disabled="busy || !content.trim() || !!previewError" @click="exportImage">导出 PNG 卡片</button></div><button class="studio-save" :disabled="busy || !content.trim()" @click="save">{{ busy ? '处理中…' : '保存小抄' }} <kbd>{{ modifier }} S</kbd></button></footer>
+    <div v-if="mode === 'code'" class="studio-message" aria-live="polite"><span v-if="error" class="studio-error">{{ error }}</span><span v-else-if="notice">{{ notice }}</span><span v-else-if="previewError" class="studio-error">{{ previewError }}</span><span v-else>本地保存 · 不上传代码 · 新建代码片段自动星标</span></div>
+    <footer v-if="mode === 'code'" class="studio-footer"><div class="studio-export"><button :disabled="busy || !content.trim()" @click="exportMarkdown">导出 Markdown</button><button :disabled="busy || !content.trim() || !!previewError" @click="exportImage">导出 PNG 卡片</button></div><button class="studio-save" :disabled="busy || !content.trim()" @click="save">{{ busy ? '处理中…' : '保存代码' }} <kbd>{{ modifier }} S</kbd></button></footer>
   </dialog>
 </template>
 

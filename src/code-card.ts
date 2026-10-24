@@ -75,7 +75,7 @@ export function renderCodeCard(title: string, content: string, language: string,
   context.font = '12px -apple-system, "PingFang SC", sans-serif';
   const languageWidth = context.measureText(language).width;
   const titleWidth = px + cardWidth - 46 - languageWidth - titleX;
-  let shortTitle = title.replace(/[\r\n]+/g, ' ').trim() || '未命名的小抄';
+  let shortTitle = title.replace(/[\r\n]+/g, ' ').trim() || '未命名的代码片段';
   while (context.measureText(shortTitle).width > titleWidth && shortTitle.length > 1) shortTitle = [...shortTitle].slice(0, -2).join('') + '…';
   context.fillStyle = '#c2cbda'; context.fillText(shortTitle, titleX, headerY);
   context.fillStyle = '#75859e'; context.textAlign = 'right'; context.fillText(language, px + cardWidth - 24, headerY); context.textAlign = 'left';

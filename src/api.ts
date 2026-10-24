@@ -10,7 +10,7 @@ const samples: Array<Pick<Clip, 'title' | 'content' | 'kind' | 'language' | 'gro
   { title: '下一次灵感，留一点余地', content: '设计不是把每个角落填满，\n而是让重要的东西拥有呼吸的空间。', kind: 'text', language: null, groupId: 1, pinned: false },
   { title: '星尘金', content: '#E9C98B', kind: 'color', language: null, groupId: 3, pinned: false },
   { title: '一个轻巧的 debounce', content: 'function debounce(fn, delay = 300) {\n  let timer;\n  return (...args) => {\n    clearTimeout(timer);\n    timer = setTimeout(() => fn(...args), delay);\n  };\n}', kind: 'code', language: 'javascript', groupId: 2, pinned: true },
-  { title: '今晚的待办', content: '☑ 留下一个好点子\n☑ 把常用代码整理成小抄\n☐ 早点休息，明天再看星星', kind: 'text', language: null, groupId: null, pinned: false },
+  { title: '今晚的待办', content: '☑ 留下一个好点子\n☑ 把常用代码收进收藏\n☐ 早点休息，明天再看星星', kind: 'text', language: null, groupId: null, pinned: false },
   { title: 'MDN Web 文档', content: 'https://developer.mozilla.org/zh-CN/', kind: 'link', language: null, groupId: 2, pinned: false },
 ];
 let demo: AppState = {

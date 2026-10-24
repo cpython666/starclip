@@ -33,7 +33,7 @@ let copyTimer: ReturnType<typeof setTimeout>
 let unsubscribe: (() => void) | undefined
 const colors = ['#8b93d9', '#71baad', '#d7b678', '#d98eaa', '#89afd5', '#b3a192']
 const kindNames = { text: '文本', link: '链接', code: '代码', color: '色彩' }
-const navItems = [{ key: 'all', name: '全部记录', icon: 'grid' }, { key: 'pinned', name: '星标收藏', icon: 'star' }, { key: 'link', name: '链接', icon: 'link' }, { key: 'code', name: '代码小抄', icon: 'code' }]
+const navItems = [{ key: 'all', name: '全部记录', icon: 'grid' }, { key: 'pinned', name: '星标收藏', icon: 'star' }, { key: 'link', name: '链接', icon: 'link' }, { key: 'code', name: '代码收藏', icon: 'code' }]
 const visible = computed(() => {
   const q = query.value.trim().toLocaleLowerCase()
   return state.value.clips.filter(c => {
