@@ -9,46 +9,62 @@ import type { StarPetPreferences } from '../starpet-api';
 
 const preferences = ref<StarPetPreferences>({ enabled: false, mood: 'idle' });
 const reaction = ref<StarPetMoodId | null>(null);
+const touchCount = ref(0);
 const visible = ref(!document.hidden);
 const busy = ref(false);
+const loading = ref(true);
 const error = ref('');
 const mood = computed(() => getStarPetMood(reaction.value || preferences.value.mood));
 let timer: ReturnType<typeof setTimeout> | undefined;
 let unsubscribe: (() => void) | undefined;
-let disposed = false, touches = 0;
+let disposed = false, preferenceRevision = 0;
 const reactions: StarPetMoodId[] = ['greet', 'happy', 'shy', 'delighted', 'love'];
 function visibility() { visible.value = !document.hidden; }
 onMounted(async () => {
   document.addEventListener('visibilitychange', visibility);
   try {
-    unsubscribe = await onStarPetChanged(value => { preferences.value = value; reaction.value = null; clearTimeout(timer); });
+    unsubscribe = await onStarPetChanged(value => { preferenceRevision++; preferences.value = value; reaction.value = null; clearTimeout(timer); });
     if (disposed) { unsubscribe(); return; }
+    const revision = preferenceRevision;
     const value = await getStarPetPreferences();
-    if (!disposed) preferences.value = value;
+    if (!disposed && revision === preferenceRevision) preferences.value = value;
   } catch (reason) { if (!disposed) error.value = String(reason); }
+  finally { if (!disposed) loading.value = false; }
 });
 onBeforeUnmount(() => { disposed = true; clearTimeout(timer); unsubscribe?.(); document.removeEventListener('visibilitychange', visibility); });
-function touch() { reaction.value = reactions[touches++ % reactions.length]!; clearTimeout(timer); timer = setTimeout(() => { reaction.value = null; }, 2100); }
+function touch() {
+  if (loading.value) return;
+  reaction.value = reactions[touchCount.value % reactions.length]!;
+  touchCount.value++;
+  clearTimeout(timer);
+  timer = setTimeout(() => { reaction.value = null; }, 2800);
+}
 async function action(work: () => Promise<unknown>) {
-  if (busy.value) return;
+  if (busy.value || loading.value) return;
   busy.value = true; error.value = '';
   try { await work(); } catch (reason) { if (!disposed) error.value = String(reason); }
   finally { if (!disposed) busy.value = false; }
 }
+async function save(preferencesToSave: StarPetPreferences) {
+  const revision = preferenceRevision;
+  const value = await setStarPetPreferences(preferencesToSave);
+  // A newer tray/window event wins over a delayed command response.
+  if (!disposed && revision === preferenceRevision) preferences.value = value;
+}
 function nextMood() {
   const index = starPetMoods.findIndex(item => item.id === preferences.value.mood);
-  return action(async () => { preferences.value = await setStarPetPreferences({ enabled: true, mood: starPetMoods[(index + 1) % starPetMoods.length]!.id }); });
+  return action(() => save({ enabled: true, mood: starPetMoods[(index + 1) % starPetMoods.length]!.id }));
 }
-function hide() { return action(async () => { preferences.value = await setStarPetPreferences({ ...preferences.value, enabled: false }); }); }
+function hide() { return action(() => save({ ...preferences.value, enabled: false })); }
 function drag(event: PointerEvent) { if (event.button === 0) void action(dragStarPet); }
 </script>
 
 <template>
   <main class="desktop-starpet" aria-label="星伴 · 星芽">
-    <button type="button" class="pet-drag" aria-label="拖动星芽" title="拖动星芽" @pointerdown.prevent="drag"><span aria-hidden="true">⠿</span></button>
-    <button type="button" class="pet-body" :aria-label="`摸摸星芽，现在${mood.name}`" @click="touch"><StarPet :mood="mood.id" :size="180" :animated="preferences.enabled && visible" /></button>
+    <button type="button" class="pet-drag" :disabled="busy || loading" aria-label="拖动星芽" title="拖动星芽" @pointerdown.prevent="drag"><span aria-hidden="true">⠿</span></button>
+    <button type="button" class="pet-body" :disabled="loading" :aria-label="`摸摸星芽，现在${mood.name}`" @click="touch"><StarPet :mood="mood.id" :size="180" :reaction="touchCount" :animated="preferences.enabled && visible" /></button>
     <span class="pet-caption" role="status">{{ mood.name }}</span>
-    <nav class="pet-actions" aria-label="星伴操作"><button type="button" :disabled="busy" title="打开星笺" aria-label="打开星笺" @click="action(showStarPetMainWindow)"><Icon name="grid" :size="14" /></button><button type="button" :disabled="busy" title="换个心情" aria-label="换个心情" @click="nextMood"><Icon name="spark" :size="14" /></button><button type="button" :disabled="busy" title="收起星伴" aria-label="收起星伴" @click="hide"><Icon name="close" :size="14" /></button></nav>
+    <nav class="pet-actions" aria-label="星伴操作"><button type="button" :disabled="busy || loading" title="打开星笺" aria-label="打开星笺" @click="action(showStarPetMainWindow)"><Icon name="grid" :size="14" /></button><button type="button" :disabled="busy || loading" title="换个心情" aria-label="换个心情" @click="nextMood"><Icon name="spark" :size="14" /></button><button type="button" :disabled="busy || loading" title="收起星伴" aria-label="收起星伴" @click="hide"><Icon name="close" :size="14" /></button></nav>
     <p v-if="error" class="pet-error" role="alert">{{ error }}</p>
   </main>
 </template>

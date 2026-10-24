@@ -1,70 +1,139 @@
 <script setup lang="ts">
-import { computed, ref, useId } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue';
 import { getStarPetMood } from '../starpet';
+import { blinkOpenness, starOutline, stepHop, stepSpring } from '../starpet-motion';
 
-const props = withDefaults(defineProps<{ mood?: string; size?: number; animated?: boolean }>(), { mood: 'idle', size: 180, animated: true });
-const expression = computed(() => getStarPetMood(props.mood));
+const props = withDefaults(defineProps<{ mood?: string; size?: number; animated?: boolean; reaction?: number }>(), { mood: 'idle', size: 180, animated: true, reaction: 0 });
+const desired = computed(() => getStarPetMood(props.mood));
+const shownMood = ref(desired.value.id);
+const expression = computed(() => getStarPetMood(shownMood.value));
 const pixels = computed(() => Number.isFinite(props.size) ? Math.max(48, Math.min(640, props.size)) : 180);
-const gaze = ref({ x: 0, y: 0 });
-const reducedMotion = typeof window === 'undefined' ? null : window.matchMedia('(prefers-reduced-motion: reduce)');
-const eyeOffset = computed(() => ({
-  x: (props.animated && !reducedMotion?.matches ? gaze.value.x : 0) + (expression.value.eyes === 'side' ? -2 : 0),
-  y: props.animated && !reducedMotion?.matches ? gaze.value.y : 0,
-}));
-const gradientId = `starpet-gold-${useId()}`;
-const starPath = 'M112 42Q120 25 128 42L148 80Q151 86 158 87L197 91Q216 93 202 108L173 137Q168 142 170 150L178 189Q182 209 164 199L128 180Q121 176 114 180L78 199Q60 209 64 189L72 150Q74 142 68 137L39 108Q25 93 44 91L83 87Q90 86 93 80Z';
-const blinking = computed(() => !['closed', 'sleep', 'squeezed', 'hearts', 'stars'].includes(expression.value.eyes));
+const uid = useId();
+const gradientId = `starpet-gold-${uid}`;
+const phase = [...uid].reduce((total, char) => total + char.charCodeAt(0), 0) % 23 / 7;
+const media = typeof window === 'undefined' ? null : window.matchMedia('(prefers-reduced-motion: reduce)');
+const reduced = ref(media?.matches ?? false), visible = ref(true), mounted = ref(false);
+const running = computed(() => mounted.value && props.animated && !reduced.value && visible.value);
+const still = () => ({ x: 0, y: 0, tilt: desired.value.tilt as number, sx: 1, sy: 1, eyeX: 0, eyeY: 0, faceX: 0, faceY: 0, blink: 1, reveal: 1, tip: 0, side: 0, hand: 0, burst: 0, burstRadius: 50 });
+const frame = ref(still());
+const bodyTransform = computed(() => `translate(${frame.value.x} ${frame.value.y}) rotate(${frame.value.tilt} 120 124) translate(120 190) scale(${frame.value.sx} ${frame.value.sy}) translate(-120 -190)`);
+const faceTransform = computed(() => `translate(${frame.value.faceX} ${frame.value.faceY})`);
+const eyeOffset = computed(() => ({ x: frame.value.eyeX + (expression.value.eyes === 'side' ? -2 : 0), y: frame.value.eyeY }));
+const outline = computed(() => starOutline(frame.value.tip, frame.value.side));
+let gazeX = { value: 0, velocity: 0 }, gazeY = { value: 0, velocity: 0 }, tilt = { value: desired.value.tilt as number, velocity: 0 };
+let hop = { y: { value: 0, velocity: 0 }, sx: { value: 1, velocity: 0 }, sy: { value: 1, velocity: 0 } };
+let pointer = { x: 0, y: 0, inside: false };
+let raf = 0, lastStamp = 0, elapsed = 0, hopEpoch = 0, reactionAge = Infinity, transitionAge = Infinity;
+
+function animate(stamp: number) {
+  raf = 0;
+  if (!running.value) return;
+  const dt = lastStamp ? Math.min(.1, (stamp - lastStamp) / 1000) : 0;
+  lastStamp = stamp; elapsed += dt; reactionAge += dt; transitionAge += dt;
+  if (transitionAge >= .1) shownMood.value = desired.value.id;
+  const mode = desired.value.motion, t = elapsed + phase;
+  const quiet = mode === 'still' || expression.value.eyes === 'sleep';
+  const glancePhase = t % 11;
+  const glance = !quiet && glancePhase > 5.2 && glancePhase < 6.7 ? 3.8 : 0;
+  gazeX = stepSpring(gazeX, pointer.inside ? pointer.x : glance, dt, 23, .8);
+  gazeY = stepSpring(gazeY, pointer.inside ? pointer.y : 0, dt, 21, .8);
+  tilt = stepSpring(tilt, desired.value.tilt + gazeX.value * .7, dt, 10, .66);
+  let sway = quiet ? .35 * Math.sin(t * .9) : 2.4 * Math.sin(t * 1.15) + .8 * Math.sin(t * 2.13);
+  let y = quiet ? .5 * Math.sin(t * 1.7) : -2 - 2.1 * Math.sin(t * 1.7);
+  let sx = 1 + .012 * Math.sin(t * 2.1), sy = 1 - .016 * Math.sin(t * 2.1);
+  if (mode === 'wave') sway += 3.7 * Math.sin(t * 3.6);
+  if (mode === 'tilt') sway += 3 * Math.sin(t * .7);
+  if (mode === 'scan') sway += 3.5 * Math.sin(t * 1.8);
+  if (mode === 'nod' || mode === 'work') y += 1.7 * Math.sin(t * 3.1);
+  if (mode === 'shiver') sway += Math.sin(t * 25) * (t % 3.7 < .75 ? 2.4 : .15);
+  if (mode === 'stretch') { const reach = Math.max(0, Math.sin(t * 1.3)); sx -= reach * .06; sy += reach * .1; y -= reach * 3; }
+  const hopping = ['bounce', 'hop', 'party'].includes(mode);
+  const hopAge = reactionAge < 1.08 ? reactionAge : hopping ? (elapsed - hopEpoch) % (mode === 'party' ? 2.7 : 3.7) - .45 : -1;
+  hop = stepHop(hop, hopAge, dt);
+  const reveal = transitionAge < .24 ? 1 - .96 * Math.sin(Math.PI * transitionAge / .24) : 1;
+  const blink = Math.min(blinkOpenness(elapsed + phase + 1), reactionAge < .3 ? blinkOpenness(Math.max(0, reactionAge - .06)) : 1);
+  const burstProgress = (reactionAge - .14) / .81;
+  frame.value = {
+    x: quiet ? 0 : Math.sin(t * .83) * 1.6, y: y + hop.y.value, tilt: tilt.value + sway,
+    sx: sx * hop.sx.value, sy: sy * hop.sy.value,
+    eyeX: gazeX.value, eyeY: gazeY.value,
+    faceX: gazeX.value * .46 - sway * .16,
+    faceY: gazeY.value * .4 + Math.sin(t * 2.1 - .65) * .9 - hop.y.velocity * .014,
+    blink, reveal,
+    tip: -hop.sy.velocity * 1.7 + Math.sin(t * 2.1 - .6) * 1.5,
+    side: -hop.y.velocity * .015 + Math.sin(t * 2.1 - .85) * 1.7,
+    hand: -hop.sy.velocity * 5.4 + Math.sin(t * 2.2 - .8) * (mode === 'wave' ? 8 : 4),
+    burst: burstProgress > 0 && burstProgress < 1 ? Math.sin(Math.PI * burstProgress) * .9 : 0,
+    burstRadius: 50 + Math.max(0, Math.min(1, burstProgress)) * 50,
+  };
+  raf = requestAnimationFrame(animate);
+}
+function stop() {
+  cancelAnimationFrame(raf); raf = 0; lastStamp = 0; elapsed = hopEpoch = 0; reactionAge = transitionAge = Infinity;
+  pointer = { x: 0, y: 0, inside: false };
+  gazeX = { value: 0, velocity: 0 }; gazeY = { value: 0, velocity: 0 }; tilt = { value: desired.value.tilt, velocity: 0 };
+  hop = { y: { value: 0, velocity: 0 }, sx: { value: 1, velocity: 0 }, sy: { value: 1, velocity: 0 } };
+  shownMood.value = desired.value.id; frame.value = still();
+}
+watch(running, active => { stop(); if (active) raf = requestAnimationFrame(animate); }, { flush: 'sync' });
+watch(() => desired.value.id, () => {
+  if (running.value) transitionAge = 0;
+  else { shownMood.value = desired.value.id; frame.value = still(); }
+});
+watch(() => props.reaction, () => { if (running.value) { reactionAge = 0; hopEpoch = elapsed + 1.08; } });
+function visibility() { visible.value = !document.hidden; }
+function motionPreference() { reduced.value = media?.matches ?? false; }
+onMounted(() => { visibility(); document.addEventListener('visibilitychange', visibility); media?.addEventListener('change', motionPreference); mounted.value = true; });
+onBeforeUnmount(() => { mounted.value = false; stop(); document.removeEventListener('visibilitychange', visibility); media?.removeEventListener('change', motionPreference); });
 function look(event: PointerEvent) {
-  if (!props.animated || reducedMotion?.matches || event.pointerType === 'touch') return;
+  if (!running.value || event.pointerType === 'touch') return;
   const box = (event.currentTarget as HTMLElement).getBoundingClientRect();
   if (!box.width || !box.height) return;
-  gaze.value = {
-    x: Math.max(-2.5, Math.min(2.5, ((event.clientX - box.left) / box.width - .5) * 5)),
-    y: Math.max(-1.8, Math.min(1.8, ((event.clientY - box.top) / box.height - .5) * 3.6)),
-  };
+  pointer = { x: Math.max(-5.5, Math.min(5.5, ((event.clientX - box.left) / box.width - .5) * 11)), y: Math.max(-3.5, Math.min(3.5, ((event.clientY - box.top) / box.height - .5) * 7)), inside: true };
 }
 </script>
 
 <template>
-  <div class="starpet" :class="{ 'starpet-animated': animated }" :data-mood="expression.id" :style="{ width: `${pixels}px`, '--starpet-accent': expression.accent }" role="img" :aria-label="`星芽，${expression.name}`" @pointermove="look" @pointerleave="gaze = { x: 0, y: 0 }">
+  <div class="starpet" :class="{ 'starpet-animated': running }" :data-mood="expression.id" :data-motion="running ? 'active' : 'still'" :style="{ width: `${pixels}px`, '--starpet-accent': expression.accent }" role="img" :aria-label="`星芽，${expression.name}`" @pointermove="look" @pointerleave="pointer.inside = false">
     <svg class="starpet-canvas" viewBox="0 0 240 240" fill="none" aria-hidden="true" focusable="false">
       <defs><linearGradient :id="gradientId" x1="65" y1="37" x2="161" y2="201" gradientUnits="userSpaceOnUse"><stop stop-color="#fff4cf" /><stop offset=".58" stop-color="#f8dc98" /><stop offset="1" stop-color="#e9bc73" /></linearGradient></defs>
-      <ellipse class="starpet-ground" cx="120" cy="217" rx="47" ry="7" fill="#384559" opacity=".12" />
+      <ellipse class="starpet-ground" cx="120" cy="217" :rx="47 * (1 + frame.y * .009)" ry="7" fill="#384559" :opacity=".12 + frame.y * .0015" />
       <ellipse cx="120" cy="217" rx="65" ry="10" stroke="#a5b3c8" stroke-width="1" stroke-dasharray="2 6" opacity=".3" />
 
       <g v-if="expression.prop === 'orbit'" class="starpet-orbit-decoration"><ellipse cx="120" cy="122" rx="107" ry="45" transform="rotate(-24 120 122)" stroke="var(--starpet-accent)" stroke-width="1.5" stroke-dasharray="2 5" /><g class="starpet-orbiter"><circle cx="218" cy="121" r="8" fill="#9fc8c0" stroke="#557580" stroke-width="1.6" /><path d="m213 119 7 3" stroke="#e9f7e9" stroke-width="2" stroke-linecap="round" /></g></g>
       <g v-if="expression.prop === 'confetti'" class="starpet-confetti" stroke-linecap="round"><path d="m45 38 4 8m145-15-5 8M23 127l8 3m181 21 7 3" stroke="#d996b1" stroke-width="4" /><path d="m25 75 8-3m173-1 8 4M46 179l-5 7m153 3 7-5" stroke="#91bfb2" stroke-width="4" /><path d="m67 29 2 6m100-13-2 6M29 157l5-2m181-45 5-1" stroke="#b1a1d6" stroke-width="3" /><path d="m180 54 2-5 3 5 5 1-4 4v5l-4-3-5 1 2-5-3-4Z" fill="#e4bd71" /></g>
       <g v-if="expression.prop === 'target'" class="starpet-focus-frame" stroke="var(--starpet-accent)" stroke-width="2" stroke-linecap="round"><path d="M51 75V63h12m114 0h12v12M51 170v12h12m114 0h12v-12" /><circle cx="177" cy="63" r="3" fill="var(--starpet-accent)" stroke="none" /></g>
 
-      <g :transform="`rotate(${expression.tilt} 120 124)`">
-        <g class="starpet-body-motion" :class="`starpet-motion-${expression.motion}`">
-          <path class="starpet-body" :d="starPath" :fill="`url(#${gradientId})`" stroke="#b58c56" stroke-width="1.8" stroke-linejoin="round" />
-          <path :d="starPath" transform="translate(5 6) scale(.956)" stroke="#fff9df" stroke-width="1.5" stroke-linejoin="round" opacity=".65" />
+      <g :transform="bodyTransform">
+        <g class="starpet-body-motion">
+          <path class="starpet-body" :d="outline" :fill="`url(#${gradientId})`" stroke="#b58c56" stroke-width="1.8" stroke-linejoin="round" />
+          <path :d="outline" transform="translate(5 6) scale(.956)" stroke="#fff9df" stroke-width="1.5" stroke-linejoin="round" opacity=".65" />
           <path d="M105 61q9-25 18-15M50 101l24-3" stroke="#fffdf0" stroke-width="4.5" stroke-linecap="round" opacity=".72" />
           <path d="M78 183q-3 9 6 5" stroke="#d6a65e" stroke-width="2.5" stroke-linecap="round" opacity=".35" />
           <g transform="rotate(-16 157 91)"><ellipse cx="157" cy="91" rx="12" ry="8" fill="#59677e" /><path d="m156 85 1.8 3.7 4.2.6-3 2.9.7 4.1-3.7-2-3.7 2 .7-4.1-3-2.9 4.2-.6Z" fill="#f7df9a" /><circle cx="165" cy="91" r="1" fill="#cfdddf" /></g>
+          <g class="starpet-face" :transform="faceTransform">
           <g fill="#b78e66" opacity=".42"><circle cx="75" cy="111" r="1.3" /><circle cx="80" cy="107" r="1" /><circle cx="79" cy="115" r=".9" /></g>
           <g :opacity="expression.blush" fill="#df9c8c"><ellipse cx="82" cy="132" rx="11" ry="5.5" transform="rotate(-10 82 132)" /><ellipse cx="158" cy="132" rx="11" ry="5.5" transform="rotate(10 158 132)" /></g>
 
           <g v-if="expression.eyes === 'droop'" stroke="#7a6967" stroke-width="2.2" stroke-linecap="round"><path d="M87 103q8 0 17-7m32 0q9 7 17 7" /></g>
           <g v-if="expression.id === 'angry'" stroke="#6d5356" stroke-width="2.5" stroke-linecap="round"><path d="m88 101 17 5m30 0 17-5" /></g>
-          <g v-for="(x, side) in [98, 142]" :key="x" :transform="`translate(${x} 115)`">
+          <g v-for="(x, side) in [98, 142]" :key="x" :transform="`translate(${x} 115) scale(1 ${frame.reveal})`">
             <path v-if="expression.eyes === 'hearts'" d="M0 7C-20-4-5-16 0-7 5-16 20-4 0 7Z" fill="#bd7586" stroke="#9c6473" stroke-width="1" />
             <path v-else-if="expression.eyes === 'stars'" d="m0-12 3.5 7 7.5 1-5.5 5.5 1.3 7.5L0 5.5-6.8 9l1.3-7.5L-11-4l7.5-1Z" fill="#71658d" />
             <path v-else-if="expression.eyes === 'closed'" d="M-8 3Q0-7 8 3" stroke="#505467" stroke-width="3.4" stroke-linecap="round" />
             <path v-else-if="expression.eyes === 'sleep' || expression.eyes === 'wink' && side === 1" d="M-8-1Q0 7 8-1" stroke="#505467" stroke-width="3.1" stroke-linecap="round" />
             <path v-else-if="expression.eyes === 'squeezed'" :d="side === 0 ? 'm-7-6 9 6-9 6' : 'm7-6-9 6 9 6'" stroke="#505467" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
-            <g v-else class="starpet-blink" :class="{ 'starpet-can-blink': blinking }">
-              <ellipse v-if="expression.eyes === 'wide'" cy="1" rx="11.5" ry="14" fill="#fff9e9" />
+            <g v-else class="starpet-blink" :transform="`scale(1 ${frame.blink})`">
+              <ellipse v-if="expression.eyes === 'wide'" cy="1" rx="14.5" ry="16" fill="#fff9e9" />
               <g :transform="`translate(${eyeOffset.x} ${eyeOffset.y})`">
                 <path v-if="expression.eyes === 'focused'" d="M-7 1h14" stroke="#505467" stroke-width="4.5" stroke-linecap="round" />
-                <g v-else><ellipse :cy="expression.eyes === 'half' || expression.eyes === 'droop' ? 3 : 0" :rx="expression.eyes === 'uneven' && side === 0 ? 4 : expression.eyes === 'soft' ? 5.5 : 6.8" :ry="expression.eyes === 'half' ? 4 : expression.eyes === 'soft' ? 7 : expression.eyes === 'droop' || expression.eyes === 'uneven' && side === 0 ? 6 : 9.5" fill="#475268" /><ellipse v-if="expression.eyes !== 'half'" cx="-2" :cy="expression.eyes === 'droop' ? 1 : -3" rx="1.9" ry="2.3" fill="#fffcef" opacity=".92" /><circle v-if="expression.eyes === 'wide'" cx="2" cy="4" r="1.1" fill="#c5d0dd" /></g>
+                <g v-else><ellipse :cy="expression.eyes === 'half' || expression.eyes === 'droop' ? 3 : 0" :rx="expression.eyes === 'uneven' && side === 0 ? 5.5 : expression.eyes === 'soft' ? 8 : 9" :ry="expression.eyes === 'half' ? 5 : expression.eyes === 'soft' ? 10 : expression.eyes === 'droop' || expression.eyes === 'uneven' && side === 0 ? 8 : 12" fill="#475268" /><ellipse v-if="expression.eyes !== 'half'" cx="-2" :cy="expression.eyes === 'droop' ? 1 : -3" rx="2.4" ry="2.9" fill="#fffcef" opacity=".92" /><circle v-if="expression.eyes === 'wide'" cx="2" cy="4" r="1.1" fill="#c5d0dd" /></g>
               </g>
               <path v-if="expression.eyes === 'half'" d="M-8 0h16" stroke="#5a5b69" stroke-width="2.2" stroke-linecap="round" />
             </g>
           </g>
 
-          <g stroke="#65545e" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+          <g :opacity=".2 + frame.reveal * .8" :transform="`translate(120 141) scale(1.1 ${.82 + frame.reveal * .28}) translate(-120 -141)`" stroke="#65545e" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
             <path v-if="expression.mouth === 'smile'" d="M111 139q9 10 18 0" />
             <g v-else-if="expression.mouth === 'grin'"><path d="M108 137q12 5 24 0c0 19-24 19-24 0Z" fill="#6d5662" /><path d="M113 146q7-4 14 0-7 7-14 0Z" fill="#e4a19d" stroke="none" /></g>
             <path v-else-if="expression.mouth === 'tiny'" d="M116 141q4 4 8 0" />
@@ -78,8 +147,10 @@ function look(event: PointerEvent) {
             <g v-else-if="expression.mouth === 'tongue'"><path d="M110 139q10 7 20 0" /><path d="M120 143v5q5 7 8-1v-5" fill="#dfa1a2" /><path d="m124 144 1 4" stroke="#b67786" stroke-width="1" /></g>
             <path v-else-if="expression.mouth === 'breath'" d="M116 139q9 3 0 7" />
           </g>
-          <ellipse cx="81" cy="156" rx="9" ry="6" transform="rotate(-21 81 156)" fill="#f9e4ad" stroke="#c49c63" stroke-width="1.5" />
-          <ellipse v-if="expression.prop !== 'wave'" cx="159" cy="156" rx="9" ry="6" transform="rotate(21 159 156)" fill="#f9e4ad" stroke="#c49c63" stroke-width="1.5" />
+          </g>
+          <g :transform="`rotate(${-frame.hand} 81 149)`"><ellipse cx="81" cy="156" rx="9" ry="6" transform="rotate(-21 81 156)" fill="#f9e4ad" stroke="#c49c63" stroke-width="1.5" /></g>
+          <g :transform="`rotate(${frame.hand} 159 149)`"><ellipse v-if="expression.prop !== 'wave'" cx="159" cy="156" rx="9" ry="6" transform="rotate(21 159 156)" fill="#f9e4ad" stroke="#c49c63" stroke-width="1.5" /></g>
+          <g :opacity=".2 + frame.reveal * .8">
 
           <g v-if="expression.prop === 'wave'" class="starpet-wave-hand"><path d="M165 135c3-11 12-22 17-18 2 2-1 6-3 9 6-6 9-2 5 4 6-2 7 3 1 7-8 7-15 7-20-2Z" fill="#fff0be" stroke="#b58c56" stroke-width="1.7" /><path d="m185 109 3-5m5 13 6-2" stroke="var(--starpet-accent)" stroke-width="2.5" stroke-linecap="round" /></g>
           <g v-if="expression.prop === 'question' || expression.prop === 'puzzle'" class="starpet-floating-prop" stroke="var(--starpet-accent)" stroke-linecap="round" stroke-width="4"><path d="M172 49c-1-15 20-17 20-4 0 7-11 8-11 16" /><path d="M181 70v.1" stroke-width="5" /><path v-if="expression.prop === 'puzzle'" d="M52 66c-2-9 11-13 13-5 1 5-6 7-5 12m1 8v.1" stroke-width="3" /></g>
@@ -107,15 +178,19 @@ function look(event: PointerEvent) {
           <g v-if="expression.prop === 'check'" class="starpet-result-badge"><circle cx="178" cy="170" r="19" fill="#97bfa7" stroke="#658c7e" stroke-width="1.8" /><path d="m168 170 7 7 13-15" stroke="#fff7e3" stroke-width="3.8" stroke-linecap="round" stroke-linejoin="round" /></g>
           <g v-if="expression.prop === 'alert'" class="starpet-result-badge"><path d="m178 149 20 34q3 6-4 6h-33q-7 0-4-6l18-34q2-4 3 0Z" fill="#ecc39a" stroke="#b88673" stroke-width="1.7" stroke-linejoin="round" /><path d="M177 162v12m0 8v.1" stroke="#956a68" stroke-width="3.8" stroke-linecap="round" /></g>
           <g v-if="expression.prop === 'mug'" class="starpet-tool"><path d="M137 165h10q12 12-7 18" stroke="#9eac9a" stroke-width="5" /><path d="M102 160h39v22q-1 14-20 14-18 0-19-14Z" fill="#e9edcf" stroke="#91a18b" stroke-width="1.8" /><ellipse cx="121.5" cy="160" rx="19.5" ry="4" fill="#c0a483" stroke="#91a18b" stroke-width="1.5" /><path d="m121 169 2 4 5 .8-3.5 3.5.8 5-4.3-2.3-4.3 2.3.8-5-3.5-3.5 5-.8Z" fill="#d1b575" /><path class="starpet-steam" d="M114 149q-5-5 0-10m14 10q-5-5 0-10" stroke="#a2b9af" stroke-width="1.7" stroke-linecap="round" /></g>
+          </g>
         </g>
+      </g>
+      <g v-if="frame.burst > 0" class="starpet-touch-burst" :opacity="frame.burst" stroke-linejoin="round">
+        <g v-for="(color, index) in ['#f0c778', '#b7a5d9', '#9acbbb', '#e9b2bd', '#9dc6dc', '#efdaa1']" :key="index" :transform="`translate(120 120) rotate(${index * 60 + 12}) translate(0 ${-frame.burstRadius}) rotate(${-index * 60 - 12}) scale(${.6 + frame.burst * .5})`"><path d="M0-6 2-2 6 0 2 2 0 6-2 2-6 0-2-2Z" :fill="color" stroke="#fff4db" stroke-width=".7" /></g>
       </g>
     </svg>
   </div>
 </template>
 
 <style scoped>
-.starpet{display:inline-block;max-width:100%;aspect-ratio:1;vertical-align:middle;user-select:none;line-height:0;isolation:isolate}.starpet-canvas{display:block;width:100%;height:auto;overflow:visible}.starpet-body{filter:drop-shadow(0 3px 1px #443b4820)}.starpet-body-motion{transform-origin:120px 145px}.starpet-blink{transform-box:fill-box;transform-origin:center}.starpet-wave-hand{transform-origin:167px 137px}.starpet-orbiter{transform-origin:120px 122px}.starpet-writing-pencil{transform-origin:140px 167px}.starpet-ground{transform-origin:120px 217px}.starpet-confetti,.starpet-sparkles,.starpet-hearts,.starpet-floating-prop,.starpet-sleep-marks{transform-origin:120px 120px}
-.starpet-animated .starpet-motion-float{animation:starpet-float 3.8s ease-in-out infinite}.starpet-animated .starpet-motion-wave{animation:starpet-sway 2.6s ease-in-out infinite}.starpet-animated .starpet-motion-tilt{animation:starpet-sway 4.2s ease-in-out infinite}.starpet-animated .starpet-motion-breathe{animation:starpet-breathe 4.8s ease-in-out infinite}.starpet-animated .starpet-motion-stretch{animation:starpet-stretch 4.2s ease-in-out infinite}.starpet-animated .starpet-motion-bounce{animation:starpet-bounce 2.4s ease-in-out infinite}.starpet-animated .starpet-motion-hop{animation:starpet-hop 3.3s ease-in-out infinite}.starpet-animated .starpet-motion-shiver{animation:starpet-shiver 3.4s ease-in-out infinite}.starpet-animated .starpet-motion-nod{animation:starpet-nod 4s ease-in-out infinite}.starpet-animated .starpet-motion-scan{animation:starpet-scan 4.5s ease-in-out infinite}.starpet-animated .starpet-motion-work{animation:starpet-nod 3s ease-in-out infinite}.starpet-animated .starpet-motion-party{animation:starpet-party 2.8s ease-in-out infinite}.starpet-animated .starpet-can-blink{animation:starpet-blink 6.2s linear infinite}.starpet-animated .starpet-wave-hand{animation:starpet-wave 1.8s ease-in-out infinite}.starpet-animated .starpet-orbiter{animation:starpet-orbit 4.2s linear infinite}.starpet-animated .starpet-writing-pencil{animation:starpet-pencil 1.6s ease-in-out infinite}.starpet-animated .starpet-floating-prop,.starpet-animated .starpet-sparkles,.starpet-animated .starpet-hearts{animation:starpet-float 3.2s ease-in-out infinite}.starpet-animated .starpet-sleep-marks{animation:starpet-dream 4s ease-in-out infinite}.starpet-animated .starpet-confetti{animation:starpet-confetti 2.8s ease-in-out infinite}.starpet-animated .starpet-steam,.starpet-animated .starpet-sigh{animation:starpet-dream 3.6s ease-in-out infinite}.starpet-animated .starpet-listen-lines{animation:starpet-listen 2.6s ease-in-out infinite}.starpet-animated .starpet-surprise-lines{animation:starpet-listen 3.3s ease-in-out infinite}.starpet-animated .starpet-tears{animation:starpet-tears 2.2s ease-in-out infinite}
-@keyframes starpet-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-4px)}}@keyframes starpet-sway{0%,100%{transform:rotate(-2deg)}50%{transform:rotate(2deg) translateY(-2px)}}@keyframes starpet-breathe{0%,100%{transform:scale(1,.985)}50%{transform:scale(1.015,1.015)}}@keyframes starpet-stretch{0%,20%,100%{transform:scale(1)}45%,65%{transform:translateY(-4px) scale(1.04,1.055)}}@keyframes starpet-bounce{0%,65%,100%{transform:translateY(0)}25%{transform:translateY(-7px) rotate(2deg)}45%{transform:translateY(1px) scale(1.02,.985)}}@keyframes starpet-hop{0%,60%,100%{transform:translateY(0)}18%{transform:translateY(-8px)}30%{transform:translateY(0)}42%{transform:translateY(-4px)}}@keyframes starpet-shiver{0%,25%,55%,100%{transform:translateX(0)}31%,43%{transform:translateX(-1.5px)}37%,49%{transform:translateX(1.5px)}}@keyframes starpet-nod{0%,100%{transform:rotate(0)}30%,55%{transform:rotate(2deg) translateY(2px)}}@keyframes starpet-scan{0%,100%{transform:translateX(-2px) rotate(-2deg)}50%{transform:translateX(2px) rotate(2deg)}}@keyframes starpet-party{0%,100%{transform:rotate(-3deg)}25%{transform:translateY(-6px) rotate(3deg)}50%{transform:translateY(0) rotate(3deg)}75%{transform:translateY(-4px) rotate(-3deg)}}@keyframes starpet-blink{0%,42%,46%,100%{transform:scaleY(1)}44%{transform:scaleY(.08)}}@keyframes starpet-wave{0%,100%{transform:rotate(-5deg)}30%,60%{transform:rotate(11deg)}45%,75%{transform:rotate(-8deg)}}@keyframes starpet-orbit{to{transform:rotate(360deg)}}@keyframes starpet-pencil{0%,100%{transform:rotate(-3deg)}25%,70%{transform:rotate(4deg)}}@keyframes starpet-dream{0%,100%{transform:translateY(1px);opacity:.6}50%{transform:translateY(-3px);opacity:1}}@keyframes starpet-confetti{0%,100%{transform:translateY(-2px);opacity:.65}50%{transform:translateY(3px);opacity:1}}@keyframes starpet-listen{0%,100%{opacity:.35}40%,65%{opacity:1}}@keyframes starpet-tears{0%,100%{transform:translateY(0);opacity:.75}55%{transform:translateY(2px);opacity:1}}
+.starpet{display:inline-block;max-width:100%;aspect-ratio:1;vertical-align:middle;user-select:none;line-height:0;isolation:isolate}.starpet-canvas{display:block;width:100%;height:auto;overflow:visible}.starpet-body{filter:drop-shadow(0 3px 1px #443b4820)}.starpet-wave-hand{transform-origin:167px 137px}.starpet-orbiter{transform-origin:120px 122px}.starpet-writing-pencil{transform-origin:140px 167px}.starpet-confetti,.starpet-sparkles,.starpet-hearts,.starpet-floating-prop,.starpet-sleep-marks{transform-origin:120px 120px}.starpet-touch-burst{pointer-events:none}
+.starpet-animated .starpet-wave-hand{animation:starpet-wave 1.9s ease-in-out infinite}.starpet-animated .starpet-orbiter{animation:starpet-orbit 3.9s linear infinite}.starpet-animated .starpet-writing-pencil{animation:starpet-pencil 1.6s ease-in-out infinite}.starpet-animated .starpet-floating-prop,.starpet-animated .starpet-sparkles,.starpet-animated .starpet-hearts{animation:starpet-float 3.2s ease-in-out infinite}.starpet-animated .starpet-sleep-marks{animation:starpet-dream 4s ease-in-out infinite}.starpet-animated .starpet-confetti{animation:starpet-confetti 2.8s ease-in-out infinite}.starpet-animated .starpet-steam,.starpet-animated .starpet-sigh{animation:starpet-dream 3.6s ease-in-out infinite}.starpet-animated .starpet-listen-lines{animation:starpet-listen 2.6s ease-in-out infinite}.starpet-animated .starpet-surprise-lines{animation:starpet-listen 3.3s ease-in-out infinite}.starpet-animated .starpet-tears{animation:starpet-tears 2.2s ease-in-out infinite}
+@keyframes starpet-float{0%,100%{transform:translateY(0) rotate(-2deg)}50%{transform:translateY(-5px) rotate(3deg)}}@keyframes starpet-wave{0%,100%{transform:rotate(-8deg)}20%,55%{transform:rotate(23deg)}37%,72%{transform:rotate(-12deg)}}@keyframes starpet-orbit{to{transform:rotate(360deg)}}@keyframes starpet-pencil{0%,100%{transform:rotate(-5deg)}25%,70%{transform:rotate(7deg)}}@keyframes starpet-dream{0%,100%{transform:translateY(1px);opacity:.6}50%{transform:translateY(-5px);opacity:1}}@keyframes starpet-confetti{0%,100%{transform:translateY(-3px) rotate(-2deg);opacity:.65}50%{transform:translateY(5px) rotate(3deg);opacity:1}}@keyframes starpet-listen{0%,100%{opacity:.35}40%,65%{opacity:1}}@keyframes starpet-tears{0%,100%{transform:translateY(0);opacity:.75}55%{transform:translateY(4px);opacity:1}}
 @media(prefers-reduced-motion:reduce){.starpet *{animation:none!important;transition:none!important}}
 </style>
