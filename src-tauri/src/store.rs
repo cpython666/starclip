@@ -110,6 +110,64 @@ impl Settings {
     }
 }
 
+pub const STARPET_MOODS: &[&str] = &[
+    "idle",
+    "greet",
+    "curious",
+    "listening",
+    "sleepy",
+    "sleeping",
+    "waking",
+    "stretch",
+    "happy",
+    "delighted",
+    "love",
+    "shy",
+    "surprised",
+    "puzzled",
+    "sad",
+    "crying",
+    "angry",
+    "nervous",
+    "proud",
+    "relieved",
+    "thinking",
+    "searching",
+    "reading",
+    "writing",
+    "drawing",
+    "focused",
+    "waiting",
+    "loading",
+    "success",
+    "error",
+    "celebrate",
+    "resting",
+];
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+pub struct StarpetPreferences {
+    pub enabled: bool,
+    pub mood: String,
+}
+impl Default for StarpetPreferences {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mood: "idle".into(),
+        }
+    }
+}
+impl StarpetPreferences {
+    pub fn validate(&self) -> Result<()> {
+        if !STARPET_MOODS.contains(&self.mood.as_str()) {
+            return Err("不支持的星伴表情。".into());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CleanupFilter {
@@ -443,6 +501,41 @@ impl Store {
                 "INSERT INTO preferences(key,value) VALUES('onboarding_v1','true')
             ON CONFLICT(key) DO UPDATE SET value='true'",
                 [],
+            )
+            .map_err(sql_error)?;
+        Ok(())
+    }
+
+    pub fn starpet_preferences(&self) -> Result<StarpetPreferences> {
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM preferences WHERE key='starpet_v1'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error)?;
+        match json {
+            Some(json) => {
+                let preferences: StarpetPreferences = serde_json::from_str(&json)
+                    .map_err(|_| "星伴偏好损坏，未更改已保存的数据。")?;
+                preferences.validate()?;
+                Ok(preferences)
+            }
+            None => Ok(StarpetPreferences::default()),
+        }
+    }
+
+    pub fn save_starpet_preferences(&self, preferences: &StarpetPreferences) -> Result<()> {
+        // Keep pet interactions independent of retention, clipboard capture and ordinary settings.
+        preferences.validate()?;
+        let json = serde_json::to_string(preferences).map_err(|e| e.to_string())?;
+        self.conn
+            .execute(
+                "INSERT INTO preferences(key,value) VALUES('starpet_v1',?1)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [json],
             )
             .map_err(sql_error)?;
         Ok(())
@@ -934,6 +1027,114 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn starpet_preferences_are_optional_persistent_and_independent_of_capture_and_retention() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("starpet.sqlite3");
+        let fresh = Store::open(&path).unwrap();
+        assert_eq!(
+            fresh.starpet_preferences().unwrap(),
+            StarpetPreferences::default()
+        );
+        assert_eq!(
+            fresh
+                .conn
+                .query_row(
+                    "SELECT count(*) FROM preferences WHERE key='starpet_v1'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        fresh
+            .conn
+            .execute(
+                "INSERT INTO preferences(key,value) VALUES('starpet_v1','{}')",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            fresh.starpet_preferences().unwrap(),
+            StarpetPreferences::default()
+        );
+        assert_eq!(
+            fresh
+                .conn
+                .query_row(
+                    "SELECT value FROM preferences WHERE key='starpet_v1'",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+            "{}",
+            "reading defaults must not rewrite existing data"
+        );
+        let preferences = StarpetPreferences {
+            enabled: true,
+            mood: "curious".into(),
+        };
+        fresh.save_starpet_preferences(&preferences).unwrap();
+        drop(fresh);
+        let db = Store::open(&path).unwrap();
+        assert_eq!(db.starpet_preferences().unwrap(), preferences);
+
+        let settings = Settings {
+            paused: false,
+            retention_days: 1,
+            max_history: 50,
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO preferences(key,value) VALUES('settings',?1)",
+                [&json],
+            )
+            .unwrap();
+        db.conn.execute("INSERT INTO clips(content,kind,created_at,updated_at) VALUES('星伴表情变化不能删除这条原创超期片段','text',0,0)", []).unwrap();
+        db.conn.execute_batch("CREATE TRIGGER forbid_starpet_prune BEFORE DELETE ON clips BEGIN SELECT RAISE(ABORT, 'starpet must not prune'); END;").unwrap();
+        assert_eq!(STARPET_MOODS.len(), 32);
+        for mood in STARPET_MOODS {
+            let value = StarpetPreferences {
+                enabled: *mood != "sleeping",
+                mood: (*mood).into(),
+            };
+            db.save_starpet_preferences(&value).unwrap();
+            assert_eq!(db.starpet_preferences().unwrap(), value);
+        }
+        assert_eq!(db.settings().unwrap(), settings);
+        assert_eq!(db.clips().unwrap().len(), 1);
+        assert!(!db.onboarding_completed().unwrap());
+        assert_eq!(
+            db.conn
+                .query_row(
+                    "SELECT value FROM preferences WHERE key='settings'",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+            json
+        );
+        let old = db.starpet_preferences().unwrap();
+        for mood in ["", "unknown", "IDLE", "idle "] {
+            assert!(db
+                .save_starpet_preferences(&StarpetPreferences {
+                    enabled: true,
+                    mood: mood.into()
+                })
+                .is_err());
+            assert_eq!(db.starpet_preferences().unwrap(), old);
+        }
+        db.conn.execute_batch("CREATE TRIGGER fail_starpet_save BEFORE UPDATE ON preferences WHEN NEW.key='starpet_v1' BEGIN SELECT RAISE(ABORT, 'fixture disk error'); END;").unwrap();
+        assert!(db.save_starpet_preferences(&preferences).is_err());
+        assert_eq!(
+            db.starpet_preferences().unwrap(),
+            old,
+            "failed persistence retains the complete previous preference"
+        );
     }
 
     #[test]

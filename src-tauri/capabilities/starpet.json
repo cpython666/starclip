@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "starpet-capability",
+  "description": "The optional local star companion can only manage itself and show the main window",
+  "windows": ["starpet"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten", "starpet-commands"]
+}

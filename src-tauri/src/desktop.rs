@@ -1,7 +1,7 @@
 use crate::storage::{DataDirectoryPlan, DataLocation, DirectoryMode, Storage};
 use crate::store::{
     CleanupFilter, CleanupPreview, CleanupResult, CleanupSnapshot, Clip, Group, Result, Settings,
-    Store, STALE_CLEANUP,
+    StarpetPreferences, Store, STALE_CLEANUP,
 };
 use arboard::Clipboard;
 use serde::Serialize;
@@ -16,7 +16,7 @@ use std::{
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, State,
+    AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
@@ -34,6 +34,7 @@ struct Context {
     shortcut_error: Mutex<Option<String>>,
     window_error: Mutex<Option<String>>,
     cleanup: Mutex<Option<CleanupSnapshot>>,
+    starpet_operation: Mutex<()>,
 }
 type AppContext<'a> = State<'a, Arc<Context>>;
 fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>> {
@@ -64,6 +65,157 @@ fn toggle_window(app: &AppHandle) {
             show_window(app);
         }
     }
+}
+
+fn show_starpet(app: &AppHandle) -> Result<WebviewWindow> {
+    if let Some(window) = app.get_webview_window("starpet") {
+        if !window.is_visible().map_err(|e| e.to_string())? {
+            window.show().map_err(|e| format!("无法显示星伴：{e}"))?;
+        }
+        return Ok(window);
+    }
+    let mut builder = WebviewWindowBuilder::new(
+        app,
+        "starpet",
+        WebviewUrl::App("index.html?view=starpet".into()),
+    )
+    .title("星伴 · Starclip")
+    .inner_size(230.0, 260.0)
+    .resizable(false)
+    .maximizable(false)
+    .minimizable(false)
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    // Initial visibility with focused(false) does not activate the application.
+    // Calling show() after a hidden build would steal focus on macOS.
+    .visible(true)
+    .focused(false);
+    if let Ok(Some(monitor)) = app.primary_monitor() {
+        let area = monitor.work_area();
+        let scale = monitor.scale_factor();
+        let left = f64::from(area.position.x) / scale;
+        let top = f64::from(area.position.y) / scale;
+        let x = left + (f64::from(area.size.width) / scale - 250.0).max(0.0);
+        let y = top + (f64::from(area.size.height) / scale - 280.0).max(0.0);
+        builder = builder.position(x, y);
+    }
+    builder
+        .build()
+        .map_err(|e| format!("无法创建星伴窗口，偏好未保存：{e}"))
+}
+
+// Every caller runs off the UI thread: window creation may wait for the event loop.
+fn update_starpet(
+    app: &AppHandle,
+    context: &Context,
+    update: impl FnOnce(&mut StarpetPreferences),
+) -> Result<StarpetPreferences> {
+    let _operation = lock(&context.starpet_operation)?;
+    let old = lock(&context.store)?.starpet_preferences()?;
+    let mut preferences = old.clone();
+    update(&mut preferences);
+    preferences.validate()?;
+    let previous_window = app.get_webview_window("starpet");
+    let previously_visible = previous_window
+        .as_ref()
+        .map(|window| window.is_visible().map_err(|e| e.to_string()))
+        .transpose()?
+        .unwrap_or(false);
+    let window = if preferences.enabled {
+        Some(show_starpet(app)?)
+    } else {
+        if let Some(window) = previous_window.as_ref() {
+            window
+                .hide()
+                .map_err(|e| format!("无法隐藏星伴，偏好未保存：{e}"))?;
+        }
+        previous_window.clone()
+    };
+    // Do not hold the data write gate while dispatching window operations: a
+    // synchronous main-window command may need that gate on the UI thread.
+    let save_result = (|| -> Result<()> {
+        if preferences != old {
+            let _write = write_guard(context)?;
+            lock(&context.store)?.save_starpet_preferences(&preferences)?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = save_result {
+        let rollback = if let Some(window) = window {
+            if previous_window.is_none() {
+                window.destroy()
+            } else if previously_visible {
+                window.show()
+            } else {
+                window.hide()
+            }
+        } else {
+            Ok(())
+        };
+        return Err(match rollback {
+            Ok(()) => format!("星伴偏好未保存，已恢复原窗口状态：{error}"),
+            Err(rollback) => {
+                format!("星伴偏好未保存：{error}；恢复窗口状态失败：{rollback}。请重启星笺。")
+            }
+        });
+    }
+    for label in ["main", "starpet"] {
+        let _ = app.emit_to(label, "starpet-changed", &preferences);
+    }
+    Ok(preferences)
+}
+
+fn starpet_error(app: &AppHandle, error: String) {
+    app.dialog().message(error).title("星伴").show(|_| {});
+}
+
+#[tauri::command]
+async fn get_starpet_preferences(context: AppContext<'_>) -> Result<StarpetPreferences> {
+    let context = context.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // A newly created webview must not read the old value before a save/rollback finishes.
+        let _operation = lock(&context.starpet_operation)?;
+        lock(&context.store)?.starpet_preferences()
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn set_starpet_preferences(
+    app: AppHandle,
+    context: AppContext<'_>,
+    preferences: StarpetPreferences,
+) -> Result<StarpetPreferences> {
+    let context = context.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        update_starpet(&app, &context, |value| *value = preferences)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn show_main_window(app: AppHandle) -> Result<()> {
+    let window = app.get_webview_window("main").ok_or("主窗口不存在。")?;
+    window
+        .show()
+        .and_then(|_| window.unminimize())
+        .and_then(|_| window.set_focus())
+        .map_err(|e| format!("无法打开主窗口：{e}"))
+}
+
+#[tauri::command]
+fn starpet_start_dragging(window: WebviewWindow) -> Result<()> {
+    if window.label() != "starpet" {
+        return Err("此操作仅用于星伴窗口。".into());
+    }
+    window
+        .start_dragging()
+        .map_err(|e| format!("无法拖动星伴：{e}"))
 }
 
 #[derive(Serialize)]
@@ -754,12 +906,14 @@ pub fn run() {
                 shortcut_error: Mutex::new(shortcut_error),
                 window_error: Mutex::new(window_error),
                 cleanup: Mutex::new(None),
+                starpet_operation: Mutex::new(()),
             });
             app.manage(context.clone());
             let show = MenuItem::with_id(app, "show", "打开星笺", true, None::<&str>)?;
             let pause = MenuItem::with_id(app, "pause", "暂停 / 继续记录", true, None::<&str>)?;
+            let starpet = MenuItem::with_id(app, "starpet", "显示 / 隐藏星伴", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出星笺", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &pause, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &pause, &starpet, &quit])?;
             let mut tray = TrayIconBuilder::new()
                 .tooltip("星笺 Starclip")
                 .menu(&menu)
@@ -779,6 +933,17 @@ pub fn run() {
                         }
                     }
                     "quit" => app.exit(0),
+                    "starpet" => {
+                        let app = app.clone();
+                        let context = app.state::<Arc<Context>>().inner().clone();
+                        tauri::async_runtime::spawn_blocking(move || {
+                            if let Err(error) = update_starpet(&app, &context, |value| {
+                                value.enabled = !value.enabled
+                            }) {
+                                starpet_error(&app, error);
+                            }
+                        });
+                    }
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -797,17 +962,45 @@ pub fn run() {
                 tray = tray.icon(icon.clone());
             }
             tray.build(app)?;
+            let pet_app = app.handle().clone();
+            let pet_context = context.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                if let Err(error) = update_starpet(&pet_app, &pet_context, |_| {}) {
+                    starpet_error(&pet_app, error);
+                }
+            });
             monitor(app.handle().clone(), context);
             Ok(())
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+                match window.label() {
+                    "main" => {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                    "starpet" => {
+                        api.prevent_close();
+                        let app = window.app_handle().clone();
+                        let context = app.state::<Arc<Context>>().inner().clone();
+                        tauri::async_runtime::spawn_blocking(move || {
+                            if let Err(error) =
+                                update_starpet(&app, &context, |value| value.enabled = false)
+                            {
+                                starpet_error(&app, error);
+                            }
+                        });
+                    }
+                    _ => {}
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
             get_state,
+            get_starpet_preferences,
+            set_starpet_preferences,
+            show_main_window,
+            starpet_start_dragging,
             complete_onboarding,
             add_clip,
             update_clip,

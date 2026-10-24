@@ -1,0 +1,26 @@
+{
+  "permission": [
+    {
+      "identifier": "main-commands",
+      "description": "Clipboard, history, settings, data and rendering commands are only available to the main window",
+      "commands": {
+        "allow": [
+          "get_state", "complete_onboarding", "add_clip", "update_clip", "save_code",
+          "delete_clip", "copy_clip", "create_group", "delete_group", "save_settings",
+          "clear_history", "set_keep_forever", "preview_cleanup", "execute_cleanup",
+          "export_backup", "import_backup", "save_backup", "save_export", "hide_window",
+          "handwriting_assets", "choose_handwriting_app", "render_handwriting",
+          "get_data_location", "choose_data_directory", "apply_data_directory",
+          "open_data_directory", "restart_app"
+        ]
+      }
+    },
+    {
+      "identifier": "starpet-commands",
+      "description": "Manage the star companion without access to clipboard or history",
+      "commands": {
+        "allow": ["get_starpet_preferences", "set_starpet_preferences", "show_main_window", "starpet_start_dragging"]
+      }
+    }
+  ]
+}

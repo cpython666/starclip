@@ -3,5 +3,5 @@
   "identifier": "main-capability",
   "description": "The local Starclip application window",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "main-commands", "starpet-commands"]
 }

@@ -10,6 +10,7 @@ import CleanupPanel from './components/CleanupPanel.vue'
 import StickerScene from './components/StickerScene.vue'
 import OnboardingGuide from './components/OnboardingGuide.vue'
 import UiSelect from './components/UiSelect.vue'
+import StarPetSettings from './components/StarPetSettings.vue'
 
 const state = ref<AppState>({ onboardingCompleted: true, clips: [], groups: [], settings: { paused: true, theme: 'dark', layout: 'grid', maxHistory: 0, retentionDays: 0, alwaysOnTop: false, showStartup: true, stickerPack: 'auto', shortcut: 'CommandOrControl+Shift+V' }, clipboardError: null, shortcutError: null, windowError: null })
 const loading = ref(true)
@@ -42,6 +43,7 @@ const settingsDraft = ref<Settings>({ ...state.value.settings })
 const settingsSaving = ref(false)
 const settingsTabs = [
   { key: 'appearance', label: '外观', icon: 'moon' },
+  { key: 'starpet', label: '星伴', icon: 'star' },
   { key: 'habits', label: '使用习惯', icon: 'sliders' },
   { key: 'privacy', label: '记录与隐私', icon: 'shield' },
   { key: 'data', label: '数据管理', icon: 'folder' },
@@ -291,6 +293,9 @@ onUnmounted(() => { unsubscribe?.(); clearTimeout(toastTimer); clearTimeout(copy
           <div ref="settingsScroll" class="settings-scroll">
             <section v-show="settingsTab === 'appearance'" id="settings-panel-appearance" role="tabpanel" aria-labelledby="settings-tab-appearance" class="settings-panel">
               <fieldset class="settings-section preferences-boundary" :disabled="busy || dataBusy" aria-label="外观"><div class="setting-row"><div><strong>主题</strong><p>选择你喜欢的星空底色</p></div><UiSelect v-model="settingsDraft.theme" :options="themeChoices" label="主题" :disabled="busy || dataBusy" /></div><div class="sticker-settings"><div class="sticker-settings-heading"><strong>贴纸小伙伴</strong><span>原创小图案，陪你收好灵感</span></div><div class="sticker-options" role="group" aria-label="贴纸风格"><button v-for="option in stickerOptions" :key="option.value" type="button" :class="['sticker-option', { chosen: settingsDraft.stickerPack === option.value }]" :aria-pressed="settingsDraft.stickerPack === option.value" :aria-label="option.name" :title="option.description" @click="settingsDraft.stickerPack = option.value"><StickerScene v-if="option.value !== 'none'" :pack="option.value" :theme="settingsDraft.theme === 'system' ? resolvedTheme : settingsDraft.theme" placement="preview" /><span v-else class="sticker-none" aria-hidden="true">—</span><strong>{{ option.name }}</strong><span>{{ option.description }}</span></button></div></div></fieldset>
+            </section>
+            <section v-if="settingsTab === 'starpet'" id="settings-panel-starpet" role="tabpanel" aria-labelledby="settings-tab-starpet" class="settings-panel">
+              <StarPetSettings @busy="dataBusy = $event" />
             </section>
             <section v-show="settingsTab === 'habits'" id="settings-panel-habits" role="tabpanel" aria-labelledby="settings-tab-habits" class="settings-panel">
               <fieldset class="settings-section preferences-boundary" :disabled="busy || dataBusy" aria-label="使用习惯"><h3><Icon name="sliders" :size="16" />使用习惯</h3><div class="setting-row"><div><strong>流星启动画面</strong><p>仅首次打开短暂显示，可随时跳过</p></div><div class="startup-preference"><button type="button" class="startup-replay" :disabled="dataBusy" @click="replayStartup">重看一次</button><button type="button" :class="['switch', { on: settingsDraft.showStartup }]" role="switch" :aria-checked="settingsDraft.showStartup" aria-label="流星启动画面" :disabled="dataBusy" @click="settingsDraft.showStartup = !settingsDraft.showStartup"><span /></button></div></div><div class="setting-row"><div><strong>默认布局</strong><p>网格、列表，或横向快取的流星栏</p></div><UiSelect v-model="settingsDraft.layout" :options="layoutChoices" label="默认布局" :disabled="busy || dataBusy" /></div><div class="setting-row"><div><strong>窗口置顶</strong><p>{{ isDesktop ? '保持在其他应用窗口上方' : '桌面版生效；此处仅预览设置' }}</p></div><button type="button" :class="['switch', { on: settingsDraft.alwaysOnTop }]" role="switch" :aria-checked="settingsDraft.alwaysOnTop" aria-label="窗口置顶" @click="settingsDraft.alwaysOnTop = !settingsDraft.alwaysOnTop"><span /></button></div><div class="setting-row"><div><strong>呼出快捷键</strong><p>从任何应用打开星笺</p></div><input class="shortcut-input" v-model="settingsDraft.shortcut" aria-label="呼出快捷键" placeholder="CommandOrControl+Shift+V" /></div><div class="setting-row"><div><strong>分类 / 分组切换</strong><p>窗口内循环切换；输入文字和弹窗内不触发</p></div><kbd class="setting-shortcut">{{ modKey }} ⇧ ← / →</kbd></div></fieldset>
