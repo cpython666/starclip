@@ -268,7 +268,12 @@ async fn save_backup(app: AppHandle, context: AppContext<'_>) -> Result<bool> {
     .map_err(|_| "导出任务失败。".to_string())?
 }
 #[tauri::command]
-async fn save_export(app: AppHandle, data: String, format: String) -> Result<bool> {
+async fn save_export(
+    app: AppHandle,
+    data: String,
+    format: String,
+    filename: Option<String>,
+) -> Result<bool> {
     use base64::Engine;
     let bytes = match format.as_str() {
         "md" => {
@@ -291,12 +296,30 @@ async fn save_export(app: AppHandle, data: String, format: String) -> Result<boo
         }
         _ => return Err("仅支持 Markdown 与 PNG 导出。".into()),
     };
+    let filename = filename
+        .and_then(|name| {
+            let name = name.rsplit(['/', '\\']).next()?.trim();
+            if name.is_empty() || name.chars().count() > 200 || name.chars().any(char::is_control) {
+                return None;
+            }
+            let stem = Path::new(name).file_stem()?.to_str()?;
+            if stem.is_empty()
+                || stem == "."
+                || stem == ".."
+                || stem.contains([':', '*', '?', '"', '<', '>', '|'])
+            {
+                return None;
+            }
+            let filename = format!("{stem}.{format}");
+            (filename.chars().count() <= 200).then_some(filename)
+        })
+        .unwrap_or_else(|| format!("starclip-card.{format}"));
     tauri::async_runtime::spawn_blocking(move || {
         let Some(file) = app
             .dialog()
             .file()
             .add_filter("Starclip export", &[format.as_str()])
-            .set_file_name(format!("starclip-code.{format}"))
+            .set_file_name(filename)
             .blocking_save_file()
         else {
             return Ok(false);
@@ -314,6 +337,52 @@ fn hide_window(app: AppHandle) -> Result<()> {
         .ok_or("窗口不存在。")?
         .hide()
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn handwriting_assets(app: AppHandle) -> Result<crate::handwriting::HandwritingAssets> {
+    let directory = app
+        .path()
+        .app_config_dir()
+        .map_err(|_| "无法定位应用设置目录。")?;
+    tauri::async_runtime::spawn_blocking(move || crate::handwriting::assets(&directory))
+        .await
+        .map_err(|_| "无法读取手写应用素材。".to_string())
+}
+#[tauri::command]
+async fn choose_handwriting_app(app: AppHandle) -> Result<crate::handwriting::HandwritingAssets> {
+    let directory = app
+        .path()
+        .app_config_dir()
+        .map_err(|_| "无法定位应用设置目录。")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let picker = app
+            .dialog()
+            .file()
+            .set_title("选择星笺.app 或 xingjian CLI");
+        #[cfg(windows)]
+        let picker = picker.add_filter("星笺 CLI", &["exe"]);
+        let Some(selected) = picker.blocking_pick_file() else {
+            return Ok(crate::handwriting::assets(&directory));
+        };
+        let path = selected.into_path().map_err(|_| "请选择本机应用文件。")?;
+        crate::handwriting::select_app(&directory, &path)
+    })
+    .await
+    .map_err(|_| "选择手写应用失败。".to_string())?
+}
+#[tauri::command]
+async fn render_handwriting(
+    app: AppHandle,
+    options: crate::handwriting::HandwritingOptions,
+) -> Result<String> {
+    let directory = app
+        .path()
+        .app_config_dir()
+        .map_err(|_| "无法定位应用设置目录。")?;
+    tauri::async_runtime::spawn_blocking(move || crate::handwriting::render(&directory, options))
+        .await
+        .map_err(|_| "手写渲染任务失败。".to_string())?
 }
 
 fn set_clipboard_error(app: &AppHandle, context: &Context, error: Option<String>) {
@@ -489,7 +558,10 @@ pub fn run() {
             import_backup,
             save_backup,
             save_export,
-            hide_window
+            hide_window,
+            handwriting_assets,
+            choose_handwriting_app,
+            render_handwriting
         ])
         .run(tauri::generate_context!())
         .expect("星笺启动失败，请检查本地数据目录权限或磁盘空间。");

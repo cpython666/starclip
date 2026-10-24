@@ -1,6 +1,20 @@
-# 0.1.0 首版验证（2026-10-24）
+# 0.1.0 验证记录（2026-10-24）
 
-## 已完成
+## 卡片工坊更新
+
+- `npm test`：4 项通过；新增中文、CRLF、留白和代码卡片容量边界检查。`npm run build` 通过。
+- Rust 无 desktop 特性测试：9 项通过，1 项本机 CLI 测试默认忽略；格式检查与桌面 `cargo check --locked` 通过。
+- 显式运行 `cargo test --manifest-path src-tauri/Cargo.toml --no-default-features local_cli_renders_original_text_to_png -- --ignored` 通过；真实星笺 CLI 生成 1200×1600 纯色纸及 200×200 内置纸，验证纸张尺寸与临时文件清理。
+- 独立应用标识 `com.starclip.card-verify` 的原生构建实测：发现本机星笺及完整 9 款字体，输入原创中文 → 生成预览 → 原生保存对话框 → 成功保存 1200×1600 PNG。
+- 原生修改留白后显示预览失效提示并禁用导出；更新预览后恢复。手写模式 `⌘S` 未增加代码记录，退出工坊后仍为 0 条记录、暂停采集；未读取或改动正式应用历史。
+- 浏览器演示实测：代码/手写切换保留正文；已有文字片段直接进入手写模式；浏览器明确提示手写需要桌面版。代码卡片实际下载为 1184×548 PNG，中文、首行空行、紫色背景、56 px 横向留白和自定义水印均正确。
+- 两种 PNG 均打开检查了实际图片。验收仅使用原创示例；临时浏览器预览和独立验收应用已退出。
+- 正式应用标识的本地打包成功，Apple Silicon `.app` 约 8.20 MiB，`.dmg` 约 3.57 MiB；未签名公证。
+- 手写能力当前依赖单独安装的星笺 Rust 应用；没有把字体及渲染器捆绑进 Starclip。Windows 手写接入尚未实机验证。
+
+![原生卡片工坊：手写纸笺预览与导出成功](card-studio.png)
+
+## 首版已完成
 
 - Apple M3 Pro 本地 `npm run build`：TypeScript 检查及 Vite 生产构建成功。
 - `npm test`：3 项通过，覆盖 Markdown 围栏逃逸、导出元数据与 JSON 格式化。

@@ -1,4 +1,4 @@
-import type { AppState, Clip, Group, Settings } from './types';
+import type { AppState, Clip, Group, HandwritingAssets, HandwritingOptions, Settings } from './types';
 import { download, languages } from './snippets';
 
 export const isDesktop = '__TAURI_INTERNALS__' in window;
@@ -34,6 +34,16 @@ function classify(content: string): Clip['kind'] {
 async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> { return (await import('@tauri-apps/api/core')).invoke<T>(command, args); }
 
 export const api = {
+  async handwritingAssets(): Promise<HandwritingAssets> {
+    return isDesktop ? invoke('handwriting_assets') : { available: false, path: null, fonts: [], backgrounds: [], error: '手写纸笺需要在桌面版中连接本机星笺应用。代码卡片可直接在此制作。' };
+  },
+  async chooseHandwritingApp(): Promise<HandwritingAssets> {
+    return isDesktop ? invoke('choose_handwriting_app') : api.handwritingAssets();
+  },
+  async renderHandwriting(options: HandwritingOptions): Promise<string> {
+    if (!isDesktop) throw new Error('请在桌面版中生成手写纸笺。');
+    return invoke('render_handwriting', { options });
+  },
   async getState(): Promise<AppState> { return isDesktop ? invoke('get_state') : structuredClone(demo); },
   async addClip(content: string, title: string, groupId: number | null): Promise<Clip> {
     if (isDesktop) return invoke('add_clip', { content, title, groupId });
@@ -109,7 +119,7 @@ export const api = {
     changed(); return structuredClone(actual);
   },
   async saveExport(data: string, format: 'md' | 'png', filename: string): Promise<boolean> {
-    if (isDesktop) return invoke('save_export', { data, format });
+    if (isDesktop) return invoke('save_export', { data, format, filename });
     const blob = format === 'md' ? new Blob([data], { type: 'text/markdown;charset=utf-8' }) : new Blob([Uint8Array.from(atob(data), (c) => c.charCodeAt(0))], { type: 'image/png' });
     download(blob, filename); return true;
   },

@@ -25,3 +25,18 @@ export interface AppState {
   clipboardError: string | null;
   shortcutError: string | null;
 }
+export interface HandwritingAssets {
+  available: boolean;
+  path: string | null;
+  fonts: Array<{ name: string; path: string }>;
+  backgrounds: Array<{ name: string; path: string }>;
+  error: string | null;
+}
+export interface HandwritingOptions {
+  text: string;
+  font: string;
+  background: string;
+  fontSize: number;
+  ink: string;
+  padding: number;
+}
