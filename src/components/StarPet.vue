@@ -7,6 +7,19 @@ const props = withDefaults(defineProps<{ mood?: string; size?: number; animated?
 const desired = computed(() => getStarPetMood(props.mood));
 const shownMood = ref(desired.value.id);
 const expression = computed(() => getStarPetMood(shownMood.value));
+// Most moods have no hands. Two small spheres only appear for a gesture or a held prop.
+const handPositions = computed<Array<[number, number]>>(() => {
+  switch (expression.value.prop) {
+    case 'wave': return [[78, 162], [182, 126]];
+    case 'flower': return [[78, 162], [156, 171]];
+    case 'magnifier': return [[78, 162], [174, 169]];
+    case 'book': return [[78, 170], [162, 170]];
+    case 'pencil': return [[87, 177], [146, 159]];
+    case 'palette': return [[84, 181], [147, 159]];
+    case 'mug': return [[99, 177], [146, 177]];
+    default: return [];
+  }
+});
 const pixels = computed(() => Number.isFinite(props.size) ? Math.max(48, Math.min(640, props.size)) : 180);
 const uid = useId();
 const gradientId = `starpet-body-${uid}`;
@@ -159,11 +172,9 @@ function look(event: PointerEvent) {
             <path v-else-if="expression.mouth === 'breath'" d="M116 139q9 3 0 7" />
           </g>
           </g>
-          <g :transform="`rotate(${-frame.hand} 73 157)`"><ellipse cx="73" cy="157" rx="16" ry="15" :fill="`url(#${gradientId})`" :stroke="palette.base" stroke-width="1.2" /><ellipse cx="68" cy="150" rx="4.5" ry="2.5" transform="rotate(-25 68 150)" fill="#fffef1" opacity=".85" /></g>
-          <g v-if="expression.prop !== 'wave'" :transform="`rotate(${frame.hand} 166 157)`"><ellipse cx="166" cy="157" rx="16" ry="15" :fill="`url(#${gradientId})`" :stroke="palette.base" stroke-width="1.2" /><ellipse cx="161" cy="150" rx="4.5" ry="2.5" transform="rotate(-25 161 150)" fill="#fffef1" opacity=".85" /></g>
           <g :opacity=".2 + frame.reveal * .8">
 
-          <g v-if="expression.prop === 'wave'" class="starpet-wave-hand"><path d="M158 142C153 131 159 111 169 110C178 108 188 118 186 130C184 143 169 151 158 142Z" :fill="`url(#${gradientId})`" :stroke="palette.base" stroke-width="1.3" /><ellipse cx="167" cy="119" rx="4" ry="2.5" transform="rotate(-35 167 119)" fill="#fffef1" opacity=".85" /><path d="m185 109 3-5m5 13 6-2" stroke="var(--starpet-accent)" stroke-width="2.5" stroke-linecap="round" /></g>
+          <path v-if="expression.prop === 'wave'" d="m190 109 3-5m5 13 6-2" stroke="var(--starpet-accent)" stroke-width="2.5" stroke-linecap="round" />
           <g v-if="expression.prop === 'question' || expression.prop === 'puzzle'" class="starpet-floating-prop" stroke="var(--starpet-accent)" stroke-linecap="round" stroke-width="4"><path d="M172 49c-1-15 20-17 20-4 0 7-11 8-11 16" /><path d="M181 70v.1" stroke-width="5" /><path v-if="expression.prop === 'puzzle'" d="M52 66c-2-9 11-13 13-5 1 5-6 7-5 12m1 8v.1" stroke-width="3" /></g>
           <g v-if="expression.prop === 'sound'" class="starpet-listen-lines" stroke="var(--starpet-accent)" stroke-width="2.5" stroke-linecap="round"><path d="M49 111q-9 9 0 18m-7-25q-17 16 0 32M184 119q5 4 0 8" /></g>
           <path v-if="expression.prop === 'moon'" class="starpet-floating-prop" d="M64 43c-15-4-27 14-17 26 8 10 22 6 27-4-17 5-27-11-10-22Z" fill="#b3b6d6" stroke="#7e8aa9" stroke-width="1.6" />
@@ -189,6 +200,12 @@ function look(event: PointerEvent) {
           <g v-if="expression.prop === 'check'" class="starpet-result-badge"><circle cx="178" cy="170" r="19" fill="#97bfa7" stroke="#658c7e" stroke-width="1.8" /><path d="m168 170 7 7 13-15" stroke="#fff7e3" stroke-width="3.8" stroke-linecap="round" stroke-linejoin="round" /></g>
           <g v-if="expression.prop === 'alert'" class="starpet-result-badge"><path d="m178 149 20 34q3 6-4 6h-33q-7 0-4-6l18-34q2-4 3 0Z" fill="#ecc39a" stroke="#b88673" stroke-width="1.7" stroke-linejoin="round" /><path d="M177 162v12m0 8v.1" stroke="#956a68" stroke-width="3.8" stroke-linecap="round" /></g>
           <g v-if="expression.prop === 'mug'" class="starpet-tool"><path d="M137 165h10q12 12-7 18" stroke="#9eac9a" stroke-width="5" /><path d="M102 160h39v22q-1 14-20 14-18 0-19-14Z" fill="#e9edcf" stroke="#91a18b" stroke-width="1.8" /><ellipse cx="121.5" cy="160" rx="19.5" ry="4" fill="#c0a483" stroke="#91a18b" stroke-width="1.5" /><path d="m121 169 2 4 5 .8-3.5 3.5.8 5-4.3-2.3-4.3 2.3.8-5-3.5-3.5 5-.8Z" fill="#d1b575" /><path class="starpet-steam" d="M114 149q-5-5 0-10m14 10q-5-5 0-10" stroke="#a2b9af" stroke-width="1.7" stroke-linecap="round" /></g>
+          <g v-for="([x, y], index) in handPositions" :key="index" class="starpet-hand" :class="{ 'starpet-wave-hand': expression.prop === 'wave' && index === 1 }">
+            <g :transform="`translate(${x} ${y + frame.hand * (index ? .12 : -.12)})`">
+              <circle class="starpet-hand-ball" r="9" :fill="`url(#${gradientId})`" :stroke="palette.base" stroke-width="1" />
+              <ellipse cx="-3" cy="-4" rx="2.7" ry="1.7" transform="rotate(-25 -3 -4)" fill="#fffef1" opacity=".85" />
+            </g>
+          </g>
           </g>
         </g>
       </g>
