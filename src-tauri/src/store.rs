@@ -151,6 +151,7 @@ pub struct StarpetPreferences {
     pub enabled: bool,
     pub mood: String,
     pub color: String,
+    pub size: u16,
 }
 impl Default for StarpetPreferences {
     fn default() -> Self {
@@ -158,6 +159,7 @@ impl Default for StarpetPreferences {
             enabled: false,
             mood: "idle".into(),
             color: "#FFD66E".into(),
+            size: 100,
         }
     }
 }
@@ -172,8 +174,32 @@ impl StarpetPreferences {
         {
             return Err("星伴颜色需为六位 HEX，例如 #FFD66E。".into());
         }
+        if !(70..=160).contains(&self.size) {
+            return Err("星伴大小需为 70%–160%。".into());
+        }
         Ok(())
     }
+
+    pub fn window_size(&self) -> (f64, f64) {
+        let body = 180.0 * f64::from(self.size) / 100.0;
+        (body + 50.0, body + 80.0)
+    }
+}
+
+#[cfg(any(feature = "desktop", test))]
+pub(crate) fn starpet_resize_position(
+    position: (f64, f64),
+    previous_size: (f64, f64),
+    next_size: (f64, f64),
+    work_area: (f64, f64, f64, f64),
+) -> (f64, f64) {
+    let (left, top, width, height) = work_area;
+    let x = position.0 + (previous_size.0 - next_size.0) / 2.0;
+    let y = position.1 + previous_size.1 - next_size.1;
+    (
+        x.clamp(left, (left + width - next_size.0).max(left)),
+        y.clamp(top, (top + height - next_size.1).max(top)),
+    )
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -182,6 +208,7 @@ pub struct StarpetPreferencePatch {
     pub enabled: Option<bool>,
     pub mood: Option<String>,
     pub color: Option<String>,
+    pub size: Option<u16>,
 }
 impl StarpetPreferencePatch {
     pub fn apply_to(self, preferences: &mut StarpetPreferences) {
@@ -193,6 +220,9 @@ impl StarpetPreferencePatch {
         }
         if let Some(color) = self.color {
             preferences.color = color.to_ascii_uppercase();
+        }
+        if let Some(size) = self.size {
+            preferences.size = size;
         }
     }
 }
@@ -1146,7 +1176,8 @@ mod tests {
             StarpetPreferences {
                 enabled: true,
                 mood: "sleepy".into(),
-                color: "#FFD66E".into()
+                color: "#FFD66E".into(),
+                size: 100,
             }
         );
         assert_eq!(
@@ -1164,6 +1195,7 @@ mod tests {
             enabled: true,
             mood: "curious".into(),
             color: "#8CB9BD".into(),
+            size: 120,
         };
         fresh.save_starpet_preferences(&preferences).unwrap();
         drop(fresh);
@@ -1191,6 +1223,7 @@ mod tests {
                 enabled: *mood != "sleeping",
                 mood: (*mood).into(),
                 color: preferences.color.clone(),
+                size: preferences.size,
             };
             db.save_starpet_preferences(&value).unwrap();
             assert_eq!(db.starpet_preferences().unwrap(), value);
@@ -1215,6 +1248,7 @@ mod tests {
                     enabled: true,
                     mood: mood.into(),
                     color: old.color.clone(),
+                    size: old.size,
                 })
                 .is_err());
             assert_eq!(db.starpet_preferences().unwrap(), old);
@@ -1233,6 +1267,7 @@ mod tests {
                     enabled: false,
                     mood: "greet".into(),
                     color: old.color.clone(),
+                    size: old.size,
                 },
             ),
             (
@@ -1241,6 +1276,16 @@ mod tests {
                     enabled: false,
                     mood: "greet".into(),
                     color: "#AABBCC".into(),
+                    size: old.size,
+                },
+            ),
+            (
+                r#"{"size":160}"#,
+                StarpetPreferences {
+                    enabled: false,
+                    mood: "greet".into(),
+                    color: "#AABBCC".into(),
+                    size: 160,
                 },
             ),
         ] {
@@ -1251,6 +1296,24 @@ mod tests {
             assert_eq!(db.starpet_preferences().unwrap(), expected);
         }
         let old = db.starpet_preferences().unwrap();
+        for size in [0, 69, 161, u16::MAX] {
+            assert!(db
+                .save_starpet_preferences(&StarpetPreferences {
+                    size,
+                    ..old.clone()
+                })
+                .is_err());
+            assert_eq!(db.starpet_preferences().unwrap(), old);
+        }
+        for json in [r#"{"size":-1}"#, r#"{"size":100.5}"#, r#"{"size":65536}"#] {
+            assert!(serde_json::from_str::<StarpetPreferencePatch>(json).is_err());
+        }
+        assert_eq!(db.settings().unwrap(), settings);
+        assert_eq!(
+            db.clips().unwrap().len(),
+            1,
+            "size changes must not run retention"
+        );
         for color in [
             "",
             "#fff",
@@ -1275,6 +1338,62 @@ mod tests {
             db.starpet_preferences().unwrap(),
             old,
             "failed persistence retains the complete previous preference"
+        );
+    }
+
+    #[test]
+    fn starpet_geometry_anchors_bottom_center_and_stays_in_work_area() {
+        for (size, expected) in [
+            (70, (176.0, 206.0)),
+            (100, (230.0, 260.0)),
+            (160, (338.0, 368.0)),
+        ] {
+            let preferences = StarpetPreferences {
+                size,
+                ..StarpetPreferences::default()
+            };
+            assert!(preferences.validate().is_ok());
+            assert_eq!(preferences.window_size(), expected);
+        }
+        let area = (0.0, 0.0, 1920.0, 1080.0);
+        let enlarged =
+            starpet_resize_position((500.0, 500.0), (230.0, 260.0), (338.0, 368.0), area);
+        assert_eq!(enlarged, (446.0, 392.0));
+        assert_eq!(
+            starpet_resize_position(enlarged, (338.0, 368.0), (230.0, 260.0), area),
+            (500.0, 500.0)
+        );
+        assert_eq!(
+            starpet_resize_position((1690.0, 820.0), (230.0, 260.0), (338.0, 368.0), area),
+            (1582.0, 712.0)
+        );
+        assert_eq!(
+            starpet_resize_position(
+                (-1900.0, -180.0),
+                (230.0, 260.0),
+                (338.0, 368.0),
+                (-1920.0, -200.0, 1920.0, 1080.0)
+            ),
+            (-1920.0, -200.0)
+        );
+        assert_eq!(
+            starpet_resize_position(
+                (1000.0, 1000.0),
+                (460.0, 520.0),
+                (676.0, 736.0),
+                (0.0, 0.0, 3840.0, 2160.0)
+            ),
+            (892.0, 784.0),
+            "geometry uses physical pixels consistently on HiDPI displays"
+        );
+        assert_eq!(
+            starpet_resize_position(
+                (20.0, 30.0),
+                (10.0, 10.0),
+                (200.0, 200.0),
+                (10.0, 20.0, 100.0, 100.0)
+            ),
+            (10.0, 20.0)
         );
     }
 

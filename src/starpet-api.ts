@@ -2,10 +2,10 @@ import { invoke } from '@tauri-apps/api/core';
 import type { StarPetMoodId } from './starpet';
 
 export const defaultStarPetColor = '#FFD66E';
-export interface StarPetPreferences { enabled: boolean; mood: StarPetMoodId; color: string }
+export interface StarPetPreferences { enabled: boolean; mood: StarPetMoodId; color: string; size: number }
 export type StarPetPreferencePatch = Partial<StarPetPreferences>;
 export const starPetDesktopAvailable = '__TAURI_INTERNALS__' in window;
-let demo: StarPetPreferences = { enabled: false, mood: 'idle', color: defaultStarPetColor };
+let demo: StarPetPreferences = { enabled: false, mood: 'idle', color: defaultStarPetColor, size: 100 };
 const listeners = new Set<(preferences: StarPetPreferences) => void>();
 
 export async function getStarPetPreferences(): Promise<StarPetPreferences> {
@@ -14,6 +14,9 @@ export async function getStarPetPreferences(): Promise<StarPetPreferences> {
 }
 export async function setStarPetPreferences(preferences: StarPetPreferencePatch): Promise<StarPetPreferences> {
   const patch = Object.fromEntries(Object.entries(preferences).filter(([, value]) => value !== undefined)) as StarPetPreferencePatch;
+  if (patch.size !== undefined && (!Number.isInteger(patch.size) || patch.size < 70 || patch.size > 160)) {
+    throw new Error('星伴大小需在 70% 到 160% 之间。');
+  }
   if (patch.color !== undefined) {
     if (!/^#[0-9a-f]{6}$/i.test(patch.color)) throw new Error('星伴颜色需为六位 HEX，例如 #FFD66E。');
     patch.color = patch.color.toUpperCase();

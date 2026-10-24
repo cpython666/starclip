@@ -1,7 +1,7 @@
 use crate::storage::{DataDirectoryPlan, DataLocation, DirectoryMode, Storage};
 use crate::store::{
-    CleanupFilter, CleanupPreview, CleanupResult, CleanupSnapshot, Clip, Group, Result, Settings,
-    StarpetPreferencePatch, StarpetPreferences, Store, STALE_CLEANUP,
+    starpet_resize_position, CleanupFilter, CleanupPreview, CleanupResult, CleanupSnapshot, Clip,
+    Group, Result, Settings, StarpetPreferencePatch, StarpetPreferences, Store, STALE_CLEANUP,
 };
 use arboard::Clipboard;
 use serde::Serialize;
@@ -67,20 +67,15 @@ fn toggle_window(app: &AppHandle) {
     }
 }
 
-fn show_starpet(app: &AppHandle) -> Result<WebviewWindow> {
-    if let Some(window) = app.get_webview_window("starpet") {
-        if !window.is_visible().map_err(|e| e.to_string())? {
-            window.show().map_err(|e| format!("无法显示星伴：{e}"))?;
-        }
-        return Ok(window);
-    }
+fn create_starpet(app: &AppHandle, preferences: &StarpetPreferences) -> Result<WebviewWindow> {
+    let (width, height) = preferences.window_size();
     let mut builder = WebviewWindowBuilder::new(
         app,
         "starpet",
         WebviewUrl::App("index.html?view=starpet".into()),
     )
     .title("星伴 · Starclip")
-    .inner_size(230.0, 260.0)
+    .inner_size(width, height)
     .resizable(false)
     .maximizable(false)
     .minimizable(false)
@@ -98,13 +93,114 @@ fn show_starpet(app: &AppHandle) -> Result<WebviewWindow> {
         let scale = monitor.scale_factor();
         let left = f64::from(area.position.x) / scale;
         let top = f64::from(area.position.y) / scale;
-        let x = left + (f64::from(area.size.width) / scale - 250.0).max(0.0);
-        let y = top + (f64::from(area.size.height) / scale - 280.0).max(0.0);
+        let x = left + (f64::from(area.size.width) / scale - width - 20.0).max(0.0);
+        let y = top + (f64::from(area.size.height) / scale - height - 20.0).max(0.0);
         builder = builder.position(x, y);
     }
     builder
         .build()
         .map_err(|e| format!("无法创建星伴窗口，偏好未保存：{e}"))
+}
+
+struct StarpetGeometry {
+    inner: tauri::PhysicalSize<u32>,
+    outer: tauri::PhysicalSize<u32>,
+    position: tauri::PhysicalPosition<i32>,
+    scale: f64,
+}
+impl StarpetGeometry {
+    fn capture(window: &WebviewWindow) -> Result<Self> {
+        (|| -> tauri::Result<Self> {
+            Ok(Self {
+                inner: window.inner_size()?,
+                outer: window.outer_size()?,
+                position: window.outer_position()?,
+                scale: window.scale_factor()?,
+            })
+        })()
+        .map_err(|e| format!("无法读取星伴窗口大小，偏好未保存：{e}"))
+    }
+}
+
+fn resize_starpet(
+    window: &WebviewWindow,
+    previous: &StarpetGeometry,
+    preferences: &StarpetPreferences,
+) -> Result<()> {
+    let (width, height) = preferences.window_size();
+    let inner = tauri::LogicalSize::new(width, height).to_physical::<u32>(previous.scale);
+    let outer = (
+        f64::from(inner.width + previous.outer.width.saturating_sub(previous.inner.width)),
+        f64::from(inner.height + previous.outer.height.saturating_sub(previous.inner.height)),
+    );
+    let monitor = match window.current_monitor().map_err(|e| e.to_string())? {
+        Some(monitor) => monitor,
+        None => window
+            .primary_monitor()
+            .map_err(|e| e.to_string())?
+            .ok_or("暂时无法确定星伴所在屏幕，大小未更改。")?,
+    };
+    let area = monitor.work_area();
+    if outer.0 > f64::from(area.size.width) || outer.1 > f64::from(area.size.height) {
+        return Err("当前屏幕可用空间不足，请选择更小的星伴大小。".into());
+    }
+    let (x, y) = starpet_resize_position(
+        (
+            f64::from(previous.position.x),
+            f64::from(previous.position.y),
+        ),
+        (
+            f64::from(previous.outer.width),
+            f64::from(previous.outer.height),
+        ),
+        outer,
+        (
+            f64::from(area.position.x),
+            f64::from(area.position.y),
+            f64::from(area.size.width),
+            f64::from(area.size.height),
+        ),
+    );
+    window
+        .set_size(inner)
+        .map_err(|e| format!("无法调整星伴大小：{e}"))?;
+    window
+        .set_position(tauri::PhysicalPosition::new(
+            x.round() as i32,
+            y.round() as i32,
+        ))
+        .map_err(|e| format!("无法调整星伴位置：{e}"))
+}
+
+fn restore_starpet(
+    window: &WebviewWindow,
+    visible: bool,
+    geometry: Option<&StarpetGeometry>,
+) -> Result<()> {
+    let mut errors = Vec::new();
+    if let Some(geometry) = geometry {
+        if let Err(error) = window.set_size(geometry.inner) {
+            errors.push(error.to_string());
+        }
+        if let Err(error) = window.set_position(geometry.position) {
+            errors.push(error.to_string());
+        }
+    }
+    if window.is_visible().ok() != Some(visible) {
+        let restore = if visible {
+            window.show()
+        } else {
+            window.hide()
+        };
+        if let Err(error) = restore {
+            errors.push(error.to_string());
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("；"))
+    }
 }
 
 // Every caller runs off the UI thread: window creation may wait for the event loop.
@@ -124,19 +220,33 @@ fn update_starpet(
         .map(|window| window.is_visible().map_err(|e| e.to_string()))
         .transpose()?
         .unwrap_or(false);
-    let window = if preferences.enabled {
-        Some(show_starpet(app)?)
+    let geometry = if preferences.size != old.size {
+        previous_window
+            .as_ref()
+            .map(StarpetGeometry::capture)
+            .transpose()?
     } else {
-        if let Some(window) = previous_window.as_ref() {
-            window
-                .hide()
-                .map_err(|e| format!("无法隐藏星伴，偏好未保存：{e}"))?;
-        }
-        previous_window.clone()
+        None
     };
+    let mut window = previous_window.clone();
     // Do not hold the data write gate while dispatching window operations: a
     // synchronous main-window command may need that gate on the UI thread.
     let save_result = (|| -> Result<()> {
+        if let Some(window) = window.as_ref() {
+            if let Some(geometry) = geometry.as_ref() {
+                resize_starpet(window, geometry, &preferences)?;
+            }
+            if preferences.enabled != previously_visible {
+                if preferences.enabled {
+                    window.show()
+                } else {
+                    window.hide()
+                }
+                .map_err(|e| format!("无法更改星伴窗口可见性：{e}"))?;
+            }
+        } else if preferences.enabled {
+            window = Some(create_starpet(app, &preferences)?);
+        }
         if preferences != old {
             let _write = write_guard(context)?;
             lock(&context.store)?.save_starpet_preferences(&preferences)?;
@@ -146,11 +256,9 @@ fn update_starpet(
     if let Err(error) = save_result {
         let rollback = if let Some(window) = window {
             if previous_window.is_none() {
-                window.destroy()
-            } else if previously_visible {
-                window.show()
+                window.destroy().map_err(|e| e.to_string())
             } else {
-                window.hide()
+                restore_starpet(&window, previously_visible, geometry.as_ref())
             }
         } else {
             Ok(())
