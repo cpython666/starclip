@@ -44,6 +44,14 @@ function classify(content: string): Clip['kind'] {
   return 'text';
 }
 async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> { return (await import('@tauri-apps/api/core')).invoke<T>(command, args); }
+// The renderer also handles asset discovery and application selection. Keep all
+// three operations serial across panels, including a quick close and reopen.
+let handwritingQueue: Promise<unknown> = Promise.resolve();
+function handwritingInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  const request = handwritingQueue.then(() => invoke<T>(command, args));
+  handwritingQueue = request.catch(() => {});
+  return request;
+}
 
 export const api = {
   async completeOnboarding(): Promise<void> {
@@ -98,14 +106,14 @@ export const api = {
     return invoke('restart_app');
   },
   async handwritingAssets(): Promise<HandwritingAssets> {
-    return isDesktop ? invoke('handwriting_assets') : { available: false, path: null, fonts: [], backgrounds: [], error: '月光笺的手写效果需要在桌面版中连接本机星笺应用。星码卡可直接在此制作。' };
+    return isDesktop ? handwritingInvoke('handwriting_assets') : { available: false, path: null, fonts: [], backgrounds: [], error: '月光笺的手写效果需要在桌面版中连接本机星笺应用。星码卡可直接在此制作。' };
   },
   async chooseHandwritingApp(): Promise<HandwritingAssets> {
-    return isDesktop ? invoke('choose_handwriting_app') : api.handwritingAssets();
+    return isDesktop ? handwritingInvoke('choose_handwriting_app') : api.handwritingAssets();
   },
   async renderHandwriting(options: HandwritingOptions): Promise<string> {
     if (!isDesktop) throw new Error('请在桌面版中生成月光笺。');
-    return invoke('render_handwriting', { options });
+    return handwritingInvoke('render_handwriting', { options });
   },
   async getState(): Promise<AppState> { return isDesktop ? invoke('get_state') : structuredClone(demo); },
   async addClip(content: string, title: string, groupId: number | null, keepForever = false): Promise<Clip> {
