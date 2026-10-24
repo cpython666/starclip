@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { blinkOpenness, sampleHop, starOutline, stepHop, stepSpring } from '../src/starpet-motion.ts';
+import { blinkOpenness, cubicBezierEase, sampleHop, starOutline, stepHop, stepSpring } from '../src/starpet-motion.ts';
 
 test('星芽视线弹簧与帧率无关，回中稳定，异常时间不传播到 SVG', () => {
   const simulate = (fps: number) => {
@@ -18,6 +18,37 @@ test('星芽视线弹簧与帧率无关，回中稳定，异常时间不传播�
   assert.ok(Math.abs(returned.value) < 1e-10);
   assert.deepEqual(stepSpring(expected, 0, 0), expected);
   assert.deepEqual(stepSpring(expected, 0, NaN), { value: 0, velocity: 0 });
+  const longPause = stepSpring(expected, 0, 1e6);
+  assert.ok(longPause.value === 0 && longPause.velocity === 0);
+});
+
+test('三次贝塞尔缓动端点与分阶段弧线连续，横向去而复返', () => {
+  assert.equal(cubicBezierEase(0), 0);
+  assert.equal(cubicBezierEase(.25), 5 / 32);
+  assert.equal(cubicBezierEase(.5), .5);
+  assert.equal(cubicBezierEase(.75), 27 / 32);
+  assert.equal(cubicBezierEase(1), 1);
+  assert.equal(cubicBezierEase(-1), 0);
+  assert.equal(cubicBezierEase(2), 1);
+  assert.equal(cubicBezierEase(NaN), 0);
+  assert.ok(cubicBezierEase(1e-6) < 1e-10);
+  assert.ok(1 - cubicBezierEase(1 - 1e-6) < 1e-10);
+  assert.equal(sampleHop(.14).x, -1);
+  assert.equal(sampleHop(.14).y, 5);
+  assert.equal(sampleHop(.59).x, 1);
+  assert.equal(sampleHop(.59).y, 0);
+  const crest = sampleHop(.14 + (.59 - .14) / 2);
+  // The cubic's midpoint departs from the endpoint chord, rather than easing along a line.
+  assert.ok(Math.abs(crest.x - 5.25) < 1e-10);
+  assert.ok(Math.abs(crest.y + 28.625) < 1e-10);
+  assert.equal(sampleHop(0).x, 0);
+  assert.equal(sampleHop(1.08).x, 0);
+  for (const boundary of [0, .14, .27, .42, .59, .67, .82, 1.08]) {
+    const before = sampleHop(boundary - 1e-6), after = sampleHop(boundary + 1e-6);
+    for (const axis of ['x', 'y', 'sx', 'sy'] as const) {
+      assert.ok(Math.abs(after[axis] - before[axis]) < .001);
+    }
+  }
 });
 
 test('星芽动作具有蓄力、起跳、落地和回弹，眨眼节奏变化且变形有界', () => {
@@ -35,6 +66,7 @@ test('星芽动作具有蓄力、起跳、落地和回弹，眨眼节奏变化�
   for (let time = 0; time < 30; time += .017) {
     const openness = blinkOpenness(time), pose = sampleHop(time);
     assert.ok(openness >= .059 && openness <= 1);
+    assert.ok(Math.abs(pose.x) < 8 && pose.y >= -32 && pose.y <= 5);
     assert.ok(pose.sx >= .92 && pose.sx <= 1.18 && pose.sy >= .79 && pose.sy <= 1.13);
   }
   assert.equal(starOutline(100, -100), starOutline(6, -5));
@@ -42,25 +74,33 @@ test('星芽动作具有蓄力、起跳、落地和回弹，眨眼节奏变化�
 });
 
 test('连点重播与接回日常跳跃保留当前姿态和速度，快速衔接仍保留清楚的起落', () => {
-  const resting = { y: { value: 0, velocity: 0 }, sx: { value: 1, velocity: 0 }, sy: { value: 1, velocity: 0 } };
-  let state = resting, highest = 0, widest = 1, lowestScale = 1;
+  const resting = { x: { value: 0, velocity: 0 }, y: { value: 0, velocity: 0 }, sx: { value: 1, velocity: 0 }, sy: { value: 1, velocity: 0 } };
+  let state = resting, highest = 0, widest = 1, lowestScale = 1, farthest = 0;
   for (let i = 0; i < 78; i++) {
     state = stepHop(state, i / 60, 1 / 60);
     highest = Math.min(highest, state.y.value);
     widest = Math.max(widest, state.sx.value);
     lowestScale = Math.min(lowestScale, state.sy.value);
+    farthest = Math.max(farthest, Math.abs(state.x.value));
   }
-  assert.ok(highest < -20 && widest > 1.1 && lowestScale < .88);
+  assert.ok(highest < -26 && highest > -32 && widest > 1.1 && lowestScale < .88);
+  assert.ok(farthest > 5 && farthest < 8);
   for (const nextAge of [.42, 0, .42, 0, .42]) {
     const before = state;
     assert.deepEqual(stepHop(before, nextAge, 0), before);
     const immediate = stepHop(before, nextAge, 1e-6);
-    for (const axis of ['y', 'sx', 'sy'] as const) {
+    for (const axis of ['x', 'y', 'sx', 'sy'] as const) {
       assert.ok(Math.abs(immediate[axis].value - before[axis].value) < .001);
+      assert.ok(Number.isFinite(immediate[axis].velocity));
     }
     state = stepHop(before, nextAge, 1 / 60);
     assert.ok(Math.abs(state.y.value - before.y.value) < 6);
     assert.notEqual(state.y.value, sampleHop(nextAge).y);
     for (let i = 1; i < 12; i++) state = stepHop(state, nextAge + i / 60, 1 / 60);
+  }
+  state = stepHop(state, 2, 3);
+  for (const axis of ['x', 'y', 'sx', 'sy'] as const) {
+    assert.ok(Math.abs(state[axis].value - resting[axis].value) < 1e-10);
+    assert.ok(Math.abs(state[axis].velocity) < 1e-10);
   }
 });

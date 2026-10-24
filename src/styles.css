@@ -92,3 +92,6 @@ textarea::-webkit-resizer{background:linear-gradient(135deg,transparent 53%,var(
 
 /* The companion is its own transparent window; it never mounts the clipboard view. */
 :root[data-view=starpet],:root[data-view=starpet] body,:root[data-view=starpet] #app{background:transparent!important;width:100%;height:100%;margin:0;overflow:hidden;color-scheme:dark}
+
+/* The new theme reveals from its trigger; the snapshot never intercepts input. */
+::view-transition{pointer-events:none}::view-transition-group(root){animation:none}::view-transition-old(root),::view-transition-new(root){animation:none;mix-blend-mode:normal;pointer-events:none}::view-transition-old(root){z-index:1}::view-transition-new(root){z-index:2}::view-transition-image-pair(root){isolation:isolate}

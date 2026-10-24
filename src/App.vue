@@ -11,6 +11,8 @@ import StickerScene from './components/StickerScene.vue'
 import OnboardingGuide from './components/OnboardingGuide.vue'
 import UiSelect from './components/UiSelect.vue'
 import StarPetSettings from './components/StarPetSettings.vue'
+import { cancelThemeTransition, createThemeWriter, revealTheme } from './theme'
+import type { ThemeOrigin } from './theme'
 
 const state = ref<AppState>({ onboardingCompleted: true, clips: [], groups: [], settings: { paused: true, theme: 'dark', layout: 'grid', maxHistory: 0, retentionDays: 0, alwaysOnTop: false, showStartup: true, stickerPack: 'auto', shortcut: 'CommandOrControl+Shift+V' }, clipboardError: null, shortcutError: null, windowError: null })
 const loading = ref(true)
@@ -53,7 +55,7 @@ type SettingsTab = typeof settingsTabs[number]['key']
 const settingsTab = ref<SettingsTab>('appearance')
 const settingsScroll = ref<HTMLElement>()
 const dataTabVisited = ref(false)
-const settingsDirty = computed(() => (Object.keys(settingsDraft.value) as Array<keyof Settings>).some(key => settingsDraft.value[key] !== state.value.settings[key]))
+const settingsDirty = computed(() => (Object.keys(settingsDraft.value) as Array<keyof Settings>).some(key => key !== 'theme' && settingsDraft.value[key] !== state.value.settings[key]))
 const toast = ref('')
 const toastError = ref(false)
 const copied = ref<number | null>(null)
@@ -98,15 +100,32 @@ const stickerOptions = [
   { value: 'none', name: '清爽留白', description: '关闭装饰，专注内容' },
 ] as const
 const systemTheme = window.matchMedia('(prefers-color-scheme: dark)')
+const themeChoice = ref<Settings['theme']>('dark')
+const themeSaving = ref(false)
+const themeWriter = createThemeWriter(theme => api.setTheme(theme))
+let themeVersion = 0, refreshVersion = 0, disposed = false
 const resolvedTheme = ref<Exclude<Settings['theme'], 'system'>>('dark')
-function applyTheme() { resolvedTheme.value = state.value.settings.theme === 'system' ? (systemTheme.matches ? 'dark' : 'light') : state.value.settings.theme; document.documentElement.dataset.theme = resolvedTheme.value }
-watch(() => state.value.settings.theme, applyTheme)
+function applyTheme() { resolvedTheme.value = themeChoice.value === 'system' ? (systemTheme.matches ? 'dark' : 'light') : themeChoice.value; document.documentElement.dataset.theme = resolvedTheme.value }
 watch(filter, () => { selected.value = null; query.value = '' })
 watch(visible, clips => { if (!clips.some(c => c.id === selected.value)) selected.value = clips[0]?.id ?? null })
 watch(modal, async value => { await nextTick(); if (value && !dialog.value?.open) dialog.value?.showModal(); if (!value && dialog.value?.open) dialog.value?.close() })
 function notify(message: string, error = false) { clearTimeout(toastTimer); toast.value = message; toastError.value = error; toastTimer = setTimeout(() => { toast.value = '' }, 3600) }
-async function refresh() { try { state.value = await api.getState(); applyTheme() } catch (error) { notify(String(error), true) } finally { loading.value = false } }
-async function run(action: () => Promise<unknown>, success?: string) { if (busy.value || dataBusy.value) return; busy.value = true; try { await action(); await refresh(); if (success) notify(success) } catch (error) { notify(String(error), true) } finally { busy.value = false } }
+async function refresh() {
+  const request = ++refreshVersion, themeRevision = themeVersion, pendingTheme = themeSaving.value
+  try {
+    const next = await api.getState()
+    if (request !== refreshVersion || disposed) return
+    const acceptTheme = !pendingTheme && !themeSaving.value && themeRevision === themeVersion
+    if (!acceptTheme) next.settings.theme = state.value.settings.theme
+    state.value = next
+    if (acceptTheme) {
+      const changedTheme = themeChoice.value !== next.settings.theme
+      themeChoice.value = next.settings.theme; settingsDraft.value.theme = next.settings.theme
+      if (changedTheme || loading.value) applyTheme()
+    }
+  } catch (error) { if (!disposed) notify(String(error), true) } finally { loading.value = false }
+}
+async function run(action: () => Promise<unknown>, success?: string) { if (busy.value || dataBusy.value) return; busy.value = true; try { await themeWriter.idle(); await action(); await refresh(); if (success) notify(success) } catch (error) { notify(String(error), true) } finally { busy.value = false } }
 function count(key: string) { return state.value.clips.filter(c => key === 'all' || (key === 'pinned' && c.pinned) || (key === 'kept' && c.keepForever) || c.kind === key).length }
 function groupFor(clip: Clip) { return state.value.groups.find(g => g.id === clip.groupId) }
 function relativeTime(time: number) { const minutes = Math.max(0, Math.floor((Date.now() - time) / 60000)); if (minutes < 1) return '刚刚'; if (minutes < 60) return `${minutes} 分钟前`; if (minutes < 1440) return `${Math.floor(minutes / 60)} 小时前`; if (minutes < 10080) return `${Math.floor(minutes / 1440)} 天前`; return new Date(time).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' }) }
@@ -136,7 +155,7 @@ function openGroup() { groupName.value = ''; groupColor.value = colors[state.val
 async function saveGroup() { if (!groupName.value.trim()) return notify('请为星座起一个名字', true); await run(async () => { const group = await api.createGroup(groupName.value.trim(), groupColor.value); filter.value = `group-${group.id}`; modal.value = '' }, '分组已创建') }
 function closeModal() { if (!dataBusy.value && !busy.value) modal.value = '' }
 function replayStartup() { if (!dataBusy.value) startupVisible.value = true }
-function openSettings() { settingsDraft.value = { ...state.value.settings }; dataTabVisited.value = settingsTab.value === 'data'; modal.value = 'settings' }
+function openSettings() { settingsDraft.value = { ...state.value.settings, theme: themeChoice.value }; dataTabVisited.value = settingsTab.value === 'data'; modal.value = 'settings' }
 function changeSettingsTab(tab: SettingsTab) {
   if (busy.value || dataBusy.value) return
   settingsTab.value = tab
@@ -178,13 +197,29 @@ async function finishGuide() {
 async function saveSettings() {
   if (busy.value || dataBusy.value || !settingsDirty.value) return
   settingsSaving.value = true
-  try { await run(() => api.saveSettings({ ...settingsDraft.value }), '偏好设置已保存') }
+  try { await run(() => api.saveSettings({ ...settingsDraft.value, theme: themeChoice.value }), '偏好设置已保存') }
   finally { settingsSaving.value = false }
 }
 async function toggleCapture() { await run(() => api.saveSettings({ ...state.value.settings, paused: !state.value.settings.paused }), state.value.settings.paused ? '已开启记录，从下一次复制开始' : '已暂停记录') }
 async function changeLayout(layout: Settings['layout']) { await run(() => api.saveSettings({ ...state.value.settings, layout })) }
-async function changeTheme(theme: Settings['theme']) {
-  await run(() => api.saveSettings({ ...state.value.settings, theme }))
+async function changeTheme(theme: Settings['theme'], origin?: ThemeOrigin) {
+  if (busy.value || dataBusy.value || theme === themeChoice.value) return
+  const request = ++themeVersion
+  themeSaving.value = true
+  themeChoice.value = theme; settingsDraft.value.theme = theme
+  revealTheme(() => { applyTheme(); return nextTick() }, origin)
+  try {
+    const saved = await themeWriter.save(theme)
+    if (disposed) return
+    state.value.settings.theme = saved.theme
+    if (request === themeVersion) { themeSaving.value = false; settingsDraft.value.theme = saved.theme }
+  } catch (error) {
+    if (request !== themeVersion || disposed) return
+    themeSaving.value = false
+    themeChoice.value = state.value.settings.theme; settingsDraft.value.theme = themeChoice.value
+    revealTheme(() => { applyTheme(); return nextTick() }, origin)
+    notify(`主题未能保存，已恢复上次主题：${String(error)}`, true)
+  }
 }
 async function deleteEditing() { const id = editing.value?.id; if (id === undefined) return; await run(async () => { await api.deleteClip(id); modal.value = '' }, '片段已删除') }
 async function exportBackup() { await run(async () => { if (isDesktop) { if (await api.saveBackup()) notify('备份已保存') } else { const url = URL.createObjectURL(new Blob([await api.exportBackup()], { type: 'application/json' })); const a = document.createElement('a'); a.href = url; a.download = `starclip-${new Date().toISOString().slice(0, 10)}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); notify('备份已导出') } }) }
@@ -237,7 +272,7 @@ function keyboard(event: KeyboardEvent) {
   } else if (event.key === 'Escape') { if (query.value) query.value = ''; else if (isDesktop) void api.hideWindow() }
 }
 onMounted(async () => { await refresh(); firstGuidePending.value = !state.value.onboardingCompleted; startupVisible.value = state.value.settings.showStartup; if (!startupVisible.value) finishStartup(); unsubscribe = await api.onChange(() => { void refresh() }); window.addEventListener('keydown', keyboard); systemTheme.addEventListener('change', applyTheme) })
-onUnmounted(() => { unsubscribe?.(); clearTimeout(toastTimer); clearTimeout(copyTimer); window.removeEventListener('keydown', keyboard); systemTheme.removeEventListener('change', applyTheme) })
+onUnmounted(() => { disposed = true; cancelThemeTransition(); unsubscribe?.(); clearTimeout(toastTimer); clearTimeout(copyTimer); window.removeEventListener('keydown', keyboard); systemTheme.removeEventListener('change', applyTheme) })
 </script>
 
 <template>
@@ -253,7 +288,7 @@ onUnmounted(() => { unsubscribe?.(); clearTimeout(toastTimer); clearTimeout(copy
       <div class="sidebar-bottom"><div class="night-note"><StickerScene :pack="state.settings.stickerPack" :theme="resolvedTheme" placement="sidebar" /><p>让散落的灵感，<br>在这里连成星座。</p><span>YOUR LITTLE UNIVERSE</span></div><button class="capture-toggle" :title="state.settings.paused ? '当前已暂停，点击后从下一次复制开始记录' : '点击暂停剪贴记录'" :class="{ paused: state.settings.paused }" @click="toggleCapture" :disabled="busy || dataBusy"><span class="status-dot" /><span>{{ state.settings.paused ? '开启剪贴记录' : '正在拾取灵感' }}</span><Icon :name="state.settings.paused ? 'play' : 'pause'" :size="13" /></button><button class="nav-item settings-nav" @click="openSettings"><Icon name="sliders" /><span>偏好设置</span><span class="version">v0.1.0</span></button></div>
     </aside>
     <main class="main-panel">
-      <header class="topbar"><div class="breadcrumb"><Icon name="spark" :size="15" /><span>我的星空</span><Icon name="chevron" :size="12" /><strong>{{ sectionName }}</strong></div><div class="topbar-right"><StickerScene class="header-stickers" :pack="state.settings.stickerPack" :theme="resolvedTheme" placement="header" /><span v-if="!isDesktop" class="demo-badge">交互演示 · 示例数据</span><span class="date-label">{{ dateLabel }}</span><div class="theme-picker"><UiSelect :model-value="state.settings.theme" :options="themeChoices" label="切换主题" :disabled="busy || dataBusy" @update:model-value="changeTheme" /></div></div></header>
+      <header class="topbar"><div class="breadcrumb"><Icon name="spark" :size="15" /><span>我的星空</span><Icon name="chevron" :size="12" /><strong>{{ sectionName }}</strong></div><div class="topbar-right"><StickerScene class="header-stickers" :pack="state.settings.stickerPack" :theme="resolvedTheme" placement="header" /><span v-if="!isDesktop" class="demo-badge">交互演示 · 示例数据</span><span class="date-label">{{ dateLabel }}</span><div class="theme-picker"><UiSelect :model-value="themeChoice" :options="themeChoices" label="切换主题" :disabled="busy || dataBusy" @update:model-value="changeTheme" /></div></div></header>
       <div :class="['main-scroll', { 'horizontal-layout': state.settings.layout === 'horizontal' }]">
         <div v-if="state.clipboardError || state.shortcutError || state.windowError" class="error-banner" role="alert"><Icon name="alert" :size="16" /><span>{{ state.clipboardError || state.shortcutError || state.windowError }}</span><button @click="openSettings">查看设置</button></div>
         <section class="collection" aria-label="剪贴板记录">
@@ -292,7 +327,7 @@ onUnmounted(() => { unsubscribe?.(); clearTimeout(toastTimer); clearTimeout(copy
           </nav>
           <div ref="settingsScroll" class="settings-scroll">
             <section v-show="settingsTab === 'appearance'" id="settings-panel-appearance" role="tabpanel" aria-labelledby="settings-tab-appearance" class="settings-panel">
-              <fieldset class="settings-section preferences-boundary" :disabled="busy || dataBusy" aria-label="外观"><div class="setting-row"><div><strong>主题</strong><p>选择你喜欢的星空底色</p></div><UiSelect v-model="settingsDraft.theme" :options="themeChoices" label="主题" :disabled="busy || dataBusy" /></div><div class="sticker-settings"><div class="sticker-settings-heading"><strong>贴纸小伙伴</strong><span>原创小图案，陪你收好灵感</span></div><div class="sticker-options" role="group" aria-label="贴纸风格"><button v-for="option in stickerOptions" :key="option.value" type="button" :class="['sticker-option', { chosen: settingsDraft.stickerPack === option.value }]" :aria-pressed="settingsDraft.stickerPack === option.value" :aria-label="option.name" :title="option.description" @click="settingsDraft.stickerPack = option.value"><StickerScene v-if="option.value !== 'none'" :pack="option.value" :theme="settingsDraft.theme === 'system' ? resolvedTheme : settingsDraft.theme" placement="preview" /><span v-else class="sticker-none" aria-hidden="true">—</span><strong>{{ option.name }}</strong><span>{{ option.description }}</span></button></div></div></fieldset>
+              <fieldset class="settings-section preferences-boundary" :disabled="busy || dataBusy" aria-label="外观"><div class="setting-row"><div><strong>主题</strong><p role="status">{{ themeSaving ? '主题已生效，正在保存…' : '选择后立即生效并保存，无需点底部保存' }}</p></div><UiSelect :model-value="themeChoice" :options="themeChoices" label="主题" :disabled="busy || dataBusy" @update:model-value="changeTheme" /></div><div class="sticker-settings"><div class="sticker-settings-heading"><strong>贴纸小伙伴</strong><span>原创小图案，陪你收好灵感</span></div><div class="sticker-options" role="group" aria-label="贴纸风格"><button v-for="option in stickerOptions" :key="option.value" type="button" :class="['sticker-option', { chosen: settingsDraft.stickerPack === option.value }]" :aria-pressed="settingsDraft.stickerPack === option.value" :aria-label="option.name" :title="option.description" @click="settingsDraft.stickerPack = option.value"><StickerScene v-if="option.value !== 'none'" :pack="option.value" :theme="settingsDraft.theme === 'system' ? resolvedTheme : settingsDraft.theme" placement="preview" /><span v-else class="sticker-none" aria-hidden="true">—</span><strong>{{ option.name }}</strong><span>{{ option.description }}</span></button></div></div></fieldset>
             </section>
             <section v-if="settingsTab === 'starpet'" id="settings-panel-starpet" role="tabpanel" aria-labelledby="settings-tab-starpet" class="settings-panel">
               <StarPetSettings :disabled="busy" @busy="dataBusy = $event" />
@@ -304,7 +339,7 @@ onUnmounted(() => { unsubscribe?.(); clearTimeout(toastTimer); clearTimeout(copy
               <fieldset class="settings-section preferences-boundary" :disabled="busy || dataBusy" aria-label="记录与隐私"><h3><Icon name="shield" :size="16" />记录与隐私</h3><div class="setting-row"><div><strong>自动记录新复制的文本</strong><p>不捕获开启前的内容；随时可以暂停</p></div><button type="button" :class="['switch', { on: !settingsDraft.paused }]" role="switch" :aria-checked="!settingsDraft.paused" aria-label="自动记录新复制的文本" @click="settingsDraft.paused = !settingsDraft.paused"><span /></button></div><div class="setting-row"><div><strong>历史记录上限</strong><p>星标、永久保留与分组记录不计入上限</p></div><UiSelect v-model="settingsDraft.maxHistory" :options="historyChoices" label="历史记录上限" :disabled="busy || dataBusy" /></div><div class="setting-row"><div><strong>历史保留时长</strong><p>按最近更新时间计算；星标、永久保留与分组受保护</p></div><UiSelect v-model="settingsDraft.retentionDays" :options="retentionChoices" label="历史保留时长" :disabled="busy || dataBusy" /></div><p class="retention-note">保存偏好后立即应用清理规则。桌面版还会在启动、新记录和约每分钟检查；暂停记录时也会按已选时长清理。浏览器演示只在保存偏好或新增内容时检查。永久保留、星标和已分组内容不会自动清理；重新捕获相同内容会更新保留起点。清理无法撤回，可先导出备份。同时选择「不限条数」和「不限天数」可关闭自动淘汰；重要内容也可单独标记永久保留。</p><div class="privacy-note"><Icon name="shield" :size="16" /><p>内容仅保存在本机，不上传云端。剪贴板可能含有私密内容，复制密码等敏感信息前请先暂停记录。</p></div></fieldset>
             </section>
             <section v-show="settingsTab === 'data'" id="settings-panel-data" role="tabpanel" aria-labelledby="settings-tab-data" class="settings-panel">
-              <div class="settings-section backup-section"><h3><Icon name="folder" :size="16" />你的数据，由你保管</h3><fieldset class="data-settings-boundary" :disabled="busy"><DataSettings v-if="dataTabVisited" @busy="dataBusy = $event" /></fieldset><div class="backup-buttons"><button type="button" class="button subtle" @click="exportBackup" :disabled="busy || dataBusy"><Icon name="down" :size="16" />导出备份</button><button type="button" class="button subtle" @click="fileInput?.click()" :disabled="busy || dataBusy"><Icon name="upload" :size="16" />导入备份</button><button type="button" class="button subtle" :disabled="busy || dataBusy" @click="openCleanup">星尘整理</button></div><p class="field-note">导入、清理与目录操作会单独执行，不会替你保存其他 Tab 的修改。备份是可阅读的 JSON 文件，导入会合并记录。</p></div>
+              <div class="settings-section backup-section"><h3><Icon name="folder" :size="16" />你的数据，由你保管</h3><fieldset class="data-settings-boundary" :disabled="busy || themeSaving"><DataSettings v-if="dataTabVisited" @busy="dataBusy = $event" /></fieldset><div class="backup-buttons"><button type="button" class="button subtle" @click="exportBackup" :disabled="busy || dataBusy"><Icon name="down" :size="16" />导出备份</button><button type="button" class="button subtle" @click="fileInput?.click()" :disabled="busy || dataBusy"><Icon name="upload" :size="16" />导入备份</button><button type="button" class="button subtle" :disabled="busy || dataBusy" @click="openCleanup">星尘整理</button></div><p class="field-note">导入、清理与目录操作会单独执行，不会替你保存其他 Tab 的修改。备份是可阅读的 JSON 文件，导入会合并记录。</p></div>
             </section>
             <section v-show="settingsTab === 'help'" id="settings-panel-help" role="tabpanel" aria-labelledby="settings-tab-help" class="settings-panel">
               <div class="settings-help-intro"><span class="settings-help-icon"><Icon name="spark" :size="24" /></span><div><h3>初见星笺</h3><p>四步认识记录、收藏、卡片和数据管理。随时重看，按自己的节奏熟悉。</p></div></div>
@@ -321,7 +356,7 @@ onUnmounted(() => { unsubscribe?.(); clearTimeout(toastTimer); clearTimeout(copy
             </section>
           </div>
           <div class="modal-actions settings-actions">
-            <div class="settings-save-state"><span role="status" aria-live="polite" :class="{ dirty: settingsDirty }">{{ settingsSaving ? '正在保存…' : settingsDirty ? '有未保存的修改' : '设置已同步' }}</span><small><kbd>{{ modKey }} S</kbd> 保存所有 Tab 的修改</small></div>
+            <div class="settings-save-state"><span role="status" aria-live="polite" :class="{ dirty: settingsDirty }">{{ settingsSaving ? '正在保存…' : settingsDirty ? '有未保存的修改' : '设置已同步' }}</span><small><kbd>{{ modKey }} S</kbd> 保存其他 Tab 和贴纸修改 · 主题即时保存</small></div>
             <button type="button" class="button subtle" :disabled="busy || dataBusy" @click="closeModal">{{ settingsDirty ? '取消修改' : '完成' }}</button>
             <button type="submit" class="button primary" :disabled="busy || dataBusy || !settingsDirty">{{ settingsSaving ? '保存中…' : '保存全部偏好' }}<Icon name="check" :size="16" /></button>
           </div>

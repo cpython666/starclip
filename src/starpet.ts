@@ -56,3 +56,21 @@ export const starPetMoods = [
 
 export type StarPetMoodId = typeof starPetMoods[number]['id'];
 export function getStarPetMood(id: string) { return starPetMoods.find(mood => mood.id === id) ?? starPetMoods[0]; }
+
+
+export const starPetColors = [
+  { name: '奶油星光', value: '#FFD66E' },
+  { name: '蜜桃云朵', value: '#FFAFA2' },
+  { name: '薄荷心事', value: '#98DBB5' },
+  { name: '薰衣草梦', value: '#C4A5E9' },
+  { name: '晴空来信', value: '#8DCFF2' },
+] as const;
+
+// A white-lit upper surface keeps the face legible even with a dark custom color.
+export function starPetPalette(color: string) {
+  const hex = /^#[0-9a-f]{6}$/i.test(color) ? color : '#FFD66E';
+  const rgb = [1, 3, 5].map(offset => parseInt(hex.slice(offset, offset + 2), 16));
+  const tint = (white: number) => '#' + rgb.map(value => Math.round(value + (255 - value) * white).toString(16).padStart(2, '0')).join('');
+  const shade = (amount: number) => '#' + rgb.map(value => Math.round(value * amount).toString(16).padStart(2, '0')).join('');
+  return { base: hex, light: tint(.70), middle: tint(.26), shade: shade(.88), edge: shade(.84) };
+}

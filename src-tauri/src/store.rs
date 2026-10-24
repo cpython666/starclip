@@ -150,12 +150,14 @@ pub const STARPET_MOODS: &[&str] = &[
 pub struct StarpetPreferences {
     pub enabled: bool,
     pub mood: String,
+    pub color: String,
 }
 impl Default for StarpetPreferences {
     fn default() -> Self {
         Self {
             enabled: false,
             mood: "idle".into(),
+            color: "#FFD66E".into(),
         }
     }
 }
@@ -164,7 +166,34 @@ impl StarpetPreferences {
         if !STARPET_MOODS.contains(&self.mood.as_str()) {
             return Err("不支持的星伴表情。".into());
         }
+        if self.color.len() != 7
+            || !self.color.starts_with('#')
+            || !self.color[1..].bytes().all(|c| c.is_ascii_hexdigit())
+        {
+            return Err("星伴颜色需为六位 HEX，例如 #FFD66E。".into());
+        }
         Ok(())
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StarpetPreferencePatch {
+    pub enabled: Option<bool>,
+    pub mood: Option<String>,
+    pub color: Option<String>,
+}
+impl StarpetPreferencePatch {
+    pub fn apply_to(self, preferences: &mut StarpetPreferences) {
+        if let Some(enabled) = self.enabled {
+            preferences.enabled = enabled;
+        }
+        if let Some(mood) = self.mood {
+            preferences.mood = mood;
+        }
+        if let Some(color) = self.color {
+            preferences.color = color.to_ascii_uppercase();
+        }
     }
 }
 
@@ -518,9 +547,10 @@ impl Store {
             .map_err(sql_error)?;
         match json {
             Some(json) => {
-                let preferences: StarpetPreferences = serde_json::from_str(&json)
+                let mut preferences: StarpetPreferences = serde_json::from_str(&json)
                     .map_err(|_| "星伴偏好损坏，未更改已保存的数据。")?;
                 preferences.validate()?;
+                preferences.color.make_ascii_uppercase();
                 Ok(preferences)
             }
             None => Ok(StarpetPreferences::default()),
@@ -530,7 +560,9 @@ impl Store {
     pub fn save_starpet_preferences(&self, preferences: &StarpetPreferences) -> Result<()> {
         // Keep pet interactions independent of retention, clipboard capture and ordinary settings.
         preferences.validate()?;
-        let json = serde_json::to_string(preferences).map_err(|e| e.to_string())?;
+        let mut preferences = preferences.clone();
+        preferences.color.make_ascii_uppercase();
+        let json = serde_json::to_string(&preferences).map_err(|e| e.to_string())?;
         self.conn
             .execute(
                 "INSERT INTO preferences(key,value) VALUES('starpet_v1',?1)
@@ -539,6 +571,35 @@ impl Store {
             )
             .map_err(sql_error)?;
         Ok(())
+    }
+
+    pub fn set_theme(&self, theme: &str) -> Result<Settings> {
+        if !["dark", "light", "forest", "rose", "system"].contains(&theme) {
+            return Err("不支持的应用主题。".into());
+        }
+        let tx = self.conn.unchecked_transaction().map_err(sql_error)?;
+        let stored: Option<String> = tx
+            .query_row(
+                "SELECT value FROM preferences WHERE key='settings'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error)?;
+        let mut json: serde_json::Value = match stored {
+            Some(json) => serde_json::from_str(&json).map_err(|_| "偏好设置损坏，主题未保存。")?,
+            None => serde_json::to_value(Settings::default()).map_err(|e| e.to_string())?,
+        };
+        json.as_object_mut()
+            .ok_or("偏好设置损坏，主题未保存。")?
+            .insert("theme".into(), theme.into());
+        let settings: Settings =
+            serde_json::from_value(json.clone()).map_err(|_| "偏好设置损坏，主题未保存。")?;
+        settings.validate()?;
+        // Preserve every other stored preference, including older missing fields and future keys.
+        tx.execute("INSERT INTO preferences(key,value) VALUES('settings',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [json.to_string()]).map_err(sql_error)?;
+        tx.commit().map_err(sql_error)?;
+        Ok(settings)
     }
 
     pub fn save_settings(&self, settings: &Settings) -> Result<()> {
@@ -1072,9 +1133,37 @@ mod tests {
             "{}",
             "reading defaults must not rewrite existing data"
         );
+        let legacy = r##"{"enabled":true,"mood":"sleepy"}"##;
+        fresh
+            .conn
+            .execute(
+                "UPDATE preferences SET value=?1 WHERE key='starpet_v1'",
+                [legacy],
+            )
+            .unwrap();
+        assert_eq!(
+            fresh.starpet_preferences().unwrap(),
+            StarpetPreferences {
+                enabled: true,
+                mood: "sleepy".into(),
+                color: "#FFD66E".into()
+            }
+        );
+        assert_eq!(
+            fresh
+                .conn
+                .query_row(
+                    "SELECT value FROM preferences WHERE key='starpet_v1'",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+            legacy
+        );
         let preferences = StarpetPreferences {
             enabled: true,
             mood: "curious".into(),
+            color: "#8CB9BD".into(),
         };
         fresh.save_starpet_preferences(&preferences).unwrap();
         drop(fresh);
@@ -1101,6 +1190,7 @@ mod tests {
             let value = StarpetPreferences {
                 enabled: *mood != "sleeping",
                 mood: (*mood).into(),
+                color: preferences.color.clone(),
             };
             db.save_starpet_preferences(&value).unwrap();
             assert_eq!(db.starpet_preferences().unwrap(), value);
@@ -1123,7 +1213,58 @@ mod tests {
             assert!(db
                 .save_starpet_preferences(&StarpetPreferences {
                     enabled: true,
-                    mood: mood.into()
+                    mood: mood.into(),
+                    color: old.color.clone(),
+                })
+                .is_err());
+            assert_eq!(db.starpet_preferences().unwrap(), old);
+        }
+        for (patch, expected) in [
+            (
+                r#"{"enabled":false}"#,
+                StarpetPreferences {
+                    enabled: false,
+                    ..old.clone()
+                },
+            ),
+            (
+                r#"{"mood":"greet"}"#,
+                StarpetPreferences {
+                    enabled: false,
+                    mood: "greet".into(),
+                    color: old.color.clone(),
+                },
+            ),
+            (
+                r##"{"color":"#aabbcc"}"##,
+                StarpetPreferences {
+                    enabled: false,
+                    mood: "greet".into(),
+                    color: "#AABBCC".into(),
+                },
+            ),
+        ] {
+            let patch: StarpetPreferencePatch = serde_json::from_str(patch).unwrap();
+            let mut value = db.starpet_preferences().unwrap();
+            patch.apply_to(&mut value);
+            db.save_starpet_preferences(&value).unwrap();
+            assert_eq!(db.starpet_preferences().unwrap(), expected);
+        }
+        let old = db.starpet_preferences().unwrap();
+        for color in [
+            "",
+            "#fff",
+            "112233",
+            "#1234567",
+            "#12345g",
+            "#１２３",
+            " #123456",
+            "#123456\n",
+        ] {
+            assert!(db
+                .save_starpet_preferences(&StarpetPreferences {
+                    color: color.into(),
+                    ..old.clone()
                 })
                 .is_err());
             assert_eq!(db.starpet_preferences().unwrap(), old);
@@ -1134,6 +1275,62 @@ mod tests {
             db.starpet_preferences().unwrap(),
             old,
             "failed persistence retains the complete previous preference"
+        );
+    }
+
+    #[test]
+    fn immediate_theme_change_preserves_legacy_preferences_and_never_prunes() {
+        let fresh = store();
+        let initial = fresh.set_theme("light").unwrap();
+        assert_eq!(
+            initial,
+            Settings {
+                theme: "light".into(),
+                ..Settings::default()
+            }
+        );
+        assert!(!fresh.onboarding_completed().unwrap());
+        let db = store();
+        let legacy = r#"{"paused":false,"theme":"dark","layout":"horizontal","maxHistory":50,"shortcut":"CommandOrControl+Shift+V","retentionDays":1,"futurePreference":"preserve"}"#;
+        db.conn
+            .execute(
+                "INSERT INTO preferences(key,value) VALUES('settings',?1)",
+                [legacy],
+            )
+            .unwrap();
+        db.conn.execute("INSERT INTO clips(content,kind,created_at,updated_at) VALUES('只换主题不能清理这条原创超期记录','text',0,0)", []).unwrap();
+        db.conn.execute_batch("CREATE TRIGGER forbid_theme_prune BEFORE DELETE ON clips BEGIN SELECT RAISE(ABORT, 'theme must not prune'); END;").unwrap();
+        let mut expected: serde_json::Value = serde_json::from_str(legacy).unwrap();
+        for theme in ["light", "forest", "rose", "system", "dark"] {
+            let settings = db.set_theme(theme).unwrap();
+            assert_eq!(settings.theme, theme);
+            assert!(!settings.paused);
+            assert_eq!(settings.retention_days, 1);
+            assert_eq!(db.clips().unwrap().len(), 1);
+            expected["theme"] = theme.into();
+            let saved: String = db
+                .conn
+                .query_row(
+                    "SELECT value FROM preferences WHERE key='settings'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&saved).unwrap(),
+                expected
+            );
+        }
+        let before = db.settings().unwrap();
+        assert!(db.set_theme("unknown").is_err());
+        assert_eq!(db.settings().unwrap(), before);
+        db.conn.execute_batch("CREATE TRIGGER fail_theme_save BEFORE UPDATE ON preferences WHEN NEW.key='settings' BEGIN SELECT RAISE(ABORT, 'fixture write failure'); END;").unwrap();
+        assert!(db.set_theme("rose").is_err());
+        assert_eq!(db.settings().unwrap(), before);
+        assert_eq!(db.clips().unwrap().len(), 1);
+        assert_eq!(
+            db.starpet_preferences().unwrap(),
+            StarpetPreferences::default()
         );
     }
 

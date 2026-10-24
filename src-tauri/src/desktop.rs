@@ -1,7 +1,7 @@
 use crate::storage::{DataDirectoryPlan, DataLocation, DirectoryMode, Storage};
 use crate::store::{
     CleanupFilter, CleanupPreview, CleanupResult, CleanupSnapshot, Clip, Group, Result, Settings,
-    StarpetPreferences, Store, STALE_CLEANUP,
+    StarpetPreferencePatch, StarpetPreferences, Store, STALE_CLEANUP,
 };
 use arboard::Clipboard;
 use serde::Serialize;
@@ -188,11 +188,11 @@ async fn get_starpet_preferences(context: AppContext<'_>) -> Result<StarpetPrefe
 async fn set_starpet_preferences(
     app: AppHandle,
     context: AppContext<'_>,
-    preferences: StarpetPreferences,
+    preferences: StarpetPreferencePatch,
 ) -> Result<StarpetPreferences> {
     let context = context.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        update_starpet(&app, &context, |value| *value = preferences)
+        update_starpet(&app, &context, |value| preferences.apply_to(value))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -345,6 +345,13 @@ fn delete_group(app: AppHandle, context: AppContext<'_>, id: i64) -> Result<()> 
     lock(&context.store)?.delete_group(id)?;
     changed(&app);
     Ok(())
+}
+#[tauri::command]
+fn set_theme(app: AppHandle, context: AppContext<'_>, theme: String) -> Result<Settings> {
+    let _write = write_guard(&context)?;
+    let settings = lock(&context.store)?.set_theme(&theme)?;
+    changed(&app);
+    Ok(settings)
 }
 #[tauri::command]
 fn save_settings(app: AppHandle, context: AppContext<'_>, settings: Settings) -> Result<()> {
@@ -1010,6 +1017,7 @@ pub fn run() {
             create_group,
             delete_group,
             save_settings,
+            set_theme,
             clear_history,
             set_keep_forever,
             preview_cleanup,

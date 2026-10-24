@@ -5,9 +5,9 @@ import Icon from './Icon.vue';
 import { getStarPetMood, starPetMoods } from '../starpet';
 import type { StarPetMoodId } from '../starpet';
 import { dragStarPet, getStarPetPreferences, onStarPetChanged, setStarPetPreferences, showStarPetMainWindow } from '../starpet-api';
-import type { StarPetPreferences } from '../starpet-api';
+import type { StarPetPreferencePatch, StarPetPreferences } from '../starpet-api';
 
-const preferences = ref<StarPetPreferences>({ enabled: false, mood: 'idle' });
+const preferences = ref<StarPetPreferences>({ enabled: false, mood: 'idle', color: '#FFD66E' });
 const reaction = ref<StarPetMoodId | null>(null);
 const touchCount = ref(0);
 const visible = ref(!document.hidden);
@@ -45,7 +45,7 @@ async function action(work: () => Promise<unknown>) {
   try { await work(); } catch (reason) { if (!disposed) error.value = String(reason); }
   finally { if (!disposed) busy.value = false; }
 }
-async function save(preferencesToSave: StarPetPreferences) {
+async function save(preferencesToSave: StarPetPreferencePatch) {
   const revision = preferenceRevision;
   const value = await setStarPetPreferences(preferencesToSave);
   // A newer tray/window event wins over a delayed command response.
@@ -55,14 +55,14 @@ function nextMood() {
   const index = starPetMoods.findIndex(item => item.id === preferences.value.mood);
   return action(() => save({ enabled: true, mood: starPetMoods[(index + 1) % starPetMoods.length]!.id }));
 }
-function hide() { return action(() => save({ ...preferences.value, enabled: false })); }
+function hide() { return action(() => save({ enabled: false })); }
 function drag(event: PointerEvent) { if (event.button === 0) void action(dragStarPet); }
 </script>
 
 <template>
   <main class="desktop-starpet" aria-label="星伴 · 星芽">
     <button type="button" class="pet-drag" :disabled="busy || loading" aria-label="拖动星芽" title="拖动星芽" @pointerdown.prevent="drag"><span aria-hidden="true">⠿</span></button>
-    <button type="button" class="pet-body" :disabled="loading" :aria-label="`摸摸星芽，现在${mood.name}`" @click="touch"><StarPet :mood="mood.id" :size="180" :reaction="touchCount" :animated="preferences.enabled && visible" /></button>
+    <button type="button" class="pet-body" :disabled="loading" :aria-label="`摸摸星芽，现在${mood.name}`" @click="touch"><StarPet :mood="mood.id" :color="preferences.color" :size="180" :reaction="touchCount" :animated="preferences.enabled && visible" /></button>
     <span class="pet-caption" role="status">{{ mood.name }}</span>
     <nav class="pet-actions" aria-label="星伴操作"><button type="button" :disabled="busy || loading" title="打开星笺" aria-label="打开星笺" @click="action(showStarPetMainWindow)"><Icon name="grid" :size="14" /></button><button type="button" :disabled="busy || loading" title="换个心情" aria-label="换个心情" @click="nextMood"><Icon name="spark" :size="14" /></button><button type="button" :disabled="busy || loading" title="收起星伴" aria-label="收起星伴" @click="hide"><Icon name="close" :size="14" /></button></nav>
     <p v-if="error" class="pet-error" role="alert">{{ error }}</p>

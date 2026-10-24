@@ -14,29 +14,46 @@ export function stepSpring(state: Spring, target: number, seconds: number, speed
   };
 }
 
+// Cubic Bézier (0,0), (1/3,0), (2/3,1), (1,1): each phase eases to rest.
+export function cubicBezierEase(progress: number): number {
+  const t = Number.isFinite(progress) ? Math.max(0, Math.min(1, progress)) : 0;
+  return 3 * (1 - t) * t * t + t * t * t;
+}
+
+// Time, grounded x/y, scale x/y; flight position follows the spatial curve below.
 const hopFrames = [
-  [0, 0, 1, 1], [.14, 5, 1.14, .82], [.27, -10, .92, 1.13],
-  [.42, -22, .98, 1.035], [.59, 0, .95, 1.08], [.67, 5, 1.18, .79],
-  [.82, -4, .97, 1.045], [1.08, 0, 1, 1],
+  [0, 0, 0, 1, 1], [.14, -1, 5, 1.14, .82], [.27, 3, -10, .92, 1.13],
+  [.42, 6, -26, .98, 1.035], [.59, 1, 0, .95, 1.08], [.67, 0, 5, 1.18, .79],
+  [.82, -1, -4, .97, 1.045], [1.08, 0, 0, 1, 1],
 ] as const;
 
 export function sampleHop(seconds: number) {
-  if (!Number.isFinite(seconds) || seconds <= 0 || seconds >= 1.08) return { y: 0, sx: 1, sy: 1 };
+  if (!Number.isFinite(seconds) || seconds <= 0 || seconds >= 1.08) return { x: 0, y: 0, sx: 1, sy: 1 };
   const index = hopFrames.findIndex(frame => frame[0] >= seconds);
   const before = hopFrames[index - 1]!, after = hopFrames[index]!;
   const progress = (seconds - before[0]) / (after[0] - before[0]);
-  const ease = (1 - Math.cos(progress * Math.PI)) / 2;
+  const ease = cubicBezierEase(progress);
+  let x = before[1] + (after[1] - before[1]) * ease;
+  let y = before[2] + (after[2] - before[2]) * ease;
+  if (seconds >= .14 && seconds <= .59) {
+    // Spatial cubic Bézier: (-1,5) → (7,-39) → (7,-39) → (1,0).
+    // Its rounded crest is about 29 px high; ease time only at takeoff/contact.
+    const t = cubicBezierEase((seconds - .14) / (.59 - .14)), u = 1 - t;
+    x = -(u ** 3) + 21 * u * u * t + 21 * u * t * t + t ** 3;
+    y = 5 * u ** 3 - 117 * u * u * t - 117 * u * t * t;
+  }
   return {
-    y: before[1] + (after[1] - before[1]) * ease,
-    sx: before[2] + (after[2] - before[2]) * ease,
-    sy: before[3] + (after[3] - before[3]) * ease,
+    x, y,
+    sx: before[3] + (after[3] - before[3]) * ease,
+    sy: before[4] + (after[4] - before[4]) * ease,
   };
 }
 
-export interface HopState { y: Spring; sx: Spring; sy: Spring }
+export interface HopState { x: Spring; y: Spring; sx: Spring; sy: Spring }
 export function stepHop(state: HopState, age: number, seconds: number): HopState {
   const target = sampleHop(age);
   return {
+    x: stepSpring(state.x, target.x, seconds, 42, .72),
     y: stepSpring(state.y, target.y, seconds, 42, .72),
     sx: stepSpring(state.sx, target.sx, seconds, 42, .72),
     sy: stepSpring(state.sy, target.sy, seconds, 42, .72),
@@ -60,10 +77,10 @@ export function blinkOpenness(seconds: number): number {
   return 1;
 }
 
-// Only the five tips flex; the face remains inside a stable, recognizable star.
+// Rounded cubic lobes traced from the generated concept; delayed tip motion stays small.
 export function starOutline(tip: number, side: number) {
   const t = Number.isFinite(tip) ? Math.max(-6, Math.min(6, tip)) : 0;
   const s = Number.isFinite(side) ? Math.max(-5, Math.min(5, side)) : 0;
   const n = (value: number) => Math.round(value * 100) / 100;
-  return `M112 ${n(42 + t)}Q120 ${n(25 + t)} 128 ${n(42 + t)}L148 80Q151 86 158 87L197 ${n(91 + s)}Q216 ${n(93 + s)} 202 ${n(108 + s)}L173 137Q168 142 170 150L178 ${n(189 - s)}Q182 ${n(209 - s)} 164 199L128 180Q121 176 114 180L78 199Q60 ${n(209 + s)} 64 ${n(189 + s)}L72 150Q74 142 68 137L39 ${n(108 - s)}Q25 ${n(93 - s)} 44 ${n(91 - s)}L83 87Q90 86 93 80Z`;
+  return `M86 72C102 ${n(51 + t)} 117 ${n(30 + t)} 132 ${n(35 + t)}C148 ${n(40 + t)} 159 65 169 83C187 ${n(89 + s)} 209 ${n(98 + s)} 211 ${n(114 + s)}C212 ${n(130 + s)} 197 145 181 157C187 ${n(178 - s)} 182 ${n(199 - s)} 168 ${n(202 - s)}C153 ${n(205 - s)} 132 197 117 190C98 198 74 ${n(202 + s)} 59 ${n(196 + s)}C43 ${n(188 + s)} 46 165 51 150C37 ${n(134 - s)} 25 ${n(113 - s)} 33 ${n(98 - s)}C42 ${n(81 - s)} 64 75 86 72Z`;
 }

@@ -8,7 +8,7 @@ const props = withDefaults(defineProps<{
   disabled?: boolean
   placeholder?: string
 }>(), { disabled: false, placeholder: '请选择' })
-const emit = defineEmits<{ 'update:modelValue': [value: T] }>()
+const emit = defineEmits<{ 'update:modelValue': [value: T, origin: { x: number; y: number }] }>()
 const root = ref<HTMLElement>()
 const trigger = ref<HTMLButtonElement>()
 const popup = ref<HTMLElement>()
@@ -150,8 +150,9 @@ function activate(index: number) { active.value = Math.max(0, Math.min(index, pr
 function choose(index: number) {
   const option = props.options[index]
   if (unavailable() || !option) return
-  emit('update:modelValue', option.value)
+  const box = trigger.value!.getBoundingClientRect()
   close(true)
+  emit('update:modelValue', option.value, { x: box.left + box.width / 2, y: box.top + box.height / 2 })
 }
 function typeAhead(key: string) {
   const now = Date.now()

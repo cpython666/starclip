@@ -147,6 +147,11 @@ export const api = {
     demo.groups.push(group); changed(); return structuredClone(group);
   },
   async deleteGroup(id: number): Promise<void> { if (isDesktop) return invoke('delete_group', { id }); demo.groups = demo.groups.filter((g) => g.id !== id); demo.clips.forEach((c) => { if (c.groupId === id) c.groupId = null; }); changed(); },
+  async setTheme(theme: Settings['theme']): Promise<Settings> {
+    if (isDesktop) return invoke('set_theme', { theme });
+    if (!['dark', 'light', 'forest', 'rose', 'system'].includes(theme)) throw new Error('主题无效，请重新选择。');
+    demo.settings.theme = theme; changed(); return { ...demo.settings };
+  },
   async saveSettings(settings: Settings): Promise<void> {
     if (isDesktop) return invoke('save_settings', { settings });
     if (typeof settings.paused !== 'boolean' || typeof settings.alwaysOnTop !== 'boolean' || typeof settings.showStartup !== 'boolean'
