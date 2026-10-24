@@ -90,7 +90,7 @@ async function changeColor(color: string) {
         <button v-if="preferences.enabled && selected !== preferences.mood" type="button" class="starpet-apply" :disabled="blocked" @click="save(true)">用这个表情陪我 <span aria-hidden="true">↗</span></button>
       </div>
     </div>
-    <p class="starpet-status" role="status">{{ error || notice || (starPetDesktopAvailable ? '这里的开关会立即保存。桌面小把手可拖动，点点星芽会回应你。' : '此处可以预览全部表情；桌面悬浮需要在星笺桌面版开启。') }}</p>
+    <p class="starpet-status" role="status">{{ error || notice || (starPetDesktopAvailable ? '这里的开关会立即保存。按住桌面星芽就能拖动，轻点会回应你；上方小把手也能拖动。' : '此处可以预览全部表情；桌面悬浮需要在星笺桌面版开启。') }}</p>
     <section class="starpet-colors" aria-label="星芽的颜色">
       <div class="starpet-color-heading"><div><h4>给星芽一点颜色</h4><p>轻轻一点，马上换装 · 自动保存</p></div><UiColor :model-value="preferences.color" label="自选星芽颜色" :disabled="blocked" @update:model-value="changeColor" /></div>
       <div class="starpet-color-choices"><button v-for="color in starPetColors" :key="color.value" type="button" :disabled="blocked" :aria-label="`星芽颜色：${color.name}`" :aria-pressed="preferences.color === color.value" :class="{ chosen: preferences.color === color.value }" @click="changeColor(color.value)"><span class="starpet-color-dot" :style="{ background: color.value }"><Icon v-if="preferences.color === color.value" name="check" :size="13" /></span><span>{{ color.name }}</span></button></div>

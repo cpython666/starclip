@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api/core';
 import type { StarPetMoodId } from './starpet';
 
 export const defaultStarPetColor = '#FFD66E';
@@ -33,5 +34,5 @@ export async function showStarPetMainWindow(): Promise<void> {
   if (starPetDesktopAvailable) await (await import('@tauri-apps/api/core')).invoke('show_main_window');
 }
 export async function dragStarPet(): Promise<void> {
-  if (starPetDesktopAvailable) await (await import('@tauri-apps/api/core')).invoke('starpet_start_dragging');
+  if (starPetDesktopAvailable) await invoke('starpet_start_dragging');
 }
