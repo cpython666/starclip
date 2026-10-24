@@ -1,4 +1,4 @@
-import type { AppState, Clip, Group, HandwritingAssets, HandwritingOptions, Settings } from './types';
+import type { AppState, Clip, DataDirectoryMode, DataDirectoryPlan, DataLocation, Group, HandwritingAssets, HandwritingOptions, Settings } from './types';
 import { download, languages } from './snippets';
 
 export const isDesktop = '__TAURI_INTERNALS__' in window;
@@ -16,7 +16,7 @@ const samples: Array<Pick<Clip, 'title' | 'content' | 'kind' | 'language' | 'gro
 let demo: AppState = {
   clips: samples.map((clip, i) => ({ ...clip, id: i + 1, createdAt: now - i * 1800000, updatedAt: now - i * 1800000, copyCount: i === 1 ? 12 : 0 })),
   groups: [{ id: 1, name: '灵感碎片', color: '#d9b780' }, { id: 2, name: '开发工具箱', color: '#87bab6' }, { id: 3, name: '设计收藏', color: '#b69bd7' }],
-  settings: { paused: true, theme: 'dark', layout: 'grid', maxHistory: 500, retentionDays: 0, alwaysOnTop: false, shortcut: 'CommandOrControl+Shift+V' },
+  settings: { paused: true, showStartup: true, theme: 'dark', layout: 'grid', maxHistory: 500, retentionDays: 0, alwaysOnTop: false, shortcut: 'CommandOrControl+Shift+V' },
   clipboardError: null, shortcutError: null, windowError: null,
 };
 // ponytail: browser preview stays in memory; only the native app persists real history.
@@ -41,6 +41,26 @@ function classify(content: string): Clip['kind'] {
 async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> { return (await import('@tauri-apps/api/core')).invoke<T>(command, args); }
 
 export const api = {
+  async getDataLocation(): Promise<DataLocation> {
+    if (!isDesktop) throw new Error('请在桌面版查看和管理数据目录。');
+    return invoke('get_data_location');
+  },
+  async chooseDataDirectory(mode: DataDirectoryMode): Promise<DataDirectoryPlan | null> {
+    if (!isDesktop) throw new Error('请在桌面版选择数据目录。');
+    return invoke('choose_data_directory', { mode });
+  },
+  async applyDataDirectory(mode: DataDirectoryMode, targetPath: string): Promise<DataLocation> {
+    if (!isDesktop) throw new Error('请在桌面版迁移数据。');
+    return invoke('apply_data_directory', { mode, targetPath });
+  },
+  async openDataDirectory(): Promise<void> {
+    if (!isDesktop) throw new Error('请在桌面版打开数据目录。');
+    return invoke('open_data_directory');
+  },
+  async restartApp(): Promise<void> {
+    if (!isDesktop) throw new Error('请在桌面版重启应用。');
+    return invoke('restart_app');
+  },
   async handwritingAssets(): Promise<HandwritingAssets> {
     return isDesktop ? invoke('handwriting_assets') : { available: false, path: null, fonts: [], backgrounds: [], error: '月光笺的手写效果需要在桌面版中连接本机星笺应用。星码卡可直接在此制作。' };
   },
@@ -84,8 +104,8 @@ export const api = {
   async deleteGroup(id: number): Promise<void> { if (isDesktop) return invoke('delete_group', { id }); demo.groups = demo.groups.filter((g) => g.id !== id); demo.clips.forEach((c) => { if (c.groupId === id) c.groupId = null; }); changed(); },
   async saveSettings(settings: Settings): Promise<void> {
     if (isDesktop) return invoke('save_settings', { settings });
-    if (typeof settings.paused !== 'boolean' || typeof settings.alwaysOnTop !== 'boolean'
-      || !['dark', 'light', 'system'].includes(settings.theme) || !['grid', 'list', 'horizontal'].includes(settings.layout)
+    if (typeof settings.paused !== 'boolean' || typeof settings.alwaysOnTop !== 'boolean' || typeof settings.showStartup !== 'boolean'
+      || !['dark', 'light', 'forest', 'rose', 'system'].includes(settings.theme) || !['grid', 'list', 'horizontal'].includes(settings.layout)
       || !Number.isSafeInteger(settings.maxHistory) || settings.maxHistory < 50 || settings.maxHistory > 10000
       || ![0, 1, 7, 30, 90, 180, 365].includes(settings.retentionDays)
       || typeof settings.shortcut !== 'string' || !settings.shortcut.trim() || settings.shortcut.length > 80) {

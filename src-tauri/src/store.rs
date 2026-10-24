@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
@@ -55,6 +55,12 @@ pub struct Settings {
     pub always_on_top: bool,
     #[serde(default)]
     pub retention_days: u32,
+    #[serde(default = "default_show_startup")]
+    pub show_startup: bool,
+}
+
+fn default_show_startup() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -67,13 +73,14 @@ impl Default for Settings {
             shortcut: "CommandOrControl+Shift+V".into(),
             always_on_top: false,
             retention_days: 0,
+            show_startup: true,
         }
     }
 }
 
 impl Settings {
     pub fn validate(&self) -> Result<()> {
-        if !["dark", "light", "system"].contains(&self.theme.as_str())
+        if !["dark", "light", "forest", "rose", "system"].contains(&self.theme.as_str())
             || !["grid", "list", "horizontal"].contains(&self.layout.as_str())
             || !(50..=10_000).contains(&self.max_history)
             || self.shortcut.trim().is_empty()
@@ -207,6 +214,63 @@ pub fn classify(content: &str) -> &'static str {
 }
 
 impl Store {
+    /// Read-only validation must never initialize, migrate, or prune a selected database.
+    pub fn validate_database(path: &Path) -> Result<()> {
+        if !path.is_file() {
+            return Err("所选目录缺少 starclip.sqlite3，未创建新数据库。".into());
+        }
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(sql_error)?;
+        conn.busy_timeout(std::time::Duration::from_secs(3))
+            .map_err(sql_error)?;
+        let tx = conn.unchecked_transaction().map_err(sql_error)?;
+        let integrity: String = tx
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .map_err(sql_error)?;
+        if integrity != "ok" {
+            return Err("数据库完整性检查失败，未切换数据目录。".into());
+        }
+        // The original schema had no language column; normal startup upgrades it later.
+        for query in [
+            "SELECT id,content,title,kind,pinned,group_id,created_at,updated_at,copy_count FROM clips LIMIT 0",
+            "SELECT id,name,color FROM groups LIMIT 0",
+            "SELECT key,value FROM preferences LIMIT 0",
+        ] {
+            tx.prepare(query).map_err(|_| "所选文件不是兼容的星笺数据库。".to_string())?;
+        }
+        if tx
+            .prepare("PRAGMA foreign_key_check")
+            .map_err(sql_error)?
+            .exists([])
+            .map_err(sql_error)?
+        {
+            return Err("数据库分组引用损坏，未切换数据目录。".into());
+        }
+        let json: Option<String> = tx
+            .query_row(
+                "SELECT value FROM preferences WHERE key='settings'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error)?;
+        if let Some(json) = json {
+            let settings: Settings =
+                serde_json::from_str(&json).map_err(|_| "目标数据库的偏好设置损坏。")?;
+            settings.validate()?;
+        }
+        Ok(())
+    }
+
+    /// SQLite includes committed WAL pages in this consistent standalone snapshot.
+    pub fn snapshot(&self, target: &Path) -> Result<()> {
+        let target = target.to_str().ok_or("目标路径不是有效的 Unicode 路径。")?;
+        self.conn
+            .execute("VACUUM main INTO ?1", [target])
+            .map_err(sql_error)?;
+        Ok(())
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path).map_err(sql_error)?;
         Self::from_connection(conn)
@@ -664,6 +728,7 @@ mod tests {
         let db = Store::from_connection(conn).unwrap();
         let settings = db.settings().unwrap();
         assert!(!settings.always_on_top);
+        assert!(settings.show_startup);
         assert_eq!(settings.retention_days, 0);
         assert_eq!(settings.layout, "list");
         assert_eq!(db.clips().unwrap()[0].language, None);
@@ -688,6 +753,12 @@ mod tests {
         updated.layout = "horizontal".into();
         updated.always_on_top = true;
         updated.retention_days = 7;
+        updated.show_startup = false;
+        for theme in ["forest", "rose"] {
+            updated.theme = theme.into();
+            destination.save_settings(&updated).unwrap();
+            assert_eq!(destination.settings().unwrap(), updated);
+        }
         destination.save_settings(&updated).unwrap();
         assert_eq!(destination.import(&old_backup.to_string()).unwrap(), 1);
         assert_eq!(destination.settings().unwrap(), updated);

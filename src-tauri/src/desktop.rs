@@ -1,10 +1,11 @@
+use crate::storage::{DataDirectoryPlan, DataLocation, DirectoryMode, Storage};
 use crate::store::{Clip, Group, Result, Settings, Store};
 use arboard::Clipboard;
 use serde::Serialize;
 use std::{
     fs::{self, OpenOptions},
     io::Write,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -23,6 +24,7 @@ struct Reader {
     armed: bool,
 }
 struct Context {
+    storage: Mutex<Storage>,
     store: Mutex<Store>,
     reader: Mutex<Reader>,
     clipboard_error: Mutex<Option<String>>,
@@ -34,6 +36,11 @@ fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>> {
     mutex
         .lock()
         .map_err(|_| "应用内部状态异常，请重新启动星笺。".into())
+}
+fn write_guard(context: &Context) -> Result<MutexGuard<'_, Storage>> {
+    let storage = lock(&context.storage)?;
+    storage.writable()?;
+    Ok(storage)
 }
 fn changed(app: &AppHandle) {
     let _ = app.emit("clips-changed", ());
@@ -85,6 +92,7 @@ fn add_clip(
     title: String,
     group_id: Option<i64>,
 ) -> Result<Clip> {
+    let _write = write_guard(&context)?;
     let clip = lock(&context.store)?.add(&content, &title, group_id)?;
     changed(&app);
     Ok(clip)
@@ -98,6 +106,7 @@ fn update_clip(
     group_id: Option<i64>,
     pinned: bool,
 ) -> Result<()> {
+    let _write = write_guard(&context)?;
     lock(&context.store)?.update(id, &title, group_id, pinned)?;
     changed(&app);
     Ok(())
@@ -112,18 +121,21 @@ fn save_code(
     language: String,
     group_id: Option<i64>,
 ) -> Result<Clip> {
+    let _write = write_guard(&context)?;
     let clip = lock(&context.store)?.save_code(id, &title, &content, &language, group_id)?;
     changed(&app);
     Ok(clip)
 }
 #[tauri::command]
 fn delete_clip(app: AppHandle, context: AppContext<'_>, id: i64) -> Result<()> {
+    let _write = write_guard(&context)?;
     lock(&context.store)?.delete(id)?;
     changed(&app);
     Ok(())
 }
 #[tauri::command]
 fn copy_clip(app: AppHandle, context: AppContext<'_>, id: i64) -> Result<()> {
+    let _write = write_guard(&context)?;
     let content = lock(&context.store)?.clip(id)?.content;
     {
         let mut reader = lock(&context.reader)?;
@@ -150,18 +162,21 @@ fn create_group(
     name: String,
     color: String,
 ) -> Result<Group> {
+    let _write = write_guard(&context)?;
     let group = lock(&context.store)?.create_group(&name, &color)?;
     changed(&app);
     Ok(group)
 }
 #[tauri::command]
 fn delete_group(app: AppHandle, context: AppContext<'_>, id: i64) -> Result<()> {
+    let _write = write_guard(&context)?;
     lock(&context.store)?.delete_group(id)?;
     changed(&app);
     Ok(())
 }
 #[tauri::command]
 fn save_settings(app: AppHandle, context: AppContext<'_>, settings: Settings) -> Result<()> {
+    let _write = write_guard(&context)?;
     settings.validate()?;
     let old = lock(&context.store)?.settings()?;
     let shortcut: Shortcut = settings
@@ -225,6 +240,7 @@ fn save_settings(app: AppHandle, context: AppContext<'_>, settings: Settings) ->
 }
 #[tauri::command]
 fn clear_history(app: AppHandle, context: AppContext<'_>) -> Result<()> {
+    let _write = write_guard(&context)?;
     lock(&context.store)?.clear_history()?;
     changed(&app);
     Ok(())
@@ -235,6 +251,7 @@ fn export_backup(context: AppContext<'_>) -> Result<String> {
 }
 #[tauri::command]
 fn import_backup(app: AppHandle, context: AppContext<'_>, data: String) -> Result<usize> {
+    let _write = write_guard(&context)?;
     let count = lock(&context.store)?.import(&data)?;
     changed(&app);
     Ok(count)
@@ -366,21 +383,20 @@ fn hide_window(app: AppHandle) -> Result<()> {
 }
 
 #[tauri::command]
-async fn handwriting_assets(app: AppHandle) -> Result<crate::handwriting::HandwritingAssets> {
-    let directory = app
-        .path()
-        .app_config_dir()
-        .map_err(|_| "无法定位应用设置目录。")?;
+async fn handwriting_assets(
+    context: AppContext<'_>,
+) -> Result<crate::handwriting::HandwritingAssets> {
+    let directory = lock(&context.storage)?.handwriting_directory();
     tauri::async_runtime::spawn_blocking(move || crate::handwriting::assets(&directory))
         .await
         .map_err(|_| "无法读取手写应用素材。".to_string())
 }
 #[tauri::command]
-async fn choose_handwriting_app(app: AppHandle) -> Result<crate::handwriting::HandwritingAssets> {
-    let directory = app
-        .path()
-        .app_config_dir()
-        .map_err(|_| "无法定位应用设置目录。")?;
+async fn choose_handwriting_app(
+    app: AppHandle,
+    context: AppContext<'_>,
+) -> Result<crate::handwriting::HandwritingAssets> {
+    let context = context.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let picker = app
             .dialog()
@@ -388,27 +404,127 @@ async fn choose_handwriting_app(app: AppHandle) -> Result<crate::handwriting::Ha
             .set_title("选择星笺.app 或 xingjian CLI");
         #[cfg(windows)]
         let picker = picker.add_filter("星笺 CLI", &["exe"]);
-        let Some(selected) = picker.blocking_pick_file() else {
-            return Ok(crate::handwriting::assets(&directory));
+        let selected = picker.blocking_pick_file();
+        let storage = write_guard(&context)?;
+        let Some(selected) = selected else {
+            return Ok(crate::handwriting::assets(&storage.handwriting_directory()));
         };
         let path = selected.into_path().map_err(|_| "请选择本机应用文件。")?;
-        crate::handwriting::select_app(&directory, &path)
+        crate::handwriting::select_app(&storage.current, &path)
     })
     .await
     .map_err(|_| "选择手写应用失败。".to_string())?
 }
 #[tauri::command]
 async fn render_handwriting(
-    app: AppHandle,
+    context: AppContext<'_>,
     options: crate::handwriting::HandwritingOptions,
 ) -> Result<String> {
-    let directory = app
-        .path()
-        .app_config_dir()
-        .map_err(|_| "无法定位应用设置目录。")?;
+    let directory = lock(&context.storage)?.handwriting_directory();
     tauri::async_runtime::spawn_blocking(move || crate::handwriting::render(&directory, options))
         .await
         .map_err(|_| "手写渲染任务失败。".to_string())?
+}
+
+#[tauri::command]
+async fn get_data_location(context: AppContext<'_>) -> Result<DataLocation> {
+    let context = context.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || lock(&context.storage)?.info())
+        .await
+        .map_err(|_| "读取数据目录失败。".to_string())?
+}
+#[tauri::command]
+async fn choose_data_directory(
+    app: AppHandle,
+    context: AppContext<'_>,
+    mode: DirectoryMode,
+) -> Result<Option<DataDirectoryPlan>> {
+    let context = context.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let title = if mode == DirectoryMode::Move {
+            "选择父目录：将在其中新建星笺数据子目录"
+        } else {
+            "选择含 starclip.sqlite3 的已有星笺数据目录"
+        };
+        let Some(selected) = app.dialog().file().set_title(title).blocking_pick_folder() else {
+            return Ok(None);
+        };
+        let path = selected.into_path().map_err(|_| "请选择本机目录。")?;
+        lock(&context.storage)?.plan(mode, &path).map(Some)
+    })
+    .await
+    .map_err(|_| "选择数据目录失败。".to_string())?
+}
+#[tauri::command]
+async fn apply_data_directory(
+    app: AppHandle,
+    context: AppContext<'_>,
+    mode: DirectoryMode,
+    target_path: String,
+) -> Result<DataLocation> {
+    let context = context.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut storage = lock(&context.storage)?;
+        let mut info = storage.info()?;
+        let store = lock(&context.store)?;
+        storage.apply(&store, mode, Path::new(&target_path))?;
+        info.pending_path = storage.pending_path();
+        changed(&app);
+        Ok(info)
+    })
+    .await
+    .map_err(|_| "切换数据目录失败。".to_string())?
+}
+#[tauri::command]
+fn restart_app(app: AppHandle, context: AppContext<'_>) -> Result<()> {
+    lock(&context.storage)?.release_for_restart()?;
+    app.restart();
+}
+#[tauri::command]
+async fn open_data_directory(context: AppContext<'_>) -> Result<()> {
+    let directory = lock(&context.storage)?.current.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if !directory.is_dir() {
+            return Err("当前数据目录无法访问，请检查磁盘连接。".into());
+        }
+        #[cfg(target_os = "macos")]
+        let mut command = std::process::Command::new("open");
+        #[cfg(target_os = "windows")]
+        let mut command = std::process::Command::new("explorer.exe");
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let mut command = std::process::Command::new("xdg-open");
+        command
+            .arg(&directory)
+            .spawn()
+            .map_err(|error| format!("无法打开数据目录：{error}"))?;
+        Ok(())
+    })
+    .await
+    .map_err(|_| "打开数据目录失败。".to_string())?
+}
+
+fn offer_storage_recovery(app: &AppHandle, default: PathBuf, error: String) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+    let handle = app.clone();
+    app.dialog().message(format!("{error}\n\n为防止写入分叉，星笺没有新建或切回数据库。可以重新连接磁盘后退出重试，或选择已有数据目录恢复。"))
+        .title("星笺无法打开数据目录")
+        .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancelCustom("选择已有目录".into(), "退出".into()))
+        .show(move |choose| {
+            if !choose { handle.exit(0); return; }
+            let app = handle.clone();
+            handle.dialog().file().set_title("选择要恢复使用的已有星笺数据目录").pick_folder(move |selected| {
+                let Some(selected) = selected else { app.exit(0); return; };
+                thread::spawn(move || {
+                    let result = selected.into_path().map_err(|_| "请选择本机目录。".to_string()).and_then(|path| Storage::recover(&default, &path));
+                    match result {
+                        Ok(()) => app.restart(),
+                        Err(error) => offer_storage_recovery(&app, default, error),
+                    }
+                });
+            });
+        });
 }
 
 fn set_clipboard_error(app: &AppHandle, context: &Context, error: Option<String>) {
@@ -424,6 +540,14 @@ fn monitor(app: AppHandle, context: Arc<Context>) {
         let mut maintenance_at = Instant::now() + Duration::from_secs(60);
         loop {
             thread::sleep(Duration::from_millis(700));
+            // Every mutation takes this gate before reader/store locks. A completed
+            // migration leaves it paused until restart, including scheduled cleanup.
+            let Ok(storage) = lock(&context.storage) else {
+                continue;
+            };
+            if storage.restart_pending() {
+                continue;
+            }
             if Instant::now() >= maintenance_at {
                 maintenance_at = Instant::now() + Duration::from_secs(60);
                 let removed = lock(&context.store).and_then(|store| {
@@ -499,15 +623,22 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
-            let directory = app.path().app_data_dir()?;
-            fs::create_dir_all(&directory)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
-            }
-            let db_path = directory.join("starclip.sqlite3");
-            let store = Store::open(&db_path).map_err(std::io::Error::other)?;
+            let default = app.path().app_data_dir()?;
+            let storage = match Storage::open(&default, &app.path().app_config_dir()?) {
+                Ok(storage) => storage,
+                Err(error) => {
+                    offer_storage_recovery(app.handle(), default, error);
+                    return Ok(());
+                }
+            };
+            let db_path = storage.current.join("starclip.sqlite3");
+            let store = match Store::open(&db_path) {
+                Ok(store) => store,
+                Err(error) => {
+                    offer_storage_recovery(app.handle(), default, error);
+                    return Ok(());
+                }
+            };
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -537,6 +668,7 @@ pub fn run() {
                 })
                 .err();
             let context = Arc::new(Context {
+                storage: Mutex::new(storage),
                 store: Mutex::new(store),
                 reader: Mutex::new(Reader {
                     clipboard: None,
@@ -616,7 +748,12 @@ pub fn run() {
             hide_window,
             handwriting_assets,
             choose_handwriting_app,
-            render_handwriting
+            render_handwriting,
+            get_data_location,
+            choose_data_directory,
+            apply_data_directory,
+            open_data_directory,
+            restart_app
         ])
         .run(tauri::generate_context!())
         .expect("星笺启动失败，请检查本地数据目录权限或磁盘空间。");

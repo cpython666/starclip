@@ -13,7 +13,8 @@ export interface Clip {
 export interface Group { id: number; name: string; color: string }
 export interface Settings {
   paused: boolean;
-  theme: 'dark' | 'light' | 'system';
+  theme: 'dark' | 'light' | 'forest' | 'rose' | 'system';
+  showStartup: boolean;
   layout: 'grid' | 'list' | 'horizontal';
   maxHistory: number;
   retentionDays: number;
@@ -42,4 +43,22 @@ export interface HandwritingOptions {
   fontSize: number;
   ink: string;
   padding: number;
+}
+
+export type DataDirectoryMode = 'move' | 'use';
+export interface DataLocation {
+  currentPath: string;
+  defaultPath: string;
+  configPath: string;
+  pendingPath: string | null;
+  totalBytes: number;
+  databaseBytes: number;
+  warnings: string[];
+}
+export interface DataDirectoryPlan {
+  mode: DataDirectoryMode;
+  currentPath: string;
+  targetPath: string;
+  totalBytes: number;
+  warnings: string[];
 }
