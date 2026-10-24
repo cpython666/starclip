@@ -48,13 +48,13 @@ async function render() {
 async function exportImage() {
   if (busy.value || !preview.value || stale.value) return;
   busy.value = true; error.value = ''; notice.value = '';
-  try { if (await api.saveExport(preview.value, 'png', `${safeFilename(props.title || '手写纸笺')}.png`)) notice.value = '手写纸笺已导出'; } catch (e) { error.value = String(e); } finally { busy.value = false; }
+  try { if (await api.saveExport(preview.value, 'png', `${safeFilename(props.title || '月光笺')}.png`)) notice.value = '月光笺已导出'; } catch (e) { error.value = String(e); } finally { busy.value = false; }
 }
 </script>
 
 <template>
-  <section class="handwriting-panel" aria-label="手写纸笺制作">
-    <div class="handwriting-heading"><strong>让文字，带一点星光。</strong><span v-if="assets.available">{{ assets.fonts.length }} 款手写字体 · 本地生成</span></div>
+  <section class="handwriting-panel" aria-label="月光笺 · 手写纸笺制作">
+    <div class="handwriting-heading"><strong>借一纸月光，写几行心事。</strong><span v-if="assets.available">{{ assets.fonts.length }} 款手写字体 · 本地生成</span></div>
     <p v-if="loading" class="handwriting-hint" role="status">正在连接本机星笺…</p>
     <template v-else-if="assets.available">
       <div class="handwriting-controls">
@@ -66,15 +66,15 @@ async function exportImage() {
         <button class="renderer-choice" :disabled="busy" @click="chooseApp">更换星笺应用</button>
       </div>
       <div class="handwriting-preview" :aria-busy="busy">
-        <img v-if="preview" :src="`data:image/png;base64,${preview}`" alt="手写纸笺预览，导出使用此图片的原始尺寸" />
+        <img v-if="preview" :src="`data:image/png;base64,${preview}`" alt="月光笺手写预览，导出使用此图片的原始尺寸" />
         <div v-else class="paper-placeholder"><span>✧</span><p>写下想留下的话，<br />再生成一页属于你的纸笺。</p></div>
         <span v-if="stale" class="preview-stale">内容或样式已变，请重新生成</span>
       </div>
       <p class="handwriting-hint">单页排版，超出纸张的文字会裁切，请检查预览后导出。</p>
-      <div class="handwriting-actions"><button class="render-button" :disabled="busy || !text.trim() || tooLong || !font" @click="render">{{ busy ? '处理中…' : preview ? '更新预览' : '生成预览' }}</button><button :disabled="busy || !preview || stale" @click="exportImage">导出手写 PNG</button></div>
+      <div class="handwriting-actions"><button class="render-button" :disabled="busy || !text.trim() || tooLong || !font" @click="render">{{ busy ? '处理中…' : preview ? '更新预览' : '生成预览' }}</button><button :disabled="busy || !preview || stale" @click="exportImage">导出月光笺 PNG</button></div>
     </template>
     <div v-else class="handwriting-unavailable">
-      <span>✧</span><h3>连接你的星笺</h3><p>{{ assets.error || '选择本机星笺应用，即可在这里制作手写纸笺。' }}</p>
+      <span>✧</span><h3>连接你的星笺</h3><p>{{ assets.error || '选择本机星笺应用，即可在月光笺中制作手写纸笺。' }}</p>
       <button v-if="isDesktop" :disabled="busy" @click="chooseApp">选择星笺应用</button>
       <small>使用星笺 Rust 版 · 字体与纸张随应用提供</small>
     </div>
