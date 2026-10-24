@@ -3,6 +3,8 @@ import { computed, onMounted, ref } from 'vue';
 import { api, isDesktop } from '../api';
 import { safeFilename } from '../snippets';
 import type { HandwritingAssets, HandwritingOptions } from '../types';
+import UiSelect from './UiSelect.vue';
+import UiColor from './UiColor.vue';
 
 const props = defineProps<{ text: string; title: string }>();
 const assets = ref<HandwritingAssets>({ available: false, path: null, fonts: [], backgrounds: [], error: null });
@@ -17,6 +19,12 @@ const ink = ref('#24324a');
 const padding = ref(100);
 const preview = ref('');
 const renderedKey = ref('');
+const fontOptions = computed(() => assets.value.fonts.map(item => ({ value: item.path, label: item.name })));
+const backgroundOptions = computed(() => [
+  { value: 'solid:#f8f1e3:1200:1600', label: '暖白信纸' },
+  { value: 'solid:#ffffff:1200:1600', label: '纯白纸张' },
+  ...assets.value.backgrounds.map(item => ({ value: item.path, label: item.name })),
+]);
 const options = computed<HandwritingOptions>(() => ({ text: props.text, font: font.value, background: background.value, fontSize: fontSize.value, ink: ink.value, padding: padding.value }));
 const currentKey = computed(() => JSON.stringify([assets.value.path, options.value]));
 const stale = computed(() => !!preview.value && renderedKey.value !== currentKey.value);
@@ -58,11 +66,11 @@ async function exportImage() {
     <p v-if="loading" class="handwriting-hint" role="status">正在连接本机星笺…</p>
     <template v-else-if="assets.available">
       <div class="handwriting-controls">
-        <label>手写字体<select v-model="font" aria-label="手写字体"><option v-for="item in assets.fonts" :key="item.path" :value="item.path">{{ item.name }}</option></select></label>
-        <label>纸张<select v-model="background" aria-label="手写纸张"><option value="solid:#f8f1e3:1200:1600">暖白信纸</option><option value="solid:#ffffff:1200:1600">纯白纸张</option><option v-for="item in assets.backgrounds" :key="item.path" :value="item.path">{{ item.name }}</option></select></label>
+        <div class="handwriting-field"><span>手写字体</span><UiSelect v-model="font" :options="fontOptions" label="手写字体" :disabled="busy" /></div>
+        <div class="handwriting-field"><span>纸张</span><UiSelect v-model="background" :options="backgroundOptions" label="手写纸张" :disabled="busy" /></div>
         <label>字号 {{ fontSize }} pt<input v-model.number="fontSize" type="range" min="12" max="72" step="1" aria-label="手写字号" /></label>
         <label>留白 {{ padding }} px<input v-model.number="padding" type="range" min="16" max="160" step="4" aria-label="手写留白" /></label>
-        <label class="ink-control">墨色<input v-model="ink" type="color" aria-label="手写墨色" /></label>
+        <div class="handwriting-field"><span>墨色</span><UiColor v-model="ink" label="手写墨色" :disabled="busy" /></div>
         <button class="renderer-choice" :disabled="busy" @click="chooseApp">更换星笺应用</button>
       </div>
       <div class="handwriting-preview" :aria-busy="busy">
@@ -83,6 +91,6 @@ async function exportImage() {
 </template>
 
 <style scoped>
-.handwriting-panel button,.handwriting-panel select,.handwriting-panel input{box-sizing:border-box;border:1px solid #354157;border-radius:7px;color:#dce3ee;background:#202b3c;font:12px system-ui,sans-serif}.handwriting-panel button{padding:9px 12px;cursor:pointer}.handwriting-panel button:disabled{opacity:.45;cursor:default}.handwriting-panel select{background:#171f2e}.handwriting-panel input{padding:6px}
-.handwriting-panel{padding:16px;border:1px solid #303c50;border-radius:12px;background:#141c29;min-width:0;color:#dce3ee}.handwriting-heading{display:flex;flex-direction:column;gap:6px;margin-bottom:16px}.handwriting-heading strong{font-size:14px;font-weight:500;color:#e4c994}.handwriting-heading span{font-size:10px;color:#91a0b8}.handwriting-controls{display:grid;grid-template-columns:1fr 1fr;gap:12px}.handwriting-controls label{display:flex;flex-direction:column;gap:6px;font-size:11px;color:#a2aec1}.handwriting-controls select{width:100%;padding:8px;min-width:0;font-size:11px}.handwriting-controls input[type=range]{width:100%;padding:0;accent-color:#e4c38c}.handwriting-controls .ink-control{flex-direction:row;align-items:center;gap:10px}.handwriting-controls input[type=color]{height:32px;width:48px;padding:2px;cursor:pointer}.renderer-choice{justify-self:end;align-self:center;font-size:10px!important;padding:6px 8px!important}.handwriting-preview{position:relative;margin-top:16px;background:#0c121c;border-radius:8px;min-height:220px;max-height:340px;overflow:auto;display:flex;align-items:flex-start;justify-content:center}.handwriting-preview img{display:block;width:100%;height:auto;max-width:320px}.paper-placeholder{padding:34px 20px;text-align:center;font-size:12px;line-height:1.9;color:#8e9bb0}.paper-placeholder span{font-size:32px;color:#dac594}.preview-stale{position:absolute;top:8px;left:8px;right:8px;text-align:center;border-radius:5px;background:#302618ed;color:#f2d49c;font-size:11px;padding:8px}.handwriting-hint{font-size:10px;line-height:1.7;color:#8e9bb0;margin:10px 0}.handwriting-actions{display:flex;gap:10px;flex-wrap:wrap}.render-button{background:#e4c38c!important;color:#151a25!important;border-color:#e4c38c!important}.handwriting-unavailable{min-height:280px;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;padding:16px;gap:10px}.handwriting-unavailable>span{font-size:38px;color:#dac594}.handwriting-unavailable h3{font-size:17px;margin:0;color:#e4c994}.handwriting-unavailable p{font-size:12px;line-height:1.9;color:#99a7bd;margin:0}.handwriting-unavailable small{font-size:10px;color:#7f8ca0}.handwriting-message{font-size:11px;color:#e3bc92;line-height:1.6;min-height:1em;margin:10px 0 0}.handwriting-panel :focus-visible{outline:2px solid #e4c38c;outline-offset:2px}
+.handwriting-panel button{box-sizing:border-box;border:1px solid var(--line);border-radius:7px;color:var(--text);background:var(--input);font:12px system-ui,sans-serif}.handwriting-panel button{padding:9px 12px;cursor:pointer}.handwriting-panel button:disabled{opacity:.45;cursor:default}
+.handwriting-panel{padding:16px;border:1px solid var(--line);border-radius:12px;background:var(--bg);min-width:0;color:var(--text)}.handwriting-heading{display:flex;flex-direction:column;gap:6px;margin-bottom:16px}.handwriting-heading strong{font-size:14px;font-weight:500;color:var(--gold)}.handwriting-heading span{font-size:10px;color:var(--muted)}.handwriting-controls{display:grid;grid-template-columns:1fr 1fr;gap:12px}.handwriting-controls label,.handwriting-controls .handwriting-field{display:flex;flex-direction:column;gap:6px;font-size:11px;color:var(--muted)}.handwriting-controls .ui-select,.handwriting-controls .ui-color{width:100%;min-width:0}.handwriting-controls input[type=range]{width:100%}.renderer-choice{justify-self:end;align-self:center;font-size:10px!important;padding:6px 8px!important}.handwriting-preview{position:relative;margin-top:16px;background:var(--input);border-radius:8px;min-height:220px;max-height:340px;overflow:auto;display:flex;align-items:flex-start;justify-content:center}.handwriting-preview img{display:block;width:100%;height:auto;max-width:320px}.paper-placeholder{padding:34px 20px;text-align:center;font-size:12px;line-height:1.9;color:var(--muted)}.paper-placeholder span{font-size:32px;color:var(--gold)}.preview-stale{position:absolute;top:8px;left:8px;right:8px;text-align:center;border-radius:5px;background:var(--gold-dim);color:var(--gold);font-size:11px;padding:8px}.handwriting-hint{font-size:10px;line-height:1.7;color:var(--muted);margin:10px 0}.handwriting-actions{display:flex;gap:10px;flex-wrap:wrap}.render-button{background:var(--primary)!important;color:var(--on-accent)!important;border-color:var(--primary)!important}.handwriting-unavailable{min-height:280px;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;padding:16px;gap:10px}.handwriting-unavailable>span{font-size:38px;color:var(--gold)}.handwriting-unavailable h3{font-size:17px;margin:0;color:var(--gold)}.handwriting-unavailable p{font-size:12px;line-height:1.9;color:var(--muted);margin:0}.handwriting-unavailable small{font-size:10px;color:var(--faint)}.handwriting-message{font-size:11px;color:var(--gold);line-height:1.6;min-height:1em;margin:10px 0 0}.handwriting-panel :focus-visible{outline:2px solid var(--primary);outline-offset:2px}
 </style>

@@ -3,7 +3,11 @@ import { computed, nextTick, ref, watch } from 'vue';
 import { api, isDesktop } from '../api';
 import type { CleanupFilter, CleanupPreview, CleanupResult } from '../types';
 import Icon from './Icon.vue';
+import UiSelect from './UiSelect.vue';
 
+const sizeUnits = [{ value: 'KiB', label: 'KiB' }, { value: 'MiB', label: 'MiB' }] as const;
+const ageChoices = [{ value: '0', label: '不限时间' }, { value: '7', label: '7 天前' }, { value: '30', label: '30 天前' }, { value: '90', label: '90 天前' }, { value: 'custom', label: '自定义天数' }];
+const kindChoices = [{ value: 'all', label: '全部类型' }, { value: 'text', label: '文本' }, { value: 'link', label: '链接' }, { value: 'code', label: '代码' }, { value: 'color', label: '色彩' }] as const;
 const emit = defineEmits<{ busy: [value: boolean]; changed: [] }>();
 const size = ref<string | number>('0');
 const sizeUnit = ref<'KiB' | 'MiB'>('KiB');
@@ -101,18 +105,18 @@ async function execute() {
       </div>
       <p class="cleanup-small">预设会重置其他筛选，并默认排除已分组记录。</p>
       <div class="cleanup-filter-grid">
-        <label class="cleanup-field">内容大小大于
-          <span class="cleanup-size-input"><input v-model="size" type="number" min="0" step="any" inputmode="decimal" aria-label="内容大小阈值" /><select v-model="sizeUnit" aria-label="内容大小单位"><option value="KiB">KiB</option><option value="MiB">MiB</option></select></span>
+        <div class="cleanup-field"><span>内容大小大于</span>
+          <span class="cleanup-size-input"><input v-model="size" type="number" min="0" step="any" inputmode="decimal" aria-label="内容大小阈值" /><UiSelect v-model="sizeUnit" :options="sizeUnits" label="内容大小单位" :disabled="busy" /></span>
           <small v-if="!validation">{{ sizeBytes === 0 ? '0 表示不限大小' : `严格大于 ${sizeBytes.toLocaleString('zh-CN')} 字节` }}</small>
-        </label>
-        <label class="cleanup-field">最近更新早于
-          <select v-model="age" aria-label="最近更新早于天数"><option value="0">不限时间</option><option value="7">7 天前</option><option value="30">30 天前</option><option value="90">90 天前</option><option value="custom">自定义天数</option></select>
+        </div>
+        <div class="cleanup-field"><span>最近更新早于</span>
+          <UiSelect v-model="age" :options="ageChoices" label="最近更新早于天数" :disabled="busy" />
           <input v-if="age === 'custom'" v-model="customDays" type="number" min="0" max="36500" step="1" inputmode="numeric" aria-label="自定义清理天数" placeholder="0 表示不限" />
           <small>按最近更新时间计算，0 表示不限</small>
-        </label>
-        <label class="cleanup-field">内容类型
-          <select v-model="kind" aria-label="清理内容类型"><option value="all">全部类型</option><option value="text">文本</option><option value="link">链接</option><option value="code">代码</option><option value="color">色彩</option></select>
-        </label>
+        </div>
+        <div class="cleanup-field"><span>内容类型</span>
+          <UiSelect v-model="kind" :options="kindChoices" label="清理内容类型" :disabled="busy" />
+        </div>
       </div>
       <label class="cleanup-check"><input v-model="includeGrouped" type="checkbox" />包含已分组记录<span>仍跳过星标与永久保留</span></label>
     </fieldset>
@@ -153,7 +157,7 @@ async function execute() {
 
 <style scoped>
 .cleanup-panel{color:var(--text);min-width:0}.cleanup-intro{font-size:12px;line-height:1.8;color:var(--muted);margin:0 0 14px}.cleanup-intro strong{display:block;font-weight:500;color:var(--text)}.cleanup-demo{display:flex;gap:8px;align-items:flex-start;padding:11px 12px;border:1px solid var(--line);border-radius:8px;background:var(--input);color:var(--muted);font-size:11px;line-height:1.7;margin:0 0 15px}.cleanup-demo svg{flex-shrink:0;margin-top:3px}
-.cleanup-filters{padding:13px 14px 12px;border:1px solid var(--line);border-radius:9px;min-width:0;margin:0}.cleanup-filters legend{font-size:11px;color:var(--gold);padding:0 6px}.cleanup-presets{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:8px}.cleanup-presets button{background:var(--input);border:1px solid var(--line);border-radius:6px;padding:6px 9px;color:var(--muted);font-size:10px}.cleanup-presets button:hover{color:var(--text);border-color:var(--muted)}.cleanup-filter-grid{display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:13px;margin:14px 0}.cleanup-panel .cleanup-field{display:flex;flex-direction:column;gap:7px;color:var(--muted);font-size:10px;margin:0;min-width:0}.cleanup-field input,.cleanup-field select{width:100%;font-size:11px;padding:8px;background:var(--input);color:var(--text);border:1px solid var(--line);border-radius:6px;min-width:0}.cleanup-size-input{display:flex;gap:6px}.cleanup-size-input input{flex:1;width:70px}.cleanup-size-input select{width:65px;flex-shrink:0}.cleanup-field small{font-size:9px;color:var(--faint);line-height:1.6}.cleanup-panel .cleanup-check{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text);margin:10px 0 0;line-height:1.6}.cleanup-check span{font-size:9px;color:var(--muted)}.cleanup-panel input[type=checkbox]{width:15px;height:15px;margin:0;flex-shrink:0;accent-color:var(--gold)}
+.cleanup-filters{padding:13px 14px 12px;border:1px solid var(--line);border-radius:9px;min-width:0;margin:0}.cleanup-filters legend{font-size:11px;color:var(--gold);padding:0 6px}.cleanup-presets{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:8px}.cleanup-presets button{background:var(--input);border:1px solid var(--line);border-radius:6px;padding:6px 9px;color:var(--muted);font-size:10px}.cleanup-presets button:hover{color:var(--text);border-color:var(--muted)}.cleanup-filter-grid{display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:13px;margin:14px 0}.cleanup-panel .cleanup-field{display:flex;flex-direction:column;gap:7px;color:var(--muted);font-size:10px;margin:0;min-width:0}.cleanup-field input{width:100%;font-size:11px;padding:8px;background:var(--input);color:var(--text);border:1px solid var(--line);border-radius:6px;min-width:0}.cleanup-size-input{display:flex;gap:6px}.cleanup-size-input input{flex:1;width:70px}.cleanup-size-input .ui-select{width:80px;flex-shrink:0}.cleanup-field small{font-size:9px;color:var(--faint);line-height:1.6}.cleanup-panel .cleanup-check{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text);margin:10px 0 0;line-height:1.6}.cleanup-check span{font-size:9px;color:var(--muted)}.cleanup-panel input[type=checkbox]{width:15px;height:15px;margin:0;flex-shrink:0;}
 .cleanup-small{font-size:10px;line-height:1.7;color:var(--muted);margin:6px 0 0}.cleanup-preview-action,.cleanup-final-action{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:15px}.cleanup-preview-action>span,.cleanup-final-action>span{font-size:10px;color:var(--muted);line-height:1.6}.cleanup-button{padding:9px 13px;border:1px solid var(--gold);border-radius:7px;color:var(--gold);background:var(--input);font-size:11px;line-height:1.5;white-space:nowrap}.cleanup-button:hover{background:var(--panel)}.cleanup-panel button:disabled{opacity:.45;cursor:default}.cleanup-panel fieldset:disabled{opacity:.65}.cleanup-preview{margin-top:18px;padding-top:17px;border-top:1px solid var(--line)}.cleanup-counts{display:flex;flex-wrap:wrap;gap:10px 24px;color:var(--muted);font-size:11px}.cleanup-counts>span{display:inline-flex;align-items:center;gap:5px}.cleanup-counts strong{font-size:14px;font-weight:500;color:var(--text)}.cleanup-counts svg{color:var(--mint)}.cleanup-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;padding:12px;margin:13px 0 0;border:1px solid var(--line);border-radius:8px;background:var(--input)}.cleanup-metrics dt,.cleanup-result-metrics dt{font-size:10px;color:var(--muted);line-height:1.6}.cleanup-metrics dd,.cleanup-result-metrics dd{font-size:15px;color:var(--text);margin:6px 0 0;font-variant-numeric:tabular-nums}.cleanup-estimate{font-size:10px;line-height:1.8;color:var(--muted);margin:10px 0 12px}
 .cleanup-table-wrap{max-height:240px;overflow:auto;border:1px solid var(--line);border-radius:7px}.cleanup-table-wrap table{width:100%;min-width:450px;border-collapse:collapse;font-size:10px;text-align:left}.cleanup-table-wrap th{position:sticky;top:0;background:var(--panel);color:var(--muted);font-weight:500;border-bottom:1px solid var(--line);z-index:1}.cleanup-table-wrap th,.cleanup-table-wrap td{padding:9px 10px;line-height:1.6;vertical-align:top}.cleanup-table-wrap td{border-bottom:1px solid var(--line);color:var(--muted);white-space:nowrap}.cleanup-table-wrap tr:last-child td{border-bottom:0}.cleanup-table-wrap td.cleanup-title{white-space:pre-wrap;overflow-wrap:anywhere;min-width:140px;max-width:260px;color:var(--text)}.cleanup-truncated,.cleanup-empty{font-size:10px;line-height:1.8;color:var(--gold);margin:10px 0}.cleanup-panel .cleanup-compact{margin-top:15px}.cleanup-panel .cleanup-confirm{display:flex;gap:9px;align-items:flex-start;padding:11px 12px;margin:13px 0 0;border:1px solid var(--line);border-radius:7px;background:var(--input);font-size:11px;line-height:1.8;color:var(--text)}.cleanup-confirm input{margin-top:3px!important}.cleanup-execute{color:var(--danger);border-color:var(--danger)}
 .cleanup-result{margin-top:18px;padding:14px;border:1px solid var(--line);border-radius:9px;background:var(--input)}.cleanup-result h3{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:500;color:var(--mint);margin:0}.cleanup-result-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:14px 0 10px}.cleanup-warning,.cleanup-error,.cleanup-stale,.cleanup-success{font-size:11px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere;margin:12px 0 0}.cleanup-warning,.cleanup-stale{color:var(--gold)}.cleanup-error{color:var(--danger)}.cleanup-success{color:var(--mint)}.cleanup-panel :focus-visible{outline:2px solid var(--gold);outline-offset:3px}
