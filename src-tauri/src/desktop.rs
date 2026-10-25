@@ -887,20 +887,38 @@ async fn open_data_directory(context: AppContext<'_>) -> Result<()> {
         if !directory.is_dir() {
             return Err("当前数据目录无法访问，请检查磁盘连接。".into());
         }
-        #[cfg(target_os = "macos")]
-        let mut command = std::process::Command::new("open");
-        #[cfg(target_os = "windows")]
-        let mut command = std::process::Command::new("explorer.exe");
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        let mut command = std::process::Command::new("xdg-open");
-        command
-            .arg(&directory)
-            .spawn()
-            .map_err(|error| format!("无法打开数据目录：{error}"))?;
-        Ok(())
+        system_open(&directory).map_err(|error| format!("无法打开数据目录：{error}"))
     })
     .await
     .map_err(|_| "打开数据目录失败。".to_string())?
+}
+
+fn system_open(target: impl AsRef<std::ffi::OsStr>) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut command = std::process::Command::new("explorer.exe");
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut command = std::process::Command::new("xdg-open");
+    command.arg(target).spawn().map(|_| ())
+}
+
+fn project_link(target: &str) -> Result<&'static str> {
+    match target {
+        "repository" => Ok("https://github.com/cpython666/starclip"),
+        "issues" => Ok("https://github.com/cpython666/starclip/issues/new"),
+        _ => Err("不支持的项目链接。".into()),
+    }
+}
+
+#[tauri::command]
+async fn open_project_link(target: String) -> Result<()> {
+    let url = project_link(&target)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        system_open(url).map_err(|error| format!("无法打开项目链接：{error}"))
+    })
+    .await
+    .map_err(|_| "打开项目链接失败。".to_string())?
 }
 
 fn offer_storage_recovery(app: &AppHandle, default: PathBuf, error: String) {
@@ -1346,8 +1364,39 @@ pub fn run() {
             choose_data_directory,
             apply_data_directory,
             open_data_directory,
+            open_project_link,
             restart_app
         ])
         .run(tauri::generate_context!())
         .expect("星笺启动失败，请检查本地数据目录权限或磁盘空间。");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::project_link;
+
+    #[test]
+    fn project_links_only_accept_fixed_targets_without_opening_a_browser() {
+        assert_eq!(
+            project_link("repository").unwrap(),
+            "https://github.com/cpython666/starclip"
+        );
+        assert_eq!(
+            project_link("issues").unwrap(),
+            "https://github.com/cpython666/starclip/issues/new"
+        );
+        for target in [
+            "",
+            "Repository",
+            " issues",
+            "repository/../../",
+            "https://github.com/cpython666/starclip",
+            "https://example.com",
+            "file:///tmp/test",
+            "javascript:alert(1)",
+            "issues;open example.com",
+        ] {
+            assert!(project_link(target).is_err(), "must reject {target:?}");
+        }
+    }
 }

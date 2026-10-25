@@ -112,6 +112,12 @@ watch(filter, () => { selected.value = null; query.value = '' })
 watch(visible, clips => { if (!clips.some(c => c.id === selected.value)) selected.value = clips[0]?.id ?? null })
 watch(modal, async value => { await nextTick(); if (value && !dialog.value?.open) dialog.value?.showModal(); if (!value && dialog.value?.open) dialog.value?.close() })
 function notify(message: string, error = false) { clearTimeout(toastTimer); toast.value = message; toastError.value = error; toastTimer = setTimeout(() => { toast.value = '' }, 3600) }
+async function openProjectLink(event: MouseEvent, target: 'repository' | 'issues') {
+  if (!isDesktop) return;
+  event.preventDefault();
+  try { await api.openProjectLink(target) }
+  catch (error) { notify(String(error), true) }
+}
 async function refresh() {
   const request = ++refreshVersion, themeRevision = themeVersion, pendingTheme = themeSaving.value
   try {
@@ -346,6 +352,15 @@ onUnmounted(() => { disposed = true; cancelThemeTransition(); unsubscribe?.(); c
               <div class="settings-section backup-section"><h3><Icon name="folder" :size="16" />你的数据，由你保管</h3><fieldset class="data-settings-boundary" :disabled="busy || themeSaving"><DataSettings v-if="dataTabVisited" @busy="dataBusy = $event" /></fieldset><div class="backup-buttons"><button type="button" class="button subtle" @click="exportBackup" :disabled="busy || dataBusy"><Icon name="down" :size="16" />导出备份</button><button type="button" class="button subtle" @click="fileInput?.click()" :disabled="busy || dataBusy"><Icon name="upload" :size="16" />导入备份</button><button type="button" class="button subtle" :disabled="busy || dataBusy" @click="openCleanup">星尘整理</button></div><p class="field-note">导入、清理与目录操作会单独执行，不会替你保存其他 Tab 的修改。{{ isDesktop ? '备份是 JSON 文件，包含记录、分组及图片数据，导入会合并记录。' : '浏览器演示暂不支持含图片的备份，请在桌面版导入或导出完整备份。' }}</p></div>
             </section>
             <section v-show="settingsTab === 'help'" id="settings-panel-help" role="tabpanel" aria-labelledby="settings-tab-help" class="settings-panel">
+              <div class="settings-project">
+                <h3>一起让星笺更好</h3>
+                <p>查看项目进展，或把遇到的问题告诉我们。</p>
+                <div class="settings-project-links">
+                  <a href="https://github.com/cpython666/starclip" target="_blank" rel="noopener noreferrer" @click="openProjectLink($event, 'repository')"><Icon name="code" :size="20" /><span><strong>GitHub 项目</strong><small>cpython666 / starclip</small></span><Icon name="arrow" :size="16" /></a>
+                  <a href="https://github.com/cpython666/starclip/issues/new" target="_blank" rel="noopener noreferrer" @click="openProjectLink($event, 'issues')"><Icon name="edit" :size="20" /><span><strong>反馈问题（Issue）</strong><small>描述问题与复现步骤</small></span><Icon name="arrow" :size="16" /></a>
+                </div>
+                <p class="field-note">将在浏览器打开 GitHub。Issue 内容公开，上传截图前请遮住私密剪贴内容。</p>
+              </div>
               <div class="settings-help-intro"><span class="settings-help-icon"><Icon name="spark" :size="24" /></span><div><h3>初见星笺</h3><p>四步认识记录、收藏、卡片和数据管理。随时重看，按自己的节奏熟悉。</p></div></div>
               <button ref="tutorialButton" type="button" class="button subtle tutorial-replay" :disabled="busy || dataBusy" @click="openGuide"><Icon name="play" :size="15" />重看新手教程</button>
               <p class="field-note">重看教程不会开启记录或改动设置，也会保留你在各个 Tab 中尚未保存的修改。</p>

@@ -11,7 +11,7 @@
           "export_backup", "import_backup", "save_backup", "save_export", "hide_window",
           "handwriting_assets", "choose_handwriting_app", "render_handwriting",
           "get_data_location", "choose_data_directory", "apply_data_directory",
-          "open_data_directory", "restart_app"
+          "open_data_directory", "open_project_link", "restart_app"
         ]
       }
     },

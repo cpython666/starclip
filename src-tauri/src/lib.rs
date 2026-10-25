@@ -39,6 +39,17 @@ mod capability_tests {
         let authority = tauri::runtime_authority!(manifests, resolved);
         let permissions: serde_json::Value =
             serde_json::from_str(include_str!("../permissions/windows.json")).unwrap();
+        let main_commands = permissions["permission"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|permission| permission["identifier"] == "main-commands")
+            .unwrap();
+        assert!(main_commands["commands"]["allow"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|command| command == "open_project_link"));
         for permission in permissions["permission"].as_array().unwrap() {
             let pet_allowed = permission["identifier"] == "starpet-commands";
             for command in permission["commands"]["allow"].as_array().unwrap() {

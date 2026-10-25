@@ -1,5 +1,15 @@
 # 0.1.0 验证记录（更新至 2026-10-25）
 
+## GitHub 项目与反馈入口（2026-10-25）
+
+- 「偏好设置 → 帮助」顶部新增 GitHub 项目与反馈问题两个链接；后者直接进入 `https://github.com/cpython666/starclip/issues/new`。公开仓库的 Issues 已启用。不会自动提交或附带历史、日志；README 同时提供入口。
+- 桌面命令只接受 `repository` / `issues` 固定目标，复用系统打开命令、不经过 shell，仅主窗口授权。浏览器用普通新标签链接和 `noopener noreferrer`；桌面调用失败显示错误。
+- 28 项 Node、38 项 Rust core、40 项 desktop lib 测试通过（Rust 各另有 1 项既有手写 CLI 测试忽略），包含固定链接拒绝非法输入与运行时 ACL；生产前端和 Apple Silicon app / DMG 打包通过。
+- 浏览器演示点击反馈入口，实际到达 GitHub「Create new issue」表单。更新后的本机应用帮助页确认两个入口，并实际点击反馈，系统默认 Chrome 打开同一 New issue 页面；未填写或提交 Issue。Windows / Linux 系统打开行为未实机验证。
+- 本机安装版和本地产物已更新、启动，旧包可恢复；升级后历史、分组、偏好、手写配置与 renderer 摘要一致。安装副本本地 ad-hoc 签名 strict/deep 验证通过。app 9,815,831 字节（9.36 MiB），DMG 4,309,641 字节（4.11 MiB）；未修改旧 alpha.1 发布附件。
+
+![帮助页中的项目与反馈入口，使用原创演示数据](github-help.jpg)
+
 ## 素白主题（2026-10-25）
 
 - 新增独立 `white` /「素白 · 纯净白色」主题：主背景与卡片为纯白，浅灰分区、深灰文字与主按钮。保留月白和其余主题，跟随系统仍在星夜 / 月白之间选择。自动贴纸在素白下留空，手动贴纸继续可选；代码卡片导出配色不变。

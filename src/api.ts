@@ -104,6 +104,9 @@ export const api = {
     if (!isDesktop) throw new Error('请在桌面版打开数据目录。');
     return invoke('open_data_directory');
   },
+  async openProjectLink(target: 'repository' | 'issues'): Promise<void> {
+    return invoke('open_project_link', { target });
+  },
   async restartApp(): Promise<void> {
     if (!isDesktop) throw new Error('请在桌面版重启应用。');
     return invoke('restart_app');
