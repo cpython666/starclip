@@ -30,8 +30,15 @@ const query = ref('')
 const selected = ref<number | null>(null)
 const searchInput = ref<HTMLInputElement>()
 const fileInput = ref<HTMLInputElement>()
-const modal = ref<'' | 'clip' | 'group' | 'settings' | 'clear' | 'delete-group'>('')
+const modal = ref<'' | 'clip' | 'group' | 'settings' | 'delete-group'>('')
 const dialog = ref<HTMLDialogElement>()
+const modalToastHost = ref<HTMLElement>()
+const cleanupOpen = ref(false)
+const cleanupBusy = ref(false)
+const cleanupDialog = ref<HTMLDialogElement>()
+const cleanupToastHost = ref<HTMLElement>()
+let cleanupTrigger: HTMLElement | null = null
+let cleanupScrollTop = 0
 const editing = ref<Clip | null>(null)
 const studioOpen = ref(false)
 const studioClip = ref<Clip | null>(null)
@@ -55,10 +62,15 @@ const settingsTabs = [
 type SettingsTab = typeof settingsTabs[number]['key']
 const settingsTab = ref<SettingsTab>('appearance')
 const settingsScroll = ref<HTMLElement>()
+const dataSettings = ref<InstanceType<typeof DataSettings>>()
 const dataTabVisited = ref(false)
 const settingsDirty = computed(() => (Object.keys(settingsDraft.value) as Array<keyof Settings>).some(key => key !== 'theme' && settingsDraft.value[key] !== state.value.settings[key]))
 const toast = ref('')
 const toastError = ref(false)
+const toastTarget = computed(() => (cleanupOpen.value ? cleanupToastHost.value : modal.value ? modalToastHost.value : null) || 'body')
+const backupPhase = ref<'' | 'choosing' | 'writing'>('')
+const backupStatus = ref('')
+const backupStatusKind = ref<'working' | 'success' | 'cancelled' | 'error'>('working')
 const copied = ref<number | null>(null)
 let toastTimer: ReturnType<typeof setTimeout>
 let copyTimer: ReturnType<typeof setTimeout>
@@ -133,7 +145,7 @@ async function refresh() {
     }
   } catch (error) { if (!disposed) notify(String(error), true) } finally { loading.value = false }
 }
-async function run(action: () => Promise<unknown>, success?: string) { if (busy.value || dataBusy.value) return; busy.value = true; try { await themeWriter.idle(); await action(); await refresh(); if (success) notify(success) } catch (error) { notify(String(error), true) } finally { busy.value = false } }
+async function run(action: () => Promise<unknown>, success?: string) { if (busy.value || dataBusy.value || cleanupOpen.value) return; busy.value = true; try { await themeWriter.idle(); await action(); await refresh(); if (success) notify(success) } catch (error) { notify(String(error), true) } finally { busy.value = false } }
 function count(key: string) { return state.value.clips.filter(c => key === 'all' || (key === 'pinned' && c.pinned) || (key === 'kept' && c.keepForever) || c.kind === key).length }
 function groupFor(clip: Clip) { return state.value.groups.find(g => g.id === clip.groupId) }
 function relativeTime(time: number) { const minutes = Math.max(0, Math.floor((Date.now() - time) / 60000)); if (minutes < 1) return '刚刚'; if (minutes < 60) return `${minutes} 分钟前`; if (minutes < 1440) return `${Math.floor(minutes / 60)} 小时前`; if (minutes < 10080) return `${Math.floor(minutes / 1440)} 天前`; return new Date(time).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' }) }
@@ -144,7 +156,27 @@ function colorValue(content: string) { return /^#[\da-f]{3,8}$/i.test(content.tr
 async function copy(clip: Clip) { try { await api.copyClip(clip.id); copied.value = clip.id; clearTimeout(copyTimer); copyTimer = setTimeout(() => { copied.value = null }, 1800); notify('已复制，切换到目标应用即可粘贴'); await refresh() } catch (error) { notify(String(error), true) } }
 async function togglePin(clip: Clip) { await run(() => api.updateClip(clip.id, clip.title, clip.groupId, !clip.pinned), clip.pinned ? '已取消星标' : '已收入星标收藏') }
 async function toggleKept(clip: Clip) { await run(() => api.setKeepForever(clip.id, !clip.keepForever), clip.keepForever ? '已取消永久保留' : '已永久保留，不参与清理') }
-function openCleanup() { if (!busy.value && !dataBusy.value) modal.value = 'clear' }
+async function openCleanup(event: MouseEvent) {
+  if (busy.value || dataBusy.value || cleanupOpen.value) return
+  cleanupTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : document.activeElement as HTMLElement
+  cleanupScrollTop = settingsScroll.value?.scrollTop || 0
+  cleanupOpen.value = true
+  await nextTick()
+  cleanupDialog.value?.showModal()
+}
+function closeCleanup() {
+  if (cleanupBusy.value || busy.value || dataBusy.value) return
+  cleanupDialog.value?.close()
+}
+function cleanupClosed() {
+  cleanupOpen.value = false
+  void nextTick(() => {
+    if (settingsScroll.value) settingsScroll.value.scrollTop = cleanupScrollTop
+    if (cleanupTrigger?.isConnected) cleanupTrigger.focus({ preventScroll: true })
+    cleanupTrigger = null
+  })
+}
+async function cleanupChanged() { await Promise.all([refresh(), dataSettings.value?.refresh()]) }
 function openClip(clip?: Clip) { editing.value = clip ?? null; clipTitle.value = clip?.title || ''; clipContent.value = clip?.kind === 'image' ? '' : clip?.content || ''; clipGroup.value = clip?.groupId ?? currentGroup.value?.id ?? null; clipPinned.value = clip?.pinned ?? false; clipKept.value = clip?.keepForever ?? false; modal.value = 'clip' }
 function openStudio(clip: Clip | null = null) { if (clip?.kind === 'image') return notify('星绘坊用于文字和代码，图片可直接复制到目标应用。', true); modal.value = ''; studioClip.value = clip; studioOpen.value = true }
 async function saveClip() {
@@ -162,7 +194,7 @@ async function saveClip() {
 }
 function openGroup() { groupName.value = ''; groupColor.value = colors[state.value.groups.length % colors.length]!; modal.value = 'group' }
 async function saveGroup() { if (!groupName.value.trim()) return notify('请为星座起一个名字', true); await run(async () => { const group = await api.createGroup(groupName.value.trim(), groupColor.value); filter.value = `group-${group.id}`; modal.value = '' }, '分组已创建') }
-function closeModal() { if (!dataBusy.value && !busy.value) modal.value = '' }
+function closeModal() { if (!dataBusy.value && !busy.value && !cleanupOpen.value) modal.value = '' }
 function replayStartup() { if (!dataBusy.value) startupVisible.value = true }
 function openSettings() { settingsDraft.value = { ...state.value.settings, theme: themeChoice.value }; dataTabVisited.value = settingsTab.value === 'data'; modal.value = 'settings' }
 function changeSettingsTab(tab: SettingsTab) {
@@ -204,7 +236,7 @@ async function finishGuide() {
   finally { guideBusy.value = false }
 }
 async function saveSettings() {
-  if (busy.value || dataBusy.value || !settingsDirty.value) return
+  if (busy.value || dataBusy.value || cleanupOpen.value || !settingsDirty.value) return
   settingsSaving.value = true
   try { await run(() => api.saveSettings({ ...settingsDraft.value, theme: themeChoice.value }), '偏好设置已保存') }
   finally { settingsSaving.value = false }
@@ -231,7 +263,26 @@ async function changeTheme(theme: Settings['theme'], origin?: ThemeOrigin) {
   }
 }
 async function deleteEditing() { const id = editing.value?.id; if (id === undefined) return; await run(async () => { await api.deleteClip(id); modal.value = '' }, '片段已删除') }
-async function exportBackup() { await run(async () => { if (isDesktop) { if (await api.saveBackup()) notify('备份已保存') } else { const url = URL.createObjectURL(new Blob([await api.exportBackup()], { type: 'application/json' })); const a = document.createElement('a'); a.href = url; a.download = `starclip-${new Date().toISOString().slice(0, 10)}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); notify('备份已导出') } }) }
+async function exportBackup() {
+  if (busy.value || dataBusy.value || cleanupOpen.value) return
+  busy.value = true; backupStatusKind.value = 'working'
+  backupPhase.value = isDesktop ? 'choosing' : 'writing'
+  backupStatus.value = isDesktop ? '请在保存窗口中选择备份位置…' : '正在准备下载备份…'
+  try {
+    await themeWriter.idle()
+    const saved = await api.saveBackup(() => {
+      backupPhase.value = 'writing'
+      backupStatus.value = isDesktop ? '正在写入备份，请稍候…' : '正在请求浏览器下载…'
+    })
+    backupStatusKind.value = saved ? 'success' : 'cancelled'
+    backupStatus.value = saved
+      ? isDesktop ? `备份已保存到：\n${saved}` : `已请求下载：${saved}\n请查看浏览器下载记录；保存位置由浏览器决定。`
+      : '已取消导出，未写入备份。'
+  } catch (error) {
+    backupStatusKind.value = 'error'
+    backupStatus.value = `导出未完成：${error instanceof Error ? error.message : String(error)}`
+  } finally { backupPhase.value = ''; busy.value = false }
+}
 async function importBackup(event: Event) { const input = event.target as HTMLInputElement; const file = input.files?.[0]; if (!file) return; if (file.size > 20 * 1024 * 1024) { notify('备份文件过大，最大支持 20 MB', true); input.value = ''; return }; await run(async () => { const count = await api.importBackup(await file.text()); notify(`已导入 ${count} 条记录`) }); input.value = '' }
 async function deleteCurrentGroup() { const id = currentGroup.value?.id; if (id === undefined) return; await run(async () => { await api.deleteGroup(id); filter.value = 'all'; modal.value = '' }, '分组已删除，片段仍保留在全部记录中') }
 function moveSelection(delta: number) {
@@ -247,6 +298,7 @@ function keyboard(event: KeyboardEvent) {
   const typing = target.matches('input, textarea, [role=combobox]') || target.isContentEditable
   const modifier = event.metaKey || event.ctrlKey
   if (guideVisible.value) { if (modifier && event.key.toLowerCase() === 's') event.preventDefault(); return }
+  if (cleanupOpen.value) { if (modifier && event.key.toLowerCase() === 's') event.preventDefault(); return }
   if (startupVisible.value || studioOpen.value || event.isComposing) return
   if (modal.value === 'settings' && modifier && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 's') {
     event.preventDefault()
@@ -319,9 +371,10 @@ onUnmounted(() => { disposed = true; cancelThemeTransition(); unsubscribe?.(); c
       </div>
       <footer class="statusbar"><span><span :class="['status-dot', { idle: state.settings.paused }]" />{{ state.settings.paused ? '记录已暂停' : '本地记录中' }}<span class="footer-divider">/</span>{{ state.clips.length }} 条记录</span><div><span><kbd>{{ state.settings.layout === 'horizontal' ? '← →' : '↑ ↓' }}</kbd> 选择</span><span><kbd>↵</kbd> 复制</span><span class="group-shortcut-footer"><kbd>{{ modKey }} ⇧ ← / →</kbd> 切换分类</span><span class="shortcut-footer"><kbd>{{ shortcutLabel }}</kbd> 呼出星笺</span></div></footer>
     </main>
-    <dialog ref="dialog" :class="['modal', { 'settings-modal': modal === 'settings', 'cleanup-modal': modal === 'clear' }]" @cancel.prevent="closeModal" @close="modal = ''" @click="event => { if (event.target === dialog) closeModal() }">
-      <div class="modal-content" v-if="modal">
-        <div class="modal-heading"><div><div class="eyebrow">{{ modal === 'settings' ? 'MAKE IT YOURS' : modal === 'group' ? 'A NEW CONSTELLATION' : 'A LITTLE THOUGHT' }}</div><h2>{{ modal === 'clip' ? editing ? '这颗灵感的细节' : '留住一点灵感' : modal === 'group' ? '点亮一个新星座' : modal === 'settings' ? '偏好设置' : modal === 'clear' ? '星尘整理' : '删除这个分组？' }}</h2></div><button class="icon-button" aria-label="关闭弹窗" :disabled="busy || dataBusy" @click="closeModal"><Icon name="close" :size="20" /></button></div>
+    <dialog ref="dialog" :class="['modal', { 'settings-modal': modal === 'settings' }]" @cancel.prevent="closeModal" @close.self="modal = ''" @click="event => { if (event.target === dialog) closeModal() }">
+      <div class="modal-content">
+        <div class="modal-heading"><div><div class="eyebrow">{{ modal === 'settings' ? 'MAKE IT YOURS' : modal === 'group' ? 'A NEW CONSTELLATION' : 'A LITTLE THOUGHT' }}</div><h2>{{ modal === 'clip' ? editing ? '这颗灵感的细节' : '留住一点灵感' : modal === 'group' ? '点亮一个新星座' : modal === 'settings' ? '偏好设置' : '删除这个分组？' }}</h2></div><button class="icon-button" aria-label="关闭弹窗" :disabled="busy || dataBusy" @click="closeModal"><Icon name="close" :size="20" /></button></div>
+        <div ref="modalToastHost" class="dialog-toast-host" />
         <form v-if="modal === 'clip'" @submit.prevent="saveClip" class="clip-form">
           <label>片段名称 <span class="optional">选填</span><input v-model="clipTitle" maxlength="200" placeholder="为这颗灵感起个名字" autofocus /></label>
           <div v-if="editing?.kind === 'image'" class="image-detail"><ClipImage :id="editing.id" :alt="titleFor(editing)" :thumbnail="false" /><p class="field-note">{{ imageLabel(editing) }} · 收录于 {{ new Date(editing.createdAt).toLocaleString('zh-CN') }}</p><p class="field-note">图片保持原样；可修改标题、分组和保留方式，复制后粘贴到支持图片的应用。</p></div>
@@ -349,7 +402,7 @@ onUnmounted(() => { disposed = true; cancelThemeTransition(); unsubscribe?.(); c
               <fieldset class="settings-section preferences-boundary" :disabled="busy || dataBusy" aria-label="记录与隐私"><h3><Icon name="shield" :size="16" />记录与隐私</h3><div class="setting-row"><div><strong>自动记录新复制的文本与图片</strong><p>不捕获开启前的内容；截图与图片也保存在本机</p></div><button type="button" :class="['switch', { on: !settingsDraft.paused }]" role="switch" :aria-checked="!settingsDraft.paused" aria-label="自动记录新复制的文本与图片" @click="settingsDraft.paused = !settingsDraft.paused"><span /></button></div><div class="setting-row"><div><strong>历史记录上限</strong><p>星标、永久保留与分组记录不计入上限</p></div><UiSelect v-model="settingsDraft.maxHistory" :options="historyChoices" label="历史记录上限" :disabled="busy || dataBusy" /></div><div class="setting-row"><div><strong>历史保留时长</strong><p>按最近更新时间计算；星标、永久保留与分组受保护</p></div><UiSelect v-model="settingsDraft.retentionDays" :options="retentionChoices" label="历史保留时长" :disabled="busy || dataBusy" /></div><p class="retention-note">保存偏好后立即应用清理规则。桌面版还会在启动、新记录和约每分钟检查；暂停记录时也会按已选时长清理。浏览器演示只在保存偏好或新增内容时检查。永久保留、星标和已分组内容不会自动清理；重新捕获相同内容会更新保留起点。清理无法撤回，可先导出备份。同时选择「不限条数」和「不限天数」可关闭自动淘汰；重要内容也可单独标记永久保留。</p><div class="privacy-note"><Icon name="shield" :size="16" /><p>内容仅保存在本机，不上传云端。剪贴板可能含有私密内容，复制密码等敏感信息前请先暂停记录。</p></div></fieldset>
             </section>
             <section v-show="settingsTab === 'data'" id="settings-panel-data" role="tabpanel" aria-labelledby="settings-tab-data" class="settings-panel">
-              <div class="settings-section backup-section"><h3><Icon name="folder" :size="16" />你的数据，由你保管</h3><fieldset class="data-settings-boundary" :disabled="busy || themeSaving"><DataSettings v-if="dataTabVisited" @busy="dataBusy = $event" /></fieldset><div class="backup-buttons"><button type="button" class="button subtle" @click="exportBackup" :disabled="busy || dataBusy"><Icon name="down" :size="16" />导出备份</button><button type="button" class="button subtle" @click="fileInput?.click()" :disabled="busy || dataBusy"><Icon name="upload" :size="16" />导入备份</button><button type="button" class="button subtle" :disabled="busy || dataBusy" @click="openCleanup">星尘整理</button></div><p class="field-note">导入、清理与目录操作会单独执行，不会替你保存其他 Tab 的修改。{{ isDesktop ? '备份是 JSON 文件，包含记录、分组及图片数据，导入会合并记录。' : '浏览器演示暂不支持含图片的备份，请在桌面版导入或导出完整备份。' }}</p></div>
+              <div class="settings-section backup-section"><h3><Icon name="folder" :size="16" />你的数据，由你保管</h3><fieldset class="data-settings-boundary" :disabled="busy || themeSaving"><DataSettings v-if="dataTabVisited" ref="dataSettings" @busy="dataBusy = $event" /></fieldset><div class="backup-buttons"><button type="button" class="button subtle" @click="exportBackup" :disabled="busy || dataBusy" :aria-busy="!!backupPhase"><Icon name="down" :size="16" />{{ backupPhase === 'choosing' ? '选择保存位置…' : backupPhase ? '正在导出…' : '导出备份' }}</button><button type="button" class="button subtle" @click="fileInput?.click()" :disabled="busy || dataBusy"><Icon name="upload" :size="16" />导入备份</button><button type="button" class="button subtle" :disabled="busy || dataBusy" @click="openCleanup">星尘整理</button></div><p v-if="backupStatus" :class="['backup-status', backupStatusKind]" :role="backupStatusKind === 'error' ? 'alert' : 'status'">{{ backupStatus }}</p><p class="field-note">导入、清理与目录操作会单独执行，不会替你保存其他 Tab 的修改。{{ isDesktop ? '备份是 JSON 文件，包含记录、分组及图片数据，导入会合并记录。' : '浏览器演示暂不支持含图片的备份，请在桌面版导入或导出完整备份。' }}</p></div>
             </section>
             <section v-show="settingsTab === 'help'" id="settings-panel-help" role="tabpanel" aria-labelledby="settings-tab-help" class="settings-panel">
               <div class="settings-project">
@@ -380,12 +433,18 @@ onUnmounted(() => { disposed = true; cancelThemeTransition(); unsubscribe?.(); c
             <button type="submit" class="button primary" :disabled="busy || dataBusy || !settingsDirty">{{ settingsSaving ? '保存中…' : '保存全部偏好' }}<Icon name="check" :size="16" /></button>
           </div>
         </form>
-        <CleanupPanel v-else-if="modal === 'clear'" @busy="dataBusy = $event" @changed="refresh" />
         <template v-else-if="modal === 'delete-group'"><p class="modal-intro">「{{ currentGroup?.name }}」中的片段仍保留在全部记录中，仅移除分组。</p><div class="modal-actions"><button class="button subtle" @click="closeModal">取消</button><button class="button danger" @click="deleteCurrentGroup" :disabled="busy || dataBusy">删除分组</button></div></template>
+      </div>
+    </dialog>
+    <dialog ref="cleanupDialog" class="modal cleanup-modal" aria-labelledby="cleanup-heading" @cancel.prevent="closeCleanup" @close.self="cleanupClosed" @click="event => { if (event.target === cleanupDialog) closeCleanup() }">
+      <div class="modal-content">
+        <div class="modal-heading"><div><div class="eyebrow">A LITTLE MORE SPACE</div><h2 id="cleanup-heading">星尘整理</h2></div><button class="icon-button" aria-label="关闭星尘整理" :disabled="cleanupBusy || busy || dataBusy" @click="closeCleanup"><Icon name="close" :size="20" /></button></div>
+        <div ref="cleanupToastHost" class="dialog-toast-host" />
+        <CleanupPanel v-if="cleanupOpen" @busy="cleanupBusy = $event" @changed="cleanupChanged" />
       </div>
     </dialog>
     <CodeStudio v-if="studioOpen" :clip="studioClip" :groups="state.groups" :initial-mode="studioClip && studioClip.kind !== 'code' ? 'handwriting' : 'code'" @close="studioOpen = false" @saved="refresh" />
     <input ref="fileInput" type="file" accept="application/json,.json" hidden @change="importBackup" />
-    <Transition name="toast"><div v-if="toast" :class="['toast-message', { error: toastError }]" role="status"><Icon :name="toastError ? 'alert' : 'check'" :size="17" /><span>{{ toast }}</span><button class="icon-button" @click="toast = ''" aria-label="关闭提示"><Icon name="close" :size="14" /></button></div></Transition>
+    <Teleport :to="toastTarget"><Transition name="toast"><div v-if="toast" :class="['toast-message', { error: toastError }]" role="status"><Icon :name="toastError ? 'alert' : 'check'" :size="17" /><span>{{ toast }}</span><button class="icon-button" @click="toast = ''" aria-label="关闭提示"><Icon name="close" :size="14" /></button></div></Transition></Teleport>
   </div>
 </template>

@@ -690,22 +690,27 @@ fn write_private(path: &Path, data: &[u8]) -> Result<()> {
     result
 }
 #[tauri::command]
-async fn save_backup(app: AppHandle, context: AppContext<'_>) -> Result<bool> {
+async fn save_backup(app: AppHandle, context: AppContext<'_>) -> Result<Option<String>> {
     let context = context.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let data = lock(&context.store)?.export()?;
+        let window = app
+            .get_webview_window("main")
+            .ok_or("主窗口不存在，无法选择保存位置。")?;
         let Some(file) = app
             .dialog()
             .file()
+            .set_parent(&window)
             .add_filter("Starclip JSON", &["json"])
             .set_file_name("starclip-backup.json")
             .blocking_save_file()
         else {
-            return Ok(false);
+            return Ok(None);
         };
         let path = file.into_path().map_err(|_| "请选择本地文件路径。")?;
+        let _ = app.emit_to("main", "backup-writing", ());
         write_private(&path, data.as_bytes())?;
-        Ok(true)
+        Ok(Some(path.to_string_lossy().into_owned()))
     })
     .await
     .map_err(|_| "导出任务失败。".to_string())?

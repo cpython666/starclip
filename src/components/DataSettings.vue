@@ -33,6 +33,7 @@ async function perform(name: NonNullable<typeof operation.value>, action: () => 
 function refresh() {
   return perform('load', async () => { location.value = await api.getDataLocation(); });
 }
+defineExpose({ refresh });
 function openFolder() {
   return perform('open', async () => { await api.openDataDirectory(); });
 }

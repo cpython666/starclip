@@ -227,9 +227,17 @@ export const api = {
     // Import preserves the complete backup; only explicit capture/settings changes apply retention.
     demo = next; pendingCleanup = null; changed(); return added;
   },
-  async saveBackup(): Promise<boolean> {
-    if (isDesktop) return invoke('save_backup');
-    download(new Blob([await api.exportBackup()], { type: 'application/json' }), 'starclip.backup.json'); return true;
+  async saveBackup(onWriting?: () => void): Promise<string | null> {
+    if (isDesktop) {
+      const stop = onWriting ? await (await import('@tauri-apps/api/event')).listen('backup-writing', onWriting) : undefined;
+      try { return await invoke<string | null>('save_backup'); }
+      finally { stop?.(); }
+    }
+    const contents = await api.exportBackup();
+    const filename = `starclip-${new Date().toISOString().slice(0, 10)}.json`;
+    onWriting?.();
+    download(new Blob([contents], { type: 'application/json' }), filename);
+    return filename;
   },
   async saveCode(id: number | null, title: string, content: string, language: string, groupId: number | null): Promise<Clip> {
     if (isDesktop) return invoke('save_code', { id, title, content, language, groupId });
