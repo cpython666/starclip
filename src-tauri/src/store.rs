@@ -1,3 +1,5 @@
+use crate::images::{self, ImageMetadata, PreparedImage};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -13,10 +15,24 @@ pub const MAX_CONTENT_BYTES: usize = 256 * 1024;
 const MAX_BACKUP_BYTES: usize = 20 * 1024 * 1024;
 const MAX_BACKUP_CLIPS: usize = 10_000;
 const MAX_BACKUP_GROUPS: usize = 1000;
+const MAX_BACKUP_IMAGE_PIXELS: u64 = 256_000_000;
 
 fn check_backup_limits(bytes: usize, clips: usize, groups: usize) -> Result<()> {
     if bytes > MAX_BACKUP_BYTES || clips > MAX_BACKUP_CLIPS || groups > MAX_BACKUP_GROUPS {
-        return Err("备份上限为 20 MB、10000 条星笺和 1000 个分组，请先整理数据。".into());
+        return Err("JSON 备份上限为 20 MiB、10000 条星笺和 1000 个分组；超限时可在数据设置中迁移完整数据目录，无需删除记录。".into());
+    }
+    Ok(())
+}
+
+fn check_backup_image_limits(clips: &[Clip]) -> Result<()> {
+    let pixels = clips
+        .iter()
+        .filter_map(|clip| clip.image.as_ref())
+        .fold(0u64, |sum, image| {
+            sum.saturating_add(u64::from(image.width) * u64::from(image.height))
+        });
+    if pixels > MAX_BACKUP_IMAGE_PIXELS {
+        return Err("JSON 备份中的图片累计不能超过 2.56 亿像素；请使用数据设置中的完整数据目录迁移，无需删除记录。".into());
     }
     Ok(())
 }
@@ -30,6 +46,8 @@ pub struct Clip {
     pub kind: String,
     #[serde(default)]
     pub language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<ImageMetadata>,
     pub pinned: bool,
     #[serde(default)]
     pub keep_forever: bool,
@@ -274,7 +292,10 @@ pub struct CleanupSnapshot {
 pub const STALE_CLEANUP: &str = "清理预览已过期，请重新预览后确认。";
 static CLEANUP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 fn clip_bytes(clip: &Clip) -> u64 {
-    (clip.content.len() + clip.title.len()) as u64
+    clip.image
+        .as_ref()
+        .map_or(clip.content.len() as u64, |image| image.bytes)
+        + clip.title.len() as u64
 }
 fn same_cleanup_record(before: &Clip, current: &Clip) -> bool {
     before.id == current.id
@@ -282,6 +303,7 @@ fn same_cleanup_record(before: &Clip, current: &Clip) -> bool {
         && before.title == current.title
         && before.kind == current.kind
         && before.language == current.language
+        && before.image == current.image
         && before.updated_at == current.updated_at
         && before.created_at == current.created_at
         && before.group_id == current.group_id
@@ -297,7 +319,18 @@ struct Backup {
     exported_at: i64,
     clips: Vec<Clip>,
     groups: Vec<Group>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    images: Vec<BackupImage>,
 }
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BackupImage {
+    clip_id: i64,
+    png: String,
+}
+
+const CLIP_SELECT: &str = "SELECT c.id,c.content,c.title,c.kind,c.pinned,c.group_id,c.created_at,c.updated_at,c.copy_count,c.language,c.keep_forever,i.width,i.height,i.bytes FROM clips c LEFT JOIN clip_images i ON i.clip_id=c.id";
 
 pub struct Store {
     conn: Connection,
@@ -324,6 +357,14 @@ fn clip_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Clip> {
         updated_at: row.get(7)?,
         copy_count: row.get(8)?,
         language: row.get(9)?,
+        image: match row.get::<_, Option<u32>>(11)? {
+            Some(width) => Some(ImageMetadata {
+                width,
+                height: row.get(12)?,
+                bytes: row.get(13)?,
+            }),
+            None => None,
+        },
         keep_forever: row.get(10)?,
     })
 }
@@ -485,7 +526,7 @@ impl Store {
             PRAGMA secure_delete=ON;
             CREATE TABLE IF NOT EXISTS groups (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, color TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS clips (
-                id INTEGER PRIMARY KEY, content TEXT NOT NULL UNIQUE, title TEXT NOT NULL DEFAULT '',
+                id INTEGER PRIMARY KEY, content TEXT NOT NULL, title TEXT NOT NULL DEFAULT '',
                 kind TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0, keep_forever INTEGER NOT NULL DEFAULT 0,
                 group_id INTEGER REFERENCES groups(id) ON DELETE SET NULL,
                 created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, copy_count INTEGER NOT NULL DEFAULT 0, language TEXT
@@ -517,6 +558,40 @@ impl Store {
             )
             .map_err(sql_error)?;
         }
+        // The original UNIQUE(content) mixed text and image identities. Rebuild once,
+        // in one transaction, before any image table exists; preserve every original field.
+        let legacy_unique: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_index_list('clips') WHERE origin='u')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        let tx = conn.unchecked_transaction().map_err(sql_error)?;
+        if legacy_unique {
+            let has_images: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='clip_images')", [], |row| row.get(0)).map_err(sql_error)?;
+            if has_images {
+                return Err("图片数据库结构不兼容，原数据未更改。".into());
+            }
+            tx.execute_batch("CREATE TABLE clips_images_upgrade (
+                id INTEGER PRIMARY KEY, content TEXT NOT NULL, title TEXT NOT NULL DEFAULT '',
+                kind TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0, keep_forever INTEGER NOT NULL DEFAULT 0,
+                group_id INTEGER REFERENCES groups(id) ON DELETE SET NULL,
+                created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, copy_count INTEGER NOT NULL DEFAULT 0, language TEXT);
+                INSERT INTO clips_images_upgrade(id,content,title,kind,pinned,keep_forever,group_id,created_at,updated_at,copy_count,language)
+                    SELECT id,content,title,kind,pinned,keep_forever,group_id,created_at,updated_at,copy_count,language FROM clips;
+                DROP TABLE clips;
+                ALTER TABLE clips_images_upgrade RENAME TO clips;").map_err(sql_error)?;
+        }
+        tx.execute_batch("CREATE INDEX IF NOT EXISTS clips_updated ON clips(updated_at DESC);
+            CREATE UNIQUE INDEX IF NOT EXISTS clips_text_content ON clips(content) WHERE kind<>'image';
+            CREATE UNIQUE INDEX IF NOT EXISTS clips_image_content ON clips(content) WHERE kind='image';
+            CREATE TABLE IF NOT EXISTS clip_images (
+                clip_id INTEGER PRIMARY KEY REFERENCES clips(id) ON DELETE CASCADE,
+                width INTEGER NOT NULL CHECK(width>0), height INTEGER NOT NULL CHECK(height>0),
+                bytes INTEGER NOT NULL CHECK(bytes>0), png BLOB NOT NULL, thumbnail BLOB NOT NULL
+            );").map_err(sql_error)?;
+        tx.commit().map_err(sql_error)?;
         let store = Self { conn };
         store.prune_history()?;
         Ok(store)
@@ -642,7 +717,12 @@ impl Store {
     }
 
     pub fn clips(&self) -> Result<Vec<Clip>> {
-        let mut stmt = self.conn.prepare("SELECT id,content,title,kind,pinned,group_id,created_at,updated_at,copy_count,language,keep_forever FROM clips ORDER BY updated_at DESC,id DESC").map_err(sql_error)?;
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "{CLIP_SELECT} ORDER BY c.updated_at DESC,c.id DESC"
+            ))
+            .map_err(sql_error)?;
         let rows = stmt.query_map([], clip_from_row).map_err(sql_error)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(sql_error)
@@ -667,11 +747,58 @@ impl Store {
     }
 
     pub fn clip(&self, id: i64) -> Result<Clip> {
-        self.conn.query_row("SELECT id,content,title,kind,pinned,group_id,created_at,updated_at,copy_count,language,keep_forever FROM clips WHERE id=?1", [id], clip_from_row).optional().map_err(sql_error)?.ok_or_else(|| "这条星笺已被删除。".into())
+        self.conn
+            .query_row(&format!("{CLIP_SELECT} WHERE c.id=?1"), [id], clip_from_row)
+            .optional()
+            .map_err(sql_error)?
+            .ok_or_else(|| "这条星笺已被删除。".into())
     }
 
     pub fn add(&self, content: &str, title: &str, group_id: Option<i64>) -> Result<Clip> {
         self.add_protected(content, title, group_id, false)
+    }
+
+    fn put_image(conn: &Connection, id: i64, image: &PreparedImage) -> Result<()> {
+        let metadata = image.metadata();
+        conn.execute("INSERT INTO clip_images(clip_id,width,height,bytes,png,thumbnail) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(clip_id) DO NOTHING",
+            params![id, metadata.width, metadata.height, metadata.bytes, image.png, image.thumbnail]).map_err(sql_error)?;
+        Ok(())
+    }
+
+    pub fn add_image(
+        &self,
+        image: &PreparedImage,
+        title: &str,
+        group_id: Option<i64>,
+        keep_forever: bool,
+    ) -> Result<Clip> {
+        validate_content(image.digest(), title)?;
+        let timestamp = now();
+        let tx = self.conn.unchecked_transaction().map_err(sql_error)?;
+        tx.execute("INSERT INTO clips(content,title,kind,group_id,created_at,updated_at,keep_forever) VALUES(?1,?2,'image',?3,?4,?4,?5)
+            ON CONFLICT(content) WHERE kind='image' DO UPDATE SET updated_at=excluded.updated_at,
+            title=CASE WHEN excluded.title<>'' THEN excluded.title ELSE clips.title END,
+            group_id=COALESCE(excluded.group_id,clips.group_id),keep_forever=MAX(clips.keep_forever,excluded.keep_forever)",
+            params![image.digest(), title.trim(), group_id, timestamp, keep_forever]).map_err(sql_error)?;
+        let id: i64 = tx
+            .query_row(
+                "SELECT id FROM clips WHERE content=?1 AND kind='image'",
+                [image.digest()],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        Self::put_image(&tx, id, image)?;
+        Self::prune_with_settings(&tx, &self.settings()?, timestamp)?;
+        let clip = self.clip(id)?;
+        tx.commit().map_err(sql_error)?;
+        Ok(clip)
+    }
+
+    pub fn image_png(&self, id: i64, thumbnail: bool) -> Result<Vec<u8>> {
+        let column = if thumbnail { "thumbnail" } else { "png" };
+        self.conn.query_row(&format!("SELECT i.{column} FROM clip_images i JOIN clips c ON c.id=i.clip_id WHERE c.id=?1 AND c.kind='image' AND length(i.{column})<=?2"),
+            params![id, images::MAX_PNG_BYTES], |row| row.get(0)).optional().map_err(sql_error)?
+            .ok_or_else(|| "图片不存在、已被删除或超过读取上限。".into())
     }
 
     pub fn add_protected(
@@ -685,14 +812,16 @@ impl Store {
         let timestamp = now();
         let tx = self.conn.unchecked_transaction().map_err(sql_error)?;
         tx.execute("INSERT INTO clips(content,title,kind,group_id,created_at,updated_at,keep_forever) VALUES(?1,?2,?3,?4,?5,?5,?6)
-            ON CONFLICT(content) DO UPDATE SET updated_at=excluded.updated_at,
+            ON CONFLICT(content) WHERE kind<>'image' DO UPDATE SET updated_at=excluded.updated_at,
             title=CASE WHEN excluded.title<>'' THEN excluded.title ELSE clips.title END,
             group_id=COALESCE(excluded.group_id,clips.group_id),
             keep_forever=MAX(clips.keep_forever,excluded.keep_forever)", params![content, title.trim(), classify(content), group_id, timestamp, keep_forever]).map_err(sql_error)?;
         let id = tx
-            .query_row("SELECT id FROM clips WHERE content=?1", [content], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT id FROM clips WHERE content=?1 AND kind<>'image'",
+                [content],
+                |row| row.get(0),
+            )
             .map_err(sql_error)?;
         Self::prune_with_settings(&tx, &self.settings()?, timestamp)?;
         let clip = self.clip(id)?;
@@ -713,7 +842,9 @@ impl Store {
         let timestamp = now();
         let clip = match id {
             Some(id) => {
-                self.clip(id)?;
+                if self.clip(id)?.kind == "image" {
+                    return Err("图片不能转换为代码，请新建代码片段。".into());
+                }
                 self.conn.execute("UPDATE clips SET content=?1,title=?2,kind='code',language=?3,group_id=?4,updated_at=?5,pinned=1 WHERE id=?6", params![content,title.trim(),language,group_id,timestamp,id])
                     .map_err(|error| match error {
                         rusqlite::Error::SqliteFailure(ref details, _) if details.extended_code == 2067 => "已存在相同内容，请编辑已有星笺。".into(),
@@ -806,7 +937,7 @@ impl Store {
 
     /// This only reads rows, file sizes and SQLite page statistics; it never prunes.
     pub fn preview_cleanup(&self, filter: &CleanupFilter) -> Result<CleanupSnapshot> {
-        if !["all", "text", "link", "code", "color"].contains(&filter.kind.as_str()) {
+        if !["all", "text", "link", "code", "color", "image"].contains(&filter.kind.as_str()) {
             return Err("不支持的清理内容类型。".into());
         }
         let cutoff = now().saturating_sub(i64::from(filter.older_than_days) * 86_400_000);
@@ -814,7 +945,7 @@ impl Store {
         let mut protected_count = 0;
         let mut content_bytes = 0;
         let mut candidates = Vec::new();
-        let mut stmt = self.conn.prepare("SELECT id,content,title,kind,pinned,group_id,created_at,updated_at,copy_count,language,keep_forever FROM clips").map_err(sql_error)?;
+        let mut stmt = self.conn.prepare(CLIP_SELECT).map_err(sql_error)?;
         for row in stmt.query_map([], clip_from_row).map_err(sql_error)? {
             let clip = row.map_err(sql_error)?;
             total_count += 1;
@@ -905,7 +1036,14 @@ impl Store {
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(sql_error)?;
         for expected in &snapshot.candidates {
-            let current = tx.query_row("SELECT id,content,title,kind,pinned,group_id,created_at,updated_at,copy_count,language,keep_forever FROM clips WHERE id=?1", [expected.id], clip_from_row).optional().map_err(sql_error)?;
+            let current = tx
+                .query_row(
+                    &format!("{CLIP_SELECT} WHERE c.id=?1"),
+                    [expected.id],
+                    clip_from_row,
+                )
+                .optional()
+                .map_err(sql_error)?;
             if current.as_ref().is_none_or(|current| {
                 !same_cleanup_record(expected, current) || current.keep_forever || current.pinned
             }) {
@@ -1000,15 +1138,56 @@ impl Store {
     }
 
     pub fn export(&self) -> Result<String> {
+        // Bound allocations before loading histories or image BLOBs. Serialized JSON is
+        // checked again because base64 and metadata make it larger than the stored content.
+        let (count, bytes): (usize, u64) = self.conn.query_row(
+            "SELECT count(*),COALESCE(sum(CASE WHEN c.kind='image' THEN COALESCE(i.bytes,0) ELSE length(CAST(c.content AS BLOB)) END + length(CAST(c.title AS BLOB))),0) FROM clips c LEFT JOIN clip_images i ON i.clip_id=c.id",
+            [], |row| Ok((row.get(0)?, row.get(1)?))).map_err(sql_error)?;
+        let group_count: usize = self
+            .conn
+            .query_row("SELECT count(*) FROM groups", [], |row| row.get(0))
+            .map_err(sql_error)?;
+        check_backup_limits(
+            usize::try_from(bytes).unwrap_or(usize::MAX),
+            count,
+            group_count,
+        )?;
         let clips = self.clips()?;
+        check_backup_image_limits(&clips)?;
         let groups = self.groups()?;
-        check_backup_limits(0, clips.len(), groups.len())?;
+        let mut images = Vec::new();
+        let mut encoded_bytes = 0usize;
+        for clip in &clips {
+            if clip.kind == "image" {
+                let png = self.image_png(clip.id, false)?;
+                let metadata = clip
+                    .image
+                    .as_ref()
+                    .ok_or("图片元数据缺失，无法导出完整备份。")?;
+                let (width, height, rgba) = images::decode_png(&png)?;
+                if metadata.width != width
+                    || metadata.height != height
+                    || metadata.bytes != png.len() as u64
+                    || images::fingerprint_rgba(width, height, &rgba)? != clip.content
+                {
+                    return Err("图片数据与元数据不符，未导出损坏的备份。".into());
+                }
+                let png = STANDARD.encode(png);
+                encoded_bytes = encoded_bytes.saturating_add(png.len());
+                check_backup_limits(encoded_bytes, 0, 0)?;
+                images.push(BackupImage {
+                    clip_id: clip.id,
+                    png,
+                });
+            }
+        }
         let json = serde_json::to_string_pretty(&Backup {
             format: "starclip".into(),
-            version: 1,
+            version: if images.is_empty() { 1 } else { 2 },
             exported_at: now(),
             clips,
             groups,
+            images,
         })
         .map_err(|e| e.to_string())?;
         check_backup_limits(json.len(), 0, 0)?;
@@ -1019,7 +1198,10 @@ impl Store {
         check_backup_limits(json.len(), 0, 0)?;
         let backup: Backup = serde_json::from_str(json)
             .map_err(|_| "无法读取备份文件，请选择星笺导出的 JSON 文件。")?;
-        if backup.format != "starclip" || backup.version != 1 {
+        if backup.format != "starclip"
+            || ![1, 2].contains(&backup.version)
+            || (backup.version == 1 && !backup.images.is_empty())
+        {
             return Err("不支持的备份版本。".into());
         }
         check_backup_limits(json.len(), backup.clips.len(), backup.groups.len())?;
@@ -1030,8 +1212,12 @@ impl Store {
                 return Err("备份存在重复分组编号。".into());
             }
         }
+        let mut clip_ids = HashSet::new();
         for clip in &backup.clips {
             validate_content(&clip.content, &clip.title)?;
+            if !clip_ids.insert(clip.id) {
+                return Err("备份存在重复星笺编号。".into());
+            }
             if let Some(language) = &clip.language {
                 validate_language(language)?;
             }
@@ -1042,7 +1228,53 @@ impl Store {
             {
                 return Err("备份包含无效分组或记录。".into());
             }
+            if (clip.kind == "image"
+                && (backup.version != 2 || clip.image.is_none() || clip.language.is_some()))
+                || (clip.kind != "image" && clip.image.is_some())
+            {
+                return Err("备份图片类型或元数据无效。".into());
+            }
         }
+        let mut prepared = HashMap::new();
+        let mut prepared_bytes = 0usize;
+        check_backup_image_limits(&backup.clips)?;
+        let image_clips: HashMap<_, _> = backup
+            .clips
+            .iter()
+            .filter(|clip| clip.kind == "image")
+            .map(|clip| (clip.id, clip))
+            .collect();
+        for image in backup.images {
+            let clip = image_clips
+                .get(&image.clip_id)
+                .ok_or("备份图片没有对应的图片记录。")?;
+            if prepared.contains_key(&image.clip_id) {
+                return Err("备份存在重复图片。".into());
+            }
+            let png = STANDARD
+                .decode(&image.png)
+                .map_err(|_| "备份图片的 Base64 数据损坏。")?;
+            let value = images::prepare_png(&png)?;
+            let metadata = clip.image.as_ref().unwrap();
+            if metadata.width != value.metadata().width
+                || metadata.height != value.metadata().height
+                || metadata.bytes != png.len() as u64
+                || clip.content != value.digest()
+            {
+                return Err("备份图片的像素、尺寸或摘要不匹配。".into());
+            }
+            prepared_bytes = prepared_bytes.saturating_add(value.png.len());
+            check_backup_limits(prepared_bytes, 0, 0)?;
+            prepared.insert(image.clip_id, value);
+        }
+        if backup
+            .clips
+            .iter()
+            .any(|clip| clip.kind == "image" && !prepared.contains_key(&clip.id))
+        {
+            return Err("备份缺少原始图片，未导入不完整记录。".into());
+        }
+        // All image bytes are validated before the transaction creates any group or clip.
         let tx = self.conn.transaction().map_err(sql_error)?;
         let mut group_mapping = HashMap::new();
         for group in backup.groups {
@@ -1063,26 +1295,44 @@ impl Store {
         let mut imported = 0;
         for clip in backup.clips {
             let group_id = clip.group_id.and_then(|id| group_mapping.get(&id).copied());
-            let existed: bool = tx
+            let is_image = clip.kind == "image";
+            let predicate = if is_image {
+                "kind='image'"
+            } else {
+                "kind<>'image'"
+            };
+            let existed: Option<i64> = tx
                 .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM clips WHERE content=?1)",
+                    &format!("SELECT id FROM clips WHERE content=?1 AND {predicate}"),
                     [&clip.content],
                     |row| row.get(0),
                 )
+                .optional()
                 .map_err(sql_error)?;
-            tx.execute("INSERT INTO clips(content,title,kind,pinned,group_id,created_at,updated_at,copy_count,language,keep_forever) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
-                ON CONFLICT(content) DO UPDATE SET pinned=MAX(clips.pinned,excluded.pinned),
+            let kind = if is_image {
+                "image"
+            } else if clip.language.is_some() {
+                "code"
+            } else {
+                classify(&clip.content)
+            };
+            tx.execute(&format!("INSERT INTO clips(content,title,kind,pinned,group_id,created_at,updated_at,copy_count,language,keep_forever) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+                ON CONFLICT(content) WHERE {predicate} DO UPDATE SET pinned=MAX(clips.pinned,excluded.pinned),
                 keep_forever=MAX(clips.keep_forever,excluded.keep_forever),
                 group_id=COALESCE(clips.group_id,excluded.group_id),
                 title=CASE WHEN clips.title='' THEN excluded.title ELSE clips.title END,
                 language=COALESCE(clips.language,excluded.language),
-                kind=CASE WHEN clips.language IS NOT NULL OR excluded.language IS NOT NULL THEN 'code' ELSE clips.kind END",
-                params![clip.content, clip.title, if clip.language.is_some() { "code" } else { classify(&clip.content) }, clip.pinned, group_id, clip.created_at, clip.updated_at, clip.copy_count, clip.language, clip.keep_forever]).map_err(sql_error)?;
-            if !existed {
+                kind=CASE WHEN clips.language IS NOT NULL OR excluded.language IS NOT NULL THEN 'code' ELSE clips.kind END"),
+                params![clip.content, clip.title, kind, clip.pinned, group_id, clip.created_at, clip.updated_at, clip.copy_count, clip.language, clip.keep_forever]).map_err(sql_error)?;
+            if let Some(image) = prepared.remove(&clip.id) {
+                let id = existed.unwrap_or_else(|| tx.last_insert_rowid());
+                Self::put_image(&tx, id, &image)?;
+            }
+            if existed.is_none() {
                 imported += 1;
             }
         }
-        // Import keeps the entire backup; normal capture, startup and periodic maintenance apply the selected retention policy.
+        // Import keeps the entire backup; capture, startup and maintenance apply retention later.
         tx.commit().map_err(sql_error)?;
         Ok(imported)
     }
@@ -1101,6 +1351,9 @@ mod tests {
             kind: "all".into(),
             include_grouped: false,
         }
+    }
+    fn image_fixture(shade: u8) -> PreparedImage {
+        images::prepare_rgba(2, 2, &[shade, 70, 180, 255].repeat(4)).unwrap()
     }
     struct Scratch(std::path::PathBuf);
     impl Scratch {
@@ -2077,6 +2330,296 @@ mod tests {
         assert!(reopened.save_settings(&changed).is_err());
         assert_eq!(reopened.settings().unwrap(), settings);
         assert_eq!(reopened.clips().unwrap().len(), 51);
+    }
+
+    #[test]
+    fn image_migration_preserves_legacy_fields_and_separates_text_identity() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;
+            CREATE TABLE groups(id INTEGER PRIMARY KEY,name TEXT NOT NULL UNIQUE,color TEXT NOT NULL);
+            INSERT INTO groups VALUES(7,'原创旧分组','#abcdef');
+            CREATE TABLE clips(id INTEGER PRIMARY KEY,content TEXT NOT NULL UNIQUE,title TEXT NOT NULL DEFAULT '',
+                kind TEXT NOT NULL,pinned INTEGER NOT NULL DEFAULT 0,keep_forever INTEGER NOT NULL DEFAULT 0,
+                group_id INTEGER REFERENCES groups(id) ON DELETE SET NULL,created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,copy_count INTEGER NOT NULL DEFAULT 0,language TEXT);
+            INSERT INTO clips VALUES(11,'fn original() {}','旧代码','code',1,1,7,12,34,9,'rust');").unwrap();
+        let db = Store::from_connection(conn).unwrap();
+        let legacy = db.clip(11).unwrap();
+        assert_eq!(
+            (legacy.created_at, legacy.updated_at, legacy.copy_count),
+            (12, 34, 9)
+        );
+        assert_eq!(legacy.group_id, Some(7));
+        assert!(legacy.pinned && legacy.keep_forever);
+        assert_eq!(legacy.language.as_deref(), Some("rust"));
+        assert_eq!(legacy.title, "旧代码");
+        assert!(legacy.image.is_none());
+        let old_backup: serde_json::Value = serde_json::from_str(&db.export().unwrap()).unwrap();
+        assert_eq!(old_backup["version"], 1);
+        assert!(old_backup.get("images").is_none());
+
+        let mut budget_clip = legacy.clone();
+        budget_clip.image = Some(ImageMetadata {
+            width: 4000,
+            height: 4000,
+            bytes: 100,
+        });
+        assert!(check_backup_image_limits(&vec![budget_clip.clone(); 16]).is_ok());
+        assert!(check_backup_image_limits(&vec![budget_clip; 17]).is_err());
+
+        let pixels = image_fixture(50);
+        let text = db.add(pixels.digest(), "恰好相同的普通文本", None).unwrap();
+        let picture = db.add_image(&pixels, "图片", Some(7), true).unwrap();
+        assert_ne!(text.id, picture.id);
+        db.update(picture.id, "图片标题", Some(7), true).unwrap();
+        db.mark_copied(picture.id).unwrap();
+        db.conn
+            .execute("UPDATE clips SET updated_at=0 WHERE id=?1", [picture.id])
+            .unwrap();
+        let repeated = db.add_image(&pixels, "", None, false).unwrap();
+        assert_eq!(picture.id, repeated.id);
+        assert!(repeated.updated_at > 0);
+        assert!(repeated.pinned && repeated.keep_forever);
+        assert_eq!(repeated.copy_count, 1);
+        assert_eq!(repeated.group_id, Some(7));
+        assert_eq!(repeated.title, "图片标题");
+        assert_eq!(db.add(pixels.digest(), "", None).unwrap().id, text.id);
+        assert_eq!(db.clip(text.id).unwrap().kind, "text");
+        assert!(db
+            .save_code(Some(picture.id), "不应转换", "hello", "plaintext", None)
+            .is_err());
+        let list_json = serde_json::to_value(db.clips().unwrap()).unwrap();
+        let listed = list_json
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|clip| clip["id"] == picture.id)
+            .unwrap();
+        assert_eq!(listed["image"]["bytes"], pixels.png.len());
+        assert!(listed.get("png").is_none());
+        db.delete_group(7).unwrap();
+        assert!(db.clip(11).unwrap().group_id.is_none());
+        assert!(db.clip(picture.id).unwrap().group_id.is_none());
+        let reopened = Store::from_connection(db.conn).unwrap();
+        assert_eq!(reopened.image_png(picture.id, false).unwrap(), pixels.png);
+    }
+
+    #[test]
+    fn image_backup_roundtrip_validation_and_failure_are_atomic() {
+        let source = store();
+        let group = source.create_group("原创像素", "#abcdef").unwrap();
+        let pixels = image_fixture(91);
+        let picture = source
+            .add_image(&pixels, "透明像素测试", Some(group.id), true)
+            .unwrap();
+        source
+            .update(picture.id, "透明像素测试", Some(group.id), true)
+            .unwrap();
+        source.add(pixels.digest(), "相同标识的文本", None).unwrap();
+        let json = source.export().unwrap();
+        let backup: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(backup["version"], 2);
+        assert_eq!(
+            STANDARD
+                .decode(backup["images"][0]["png"].as_str().unwrap())
+                .unwrap(),
+            pixels.png
+        );
+        let mut destination = store();
+        assert_eq!(destination.import(&json).unwrap(), 2);
+        assert_eq!(destination.import(&json).unwrap(), 0);
+        let imported = destination
+            .clips()
+            .unwrap()
+            .into_iter()
+            .find(|clip| clip.kind == "image")
+            .unwrap();
+        assert_eq!(
+            destination.image_png(imported.id, false).unwrap(),
+            pixels.png
+        );
+        assert_eq!(
+            destination.image_png(imported.id, true).unwrap(),
+            pixels.thumbnail
+        );
+        assert!(imported.pinned && imported.keep_forever && imported.group_id.is_some());
+        assert!(destination.settings().unwrap().paused);
+        let mut unprotected = backup.clone();
+        for clip in unprotected["clips"].as_array_mut().unwrap() {
+            clip["keepForever"] = false.into();
+            clip["pinned"] = false.into();
+        }
+        destination.import(&unprotected.to_string()).unwrap();
+        assert!(destination.clip(imported.id).unwrap().keep_forever);
+        assert!(destination.clip(imported.id).unwrap().pinned);
+
+        let picture_index = backup["clips"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|clip| clip["kind"] == "image")
+            .unwrap();
+        for fault in 0..9 {
+            let mut broken = backup.clone();
+            broken["groups"][0]["name"] = "不应留下的分组".into();
+            match fault {
+                0 => broken["images"] = serde_json::json!([]),
+                1 => broken["images"][0]["png"] = "not-base64".into(),
+                2 => broken["clips"][picture_index]["image"]["width"] = 99.into(),
+                3 => broken["clips"][picture_index]["image"]["bytes"] = 1.into(),
+                4 => broken["clips"][picture_index]["content"] = "sha256:forged".into(),
+                5 => broken["version"] = 1.into(),
+                6 => broken["images"][0]["clipId"] = 9999.into(),
+                7 => {
+                    let duplicate = broken["images"][0].clone();
+                    broken["images"].as_array_mut().unwrap().push(duplicate);
+                }
+                _ => {
+                    let mut png = pixels.png.clone();
+                    png[29] ^= 1;
+                    broken["images"][0]["png"] = STANDARD.encode(png).into();
+                }
+            }
+            assert!(
+                destination.import(&broken.to_string()).is_err(),
+                "fault {fault}"
+            );
+            assert_eq!(destination.clips().unwrap().len(), 2);
+            assert_eq!(destination.groups().unwrap().len(), 1);
+        }
+        let mut failing = store();
+        failing.conn.execute_batch("CREATE TRIGGER refuse_image BEFORE INSERT ON clip_images BEGIN SELECT RAISE(ABORT, 'fixture image write failure'); END;").unwrap();
+        assert!(failing.import(&json).is_err());
+        assert!(failing.clips().unwrap().is_empty());
+        assert!(failing.groups().unwrap().is_empty());
+        assert!(failing.add_image(&pixels, "写入失败", None, false).is_err());
+        assert!(failing.clips().unwrap().is_empty());
+    }
+
+    #[test]
+    fn image_cleanup_bytes_protection_and_cascades_cover_all_delete_paths() {
+        let mut db = store();
+        let pixels = image_fixture(12);
+        let picture = db.add_image(&pixels, "星图", None, false).unwrap();
+        let expected = pixels.png.len() as u64 + "星图".len() as u64;
+        let mut filter = all_cleanup();
+        filter.kind = "image".into();
+        filter.min_bytes = expected;
+        assert_eq!(
+            db.preview_cleanup(&filter).unwrap().preview.matched_count,
+            0
+        );
+        filter.min_bytes -= 1;
+        let preview = db.preview_cleanup(&filter).unwrap();
+        assert_eq!(preview.preview.content_bytes, expected);
+        assert_eq!(preview.preview.items[0].bytes, expected);
+        db.set_keep_forever(picture.id, true).unwrap();
+        assert!(db.execute_cleanup(preview, false).is_err());
+        assert!(db.delete(picture.id).is_err());
+        db.clear_history().unwrap();
+        assert!(db.image_png(picture.id, false).is_ok());
+        db.set_keep_forever(picture.id, false).unwrap();
+        let preview = db.preview_cleanup(&filter).unwrap();
+        let next = db
+            .add_image(&image_fixture(13), "预览之后新图片", None, false)
+            .unwrap();
+        let result = db.execute_cleanup(preview, false).unwrap();
+        assert_eq!(result.deleted_count, 1);
+        assert_eq!(result.content_bytes, expected);
+        assert!(db.image_png(picture.id, false).is_err());
+        assert!(db.image_png(next.id, false).is_ok());
+        db.delete(next.id).unwrap();
+        assert_eq!(
+            db.conn
+                .query_row("SELECT count(*) FROM clip_images", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+
+        let group = db.create_group("保护图片", "#123abc").unwrap();
+        let protected = db
+            .add_image(&image_fixture(20), "永久", None, true)
+            .unwrap();
+        let pinned = db
+            .add_image(&image_fixture(21), "星标", None, false)
+            .unwrap();
+        db.update(pinned.id, "星标", None, true).unwrap();
+        let grouped = db
+            .add_image(&image_fixture(22), "分组", Some(group.id), false)
+            .unwrap();
+        let expired = db
+            .add_image(&image_fixture(23), "超时", None, false)
+            .unwrap();
+        db.conn
+            .execute("UPDATE clips SET updated_at=0", [])
+            .unwrap();
+        let settings = Settings {
+            retention_days: 1,
+            ..Settings::default()
+        };
+        db.save_settings(&settings).unwrap();
+        assert!(db.image_png(expired.id, false).is_err());
+        for id in [protected.id, pinned.id, grouped.id] {
+            assert!(db.image_png(id, false).is_ok());
+        }
+        db.clear_history().unwrap();
+        assert!(db.image_png(grouped.id, false).is_err());
+        for id in [protected.id, pinned.id] {
+            assert!(db.image_png(id, false).is_ok());
+        }
+        let mut settings = settings;
+        settings.retention_days = 0;
+        settings.max_history = 50;
+        db.save_settings(&settings).unwrap();
+        let old = db
+            .add_image(&image_fixture(24), "容量淘汰", None, false)
+            .unwrap();
+        for index in 0..50 {
+            db.add(&format!("原创容量片段 {index}"), "", None).unwrap();
+        }
+        assert!(db.image_png(old.id, false).is_err());
+        assert_eq!(
+            db.conn
+                .query_row("SELECT count(*) FROM clip_images", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn wal_snapshot_preserves_original_and_thumbnail_without_external_assets() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("images.sqlite3");
+        let snapshot = scratch.0.join("snapshot.sqlite3");
+        let db = Store::open(&path).unwrap();
+        db.conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+        db.conn
+            .pragma_update(None, "wal_autocheckpoint", 0)
+            .unwrap();
+        let pixels =
+            images::prepare_rgba(640, 160, &[90, 120, 210, 120].repeat(640 * 160)).unwrap();
+        let clip = db
+            .add_image(&pixels, "原创半透明横幅", None, false)
+            .unwrap();
+        db.snapshot(&snapshot).unwrap();
+        Store::validate_database(&snapshot).unwrap();
+        db.delete(clip.id).unwrap();
+        let copy = Store::open(&snapshot).unwrap();
+        assert_eq!(copy.image_png(clip.id, false).unwrap(), pixels.png);
+        assert_eq!(copy.image_png(clip.id, true).unwrap(), pixels.thumbnail);
+        assert_eq!(
+            copy.clip(clip.id).unwrap().image.as_ref(),
+            Some(pixels.metadata())
+        );
+        assert_eq!(
+            images::decode_png(&copy.image_png(clip.id, true).unwrap())
+                .unwrap()
+                .0,
+            320
+        );
+        assert!(db.clips().unwrap().is_empty());
     }
 
     #[test]

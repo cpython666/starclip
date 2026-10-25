@@ -2,7 +2,8 @@ export interface Clip {
   id: number;
   content: string;
   title: string;
-  kind: 'text' | 'link' | 'code' | 'color';
+  kind: 'text' | 'link' | 'code' | 'color' | 'image';
+  image?: { width: number; height: number; bytes: number } | null;
   language: string | null;
   pinned: boolean;
   keepForever: boolean;

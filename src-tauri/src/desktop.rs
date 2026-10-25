@@ -1,21 +1,24 @@
+use crate::capture::{CaptureKey, CaptureState};
+use crate::images;
 use crate::storage::{DataDirectoryPlan, DataLocation, DirectoryMode, Storage};
 use crate::store::{
     starpet_resize_position, CleanupFilter, CleanupPreview, CleanupResult, CleanupSnapshot, Clip,
     Group, Result, Settings, StarpetPreferencePatch, StarpetPreferences, Store, STALE_CLEANUP,
 };
-use arboard::Clipboard;
+use arboard::{Clipboard, ImageData};
+use base64::Engine;
 use serde::Serialize;
 use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard, OnceLock},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{
     menu::{Menu, MenuItem},
-    tray::{TrayIconBuilder, TrayIconEvent},
+    tray::TrayIconBuilder,
     AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 use tauri_plugin_dialog::DialogExt;
@@ -23,8 +26,7 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 struct Reader {
     clipboard: Option<Clipboard>,
-    previous: Option<String>,
-    armed: bool,
+    capture: CaptureState,
 }
 struct Context {
     storage: Mutex<Storage>,
@@ -35,6 +37,7 @@ struct Context {
     window_error: Mutex<Option<String>>,
     cleanup: Mutex<Option<CleanupSnapshot>>,
     starpet_operation: Mutex<()>,
+    tray_pause: OnceLock<MenuItem<tauri::Wry>>,
 }
 type AppContext<'a> = State<'a, Arc<Context>>;
 fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>> {
@@ -414,26 +417,71 @@ fn delete_clip(app: AppHandle, context: AppContext<'_>, id: i64) -> Result<()> {
     Ok(())
 }
 #[tauri::command]
-fn copy_clip(app: AppHandle, context: AppContext<'_>, id: i64) -> Result<()> {
-    let _write = write_guard(&context)?;
-    let content = lock(&context.store)?.clip(id)?.content;
-    {
-        let mut reader = lock(&context.reader)?;
-        if reader.clipboard.is_none() {
-            reader.clipboard = Some(Clipboard::new().map_err(|e| format!("无法访问剪贴板：{e}"))?);
+async fn get_clip_image(context: AppContext<'_>, id: i64, thumbnail: bool) -> Result<String> {
+    let context = context.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let png = lock(&context.store)?.image_png(id, thumbnail)?;
+        Ok(format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(png)
+        ))
+    })
+    .await
+    .map_err(|_| "图片读取任务失败。".to_string())?
+}
+#[tauri::command]
+async fn copy_clip(app: AppHandle, context: AppContext<'_>, id: i64) -> Result<()> {
+    let context = context.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _write = write_guard(&context)?;
+        let (clip, png) = {
+            let store = lock(&context.store)?;
+            let clip = store.clip(id)?;
+            let png = if clip.kind == "image" {
+                Some(store.image_png(id, false)?)
+            } else {
+                None
+            };
+            (clip, png)
+        };
+        let pixels = png.as_deref().map(images::decode_png).transpose()?;
+        {
+            let mut reader = lock(&context.reader)?;
+            if reader.clipboard.is_none() {
+                reader.clipboard =
+                    Some(Clipboard::new().map_err(|e| format!("无法访问剪贴板：{e}"))?);
+            }
+            let key = if let Some((width, height, rgba)) = pixels {
+                let digest = images::fingerprint_rgba(width, height, &rgba)?;
+                reader
+                    .clipboard
+                    .as_mut()
+                    .unwrap()
+                    .set_image(ImageData {
+                        width: width as usize,
+                        height: height as usize,
+                        bytes: rgba.into(),
+                    })
+                    .map_err(|e| format!("图片复制失败：{e}"))?;
+                CaptureKey::Image(digest)
+            } else {
+                reader
+                    .clipboard
+                    .as_mut()
+                    .unwrap()
+                    .set_text(clip.content.clone())
+                    .map_err(|e| format!("复制失败：{e}"))?;
+                CaptureKey::Text(clip.content)
+            };
+            reader.capture.copied(key);
         }
-        reader
-            .clipboard
-            .as_mut()
-            .unwrap()
-            .set_text(content.clone())
-            .map_err(|e| format!("复制失败：{e}"))?;
-        reader.previous = Some(content);
-    }
-    lock(&context.store)?.mark_copied(id)?;
-    *lock(&context.clipboard_error)? = None;
-    changed(&app);
-    Ok(())
+        lock(&context.store)?.mark_copied(id)?;
+        *lock(&context.clipboard_error)? = None;
+        changed(&app);
+        Ok(())
+    })
+    .await
+    .map_err(|_| "复制任务失败，请重试。".to_string())?
 }
 #[tauri::command]
 fn create_group(
@@ -495,8 +543,7 @@ fn save_settings(app: AppHandle, context: AppContext<'_>, settings: Settings) ->
         let mut reader = lock(&context.reader)?;
         lock(&context.store)?.save_settings(&settings)?;
         if old.paused != settings.paused {
-            reader.armed = false;
-            reader.previous = None;
+            reader.capture = CaptureState::default();
         }
         Ok(())
     })();
@@ -522,6 +569,8 @@ fn save_settings(app: AppHandle, context: AppContext<'_>, settings: Settings) ->
         *lock(&context.shortcut_error)? = None;
     }
     *lock(&context.window_error)? = None;
+    drop(_write);
+    refresh_tray(&app, &context, settings.paused);
     changed(&app);
     Ok(())
 }
@@ -587,16 +636,24 @@ async fn execute_cleanup(
     .map_err(|_| "清理任务失败，请刷新预览确认当前状态。".to_string())?
 }
 #[tauri::command]
-fn export_backup(context: AppContext<'_>) -> Result<String> {
-    lock(&context.store)?.export()
+async fn export_backup(context: AppContext<'_>) -> Result<String> {
+    let context = context.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || lock(&context.store)?.export())
+        .await
+        .map_err(|_| "导出任务失败。".to_string())?
 }
 #[tauri::command]
-fn import_backup(app: AppHandle, context: AppContext<'_>, data: String) -> Result<usize> {
-    let _write = write_guard(&context)?;
-    let count = lock(&context.store)?.import(&data)?;
-    *lock(&context.cleanup)? = None;
-    changed(&app);
-    Ok(count)
+async fn import_backup(app: AppHandle, context: AppContext<'_>, data: String) -> Result<usize> {
+    let context = context.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _write = write_guard(&context)?;
+        let count = lock(&context.store)?.import(&data)?;
+        *lock(&context.cleanup)? = None;
+        changed(&app);
+        Ok(count)
+    })
+    .await
+    .map_err(|_| "导入任务失败。".to_string())?
 }
 
 fn write_private(path: &Path, data: &[u8]) -> Result<()> {
@@ -634,8 +691,9 @@ fn write_private(path: &Path, data: &[u8]) -> Result<()> {
 }
 #[tauri::command]
 async fn save_backup(app: AppHandle, context: AppContext<'_>) -> Result<bool> {
-    let data = lock(&context.store)?.export()?;
+    let context = context.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let data = lock(&context.store)?.export()?;
         let Some(file) = app
             .dialog()
             .file()
@@ -877,6 +935,105 @@ fn set_clipboard_error(app: &AppHandle, context: &Context, error: Option<String>
         }
     }
 }
+// Native change tokens avoid repeatedly decoding unchanged images in the background.
+fn clipboard_sequence() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        return objc2::rc::autoreleasepool(|_| {
+            Some(objc2_app_kit::NSPasteboard::generalPasteboard().changeCount() as u64)
+        });
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let sequence =
+            unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() };
+        return (sequence != 0).then_some(sequence as u64);
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        None
+    }
+}
+enum ClipboardContent {
+    Empty,
+    Text(String),
+    Image(ImageData<'static>),
+}
+fn read_clipboard(
+    clipboard: &mut Clipboard,
+) -> std::result::Result<ClipboardContent, arboard::Error> {
+    let image_error = match clipboard.get_image() {
+        Ok(image) => return Ok(ClipboardContent::Image(image)),
+        Err(arboard::Error::ContentNotAvailable) => None,
+        Err(arboard::Error::ConversionFailure) => Some(arboard::Error::ConversionFailure),
+        Err(error) => return Err(error),
+    };
+    match clipboard.get_text() {
+        Ok(text) => Ok(ClipboardContent::Text(text)),
+        Err(arboard::Error::ContentNotAvailable) => match image_error {
+            Some(error) => Err(error),
+            None => Ok(ClipboardContent::Empty),
+        },
+        Err(error) => Err(error),
+    }
+}
+
+fn refresh_tray(app: &AppHandle, context: &Context, paused: bool) {
+    if let Some(item) = context.tray_pause.get() {
+        let _ = item.set_text(if paused {
+            "继续记录"
+        } else {
+            "暂停记录"
+        });
+    }
+    if let Some(tray) = app.tray_by_id("main-tray") {
+        let _ = tray.set_tooltip(Some(if paused {
+            "星笺 · 已暂停"
+        } else {
+            "星笺 · 正在记录文字与图片"
+        }));
+    }
+}
+#[cfg(target_os = "macos")]
+fn status_star_icon() -> tauri::image::Image<'static> {
+    // A 36px transparent template becomes an 18pt, system-colored menu-bar star.
+    let points = [
+        (18.0, 2.0),
+        (22.0, 13.0),
+        (34.0, 18.0),
+        (22.0, 22.0),
+        (18.0, 34.0),
+        (13.0, 22.0),
+        (2.0, 18.0),
+        (13.0, 13.0),
+    ];
+    let mut rgba = vec![0; 36 * 36 * 4];
+    for y in 0..36 {
+        for x in 0..36 {
+            let mut samples = 0;
+            for dy in [0.25, 0.75] {
+                for dx in [0.25, 0.75] {
+                    let (px, py) = (x as f64 + dx, y as f64 + dy);
+                    let mut inside = false;
+                    for i in 0..points.len() {
+                        let (a, b) = (points[i], points[(i + 1) % points.len()]);
+                        if (a.1 > py) != (b.1 > py)
+                            && px < (b.0 - a.0) * (py - a.1) / (b.1 - a.1) + a.0
+                        {
+                            inside = !inside;
+                        }
+                    }
+                    if inside {
+                        samples += 1;
+                    }
+                }
+            }
+            rgba[(y * 36 + x) * 4 + 3] = (samples * 255 / 4) as u8;
+        }
+    }
+    tauri::image::Image::new_owned(rgba, 36, 36)
+}
+
 fn monitor(app: AppHandle, context: Arc<Context>) {
     thread::spawn(move || {
         let mut maintenance_at = Instant::now() + Duration::from_secs(60);
@@ -904,45 +1061,95 @@ fn monitor(app: AppHandle, context: Arc<Context>) {
                     _ => {}
                 }
             }
-            let result: Result<bool> = (|| {
-                // ponytail: one lock order serializes this personal clipboard; no worker queue is needed.
+            let result: Result<Option<bool>> = (|| {
+                // The storage gate serializes mutations. Read-only UI queries remain available
+                // while clipboard pixels are decoded and compressed outside the store lock.
                 let mut reader = lock(&context.reader)?;
-                let store = lock(&context.store)?;
-                if store.settings()?.paused {
-                    return Ok(false);
+                if lock(&context.store)?.settings()?.paused {
+                    return Ok(None);
+                }
+                let sequence = clipboard_sequence();
+                if !reader.capture.should_read(sequence) {
+                    return Ok(None);
                 }
                 if reader.clipboard.is_none() {
                     reader.clipboard =
                         Some(Clipboard::new().map_err(|e| format!("无法访问剪贴板：{e}"))?);
                 }
-                let content = match reader.clipboard.as_mut().unwrap().get_text() {
-                    Ok(text) => Some(text),
-                    Err(arboard::Error::ContentNotAvailable) => None,
-                    Err(error) => return Err(format!("剪贴板读取失败：{error}")),
+                let content = match read_clipboard(reader.clipboard.as_mut().unwrap()) {
+                    Ok(content) => content,
+                    Err(error) => {
+                        if matches!(error, arboard::Error::ConversionFailure) {
+                            reader.capture.skip_invalid(sequence);
+                        }
+                        return Err(format!("剪贴板读取失败：{error}"));
+                    }
                 };
-                if !reader.armed {
-                    reader.armed = true;
-                    reader.previous = content;
-                    return Ok(false);
+                // A copy during the read may mix formats from two owners. Retry next poll.
+                if sequence.is_some() && sequence != clipboard_sequence() {
+                    return Ok(None);
                 }
-                if reader.previous == content {
-                    return Ok(false);
+                let key = match &content {
+                    ClipboardContent::Image(image) => {
+                        let dimensions = u32::try_from(image.width)
+                            .ok()
+                            .zip(u32::try_from(image.height).ok());
+                        let digest = dimensions
+                            .ok_or_else(|| "图片尺寸超出支持范围。".to_string())
+                            .and_then(|(width, height)| {
+                                images::fingerprint_rgba(width, height, &image.bytes)
+                            });
+                        match digest {
+                            Ok(digest) => Some(CaptureKey::Image(digest)),
+                            Err(error) => {
+                                reader.capture.skip_invalid(sequence);
+                                return Err(error);
+                            }
+                        }
+                    }
+                    ClipboardContent::Text(text) if !text.trim().is_empty() => {
+                        if text.len() > crate::store::MAX_CONTENT_BYTES {
+                            reader.capture.skip_invalid(sequence);
+                            return Err("单条文字超过 256 KiB，未记录。".into());
+                        }
+                        Some(CaptureKey::Text(text.clone()))
+                    }
+                    _ => None,
+                };
+                let capture = reader.capture.needs_capture(&key);
+                if capture {
+                    match content {
+                        ClipboardContent::Image(image) => {
+                            let prepared = match images::prepare_rgba(
+                                image.width as u32,
+                                image.height as u32,
+                                &image.bytes,
+                            ) {
+                                Ok(image) => image,
+                                Err(error) => {
+                                    reader.capture.skip_invalid(sequence);
+                                    return Err(error);
+                                }
+                            };
+                            lock(&context.store)?.add_image(&prepared, "", None, false)?;
+                        }
+                        ClipboardContent::Text(text) => {
+                            lock(&context.store)?.add(&text, "", None)?;
+                        }
+                        ClipboardContent::Empty => {}
+                    }
                 }
-                if let Some(text) = content.as_ref().filter(|text| !text.trim().is_empty()) {
-                    store.add(text, "", None)?;
-                    reader.previous = content;
-                    Ok(true)
-                } else {
-                    reader.previous = content;
-                    Ok(false)
-                }
+                reader.capture.accept(sequence, key);
+                Ok(Some(capture))
             })();
             match result {
-                Ok(true) => {
+                Ok(Some(captured)) => {
                     set_clipboard_error(&app, &context, None);
-                    changed(&app);
+                    if captured {
+                        changed(&app);
+                    }
                 }
-                Ok(false) => {}
+                Ok(None) => {}
                 Err(error) => set_clipboard_error(&app, &context, Some(error)),
             }
         }
@@ -1014,14 +1221,14 @@ pub fn run() {
                 store: Mutex::new(store),
                 reader: Mutex::new(Reader {
                     clipboard: None,
-                    previous: None,
-                    armed: false,
+                    capture: CaptureState::default(),
                 }),
                 clipboard_error: Mutex::new(None),
                 shortcut_error: Mutex::new(shortcut_error),
                 window_error: Mutex::new(window_error),
                 cleanup: Mutex::new(None),
                 starpet_operation: Mutex::new(()),
+                tray_pause: OnceLock::new(),
             });
             app.manage(context.clone());
             let show = MenuItem::with_id(app, "show", "打开星笺", true, None::<&str>)?;
@@ -1029,10 +1236,10 @@ pub fn run() {
             let starpet = MenuItem::with_id(app, "starpet", "显示 / 隐藏星伴", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出星笺", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &pause, &starpet, &quit])?;
-            let mut tray = TrayIconBuilder::new()
+            let mut tray = TrayIconBuilder::with_id("main-tray")
                 .tooltip("星笺 Starclip")
                 .menu(&menu)
-                .show_menu_on_left_click(false)
+                .show_menu_on_left_click(true)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => show_window(app),
                     "pause" => {
@@ -1060,23 +1267,19 @@ pub fn run() {
                         });
                     }
                     _ => {}
-                })
-                .on_tray_icon_event(|tray, event| {
-                    if matches!(
-                        event,
-                        TrayIconEvent::Click {
-                            button: tauri::tray::MouseButton::Left,
-                            button_state: tauri::tray::MouseButtonState::Up,
-                            ..
-                        }
-                    ) {
-                        toggle_window(tray.app_handle());
-                    }
                 });
+            #[cfg(target_os = "macos")]
+            {
+                tray = tray.icon(status_star_icon()).icon_as_template(true);
+            }
+            #[cfg(not(target_os = "macos"))]
             if let Some(icon) = app.default_window_icon() {
                 tray = tray.icon(icon.clone());
             }
+            let _ = context.tray_pause.set(pause);
             tray.build(app)?;
+            let paused = lock(&context.store)?.settings()?.paused;
+            refresh_tray(app.handle(), &context, paused);
             let pet_app = app.handle().clone();
             let pet_context = context.clone();
             tauri::async_runtime::spawn_blocking(move || {
@@ -1122,6 +1325,7 @@ pub fn run() {
             save_code,
             delete_clip,
             copy_clip,
+            get_clip_image,
             create_group,
             delete_group,
             save_settings,

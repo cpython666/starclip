@@ -10,6 +10,8 @@ test('demo backup import keeps all records and only explicit capture/settings ch
     .replace("from './snippets'", `from '${new URL('../src/snippets.ts', import.meta.url).href}'`);
   const code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
   const { api } = await import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'));
+  // This regression exercises v1 text-only backups; image safety has its own test.
+  for (const clip of (await api.getState()).clips) if (clip.kind === 'image') await api.deleteClip(clip.id);
   const original = await api.getState();
   await api.saveSettings({ ...original.settings, retentionDays: 7 });
   const oldTime = Date.now() - 60 * 86400000;

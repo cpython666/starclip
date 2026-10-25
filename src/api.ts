@@ -2,8 +2,10 @@ import type { AppState, Clip, CleanupFilter, CleanupPreview, CleanupResult, Data
 import { download, languages } from './snippets';
 
 export const isDesktop = '__TAURI_INTERNALS__' in window;
+// Original 320×180 moon-and-hills fixture, drawn programmatically; no clipboard or external assets.
+const demoImage = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAUAAAAC0CAIAAABqhmJGAAAEQklEQVR42u3cX3LTZhTG4W8ZJQVaoBRKueoC+JdASiDACnrb6Z66ieyml1kDkwVg4hJCAjiKHUnvd56Z59pCR+eHbNmT9sNPj4BQzQhAwICAAQGDgAEBAwIGvhrwYyCUgEHAwDQB//wYCCVgEDAgYEDAUCjgJ0AoAYOAAQEDAgYBAwEB33oChBIwZAf8FAjVrt16CoQSMAgYEDCXc3R4YAgCJrXeJaMQMKn11mz4/X//LgiYHuot1fAy3eL1LgN+Rq5z9ZY465N6jwMuvQDt2u1nRPtcb43z/aLe8ldfwJ00XLBeAc8o4DoryKbqFfBcAq72JpCN1CvgWQR89jGMZUXAKQF//YsQ+8oF6hWwOzBuv/EBb0/uVL3bcMa3br/HDVcfTpvJv0O9CDg4YBhar4AFjIDTA76zDbO1IuDy8xEwAhYwTBGwhgWMgLMD3oHZWhnwccN15yNgBJwc8NadHZitiwS8UHY+AkbAAoZJAy7bsIDpJOCaDQuYfgIu2HDb+mUH5mxww5WGswj4OczZ0IA/ZVxiOAKm24Yvl3FW/AKm54AHZZx49xYwJRo+n3Qf770FTMWAu/nwLGA0HPzoS8BoOPjBtYDRcPDXTouAX0CWK6g3dRQCpnrD0XNoW3dfQKh1082fgICpmHE35y5gamXc2VkLeLWjwwNDQMCp9S4ZBQJOrVfDzDbgXb7jVL2mwewI+EINGwICBjYd8I93d4FQAobogH/dBUIJGAQMTBTwn0AoAYOAAQEDAgYBAwKmY0eHB4YgYFLrXTKKSQO+9xKGOvOnDgxkKgJm3YaNQsCkNmwIAgYEDAIGBAwIGFgV8B4QSsAgYGCagO/vARvx8Zct4x6xXb+/B6zv5LelYx5UwLDJekduWMCw4XrHbFjAkH0HfgWs71S94x1UwLDJhkc+ooAhmIBBwICAgYEB//YKCCVgyA74NRBKwCDgufr4xbrLjIBD6/3/p22uNAIOrVfDCNgdGATsMzAIGDgJeB8I1a4/2AdCCRgEDAgYGBbwjQf7QCgBg4CBiQJ+A1fnj/2/RlZqvAImslJtC5jOc62QtIAplGt/Sbcbv7+B06oVu6LneV8sASPa4JgFrFiCexawaAmOeRHwWzomrSliHu/6Cli0BMcsYNESHLOARUtwzG2q9+6IlvW7a3P4II5ouVx3bW5P1RAtF++uDX7Rh2+5IlaWod21tV/3HeuwmqwTXbui10W0jKCN8/+EYiEs4Mo9Wyx6C7jjnq0R5QLOrdrSIOBhbj58Nz7LgYABAfPJ83/+HoE5C5iAUFUtYPrMVdICprdi9SxgxVbhogtYtHpGwKIVs4BRrJhnF7BpilbMuRvYTFO0es5dv2aaihVz7gY20xStnnPXr1Wepgz0nL6Brc5Abbmk+9vA1uVYrS/TVj3aGTUXFXIJGAQMCBgQMAgYEDAgYEDAIGBAwICAQcBAog95oc6u5iG0XAAAAABJRU5ErkJggg==';
 const now = Date.now();
-const samples: Array<Pick<Clip, 'title' | 'content' | 'kind' | 'language' | 'groupId' | 'pinned'>> = [
+const samples: Array<Pick<Clip, 'title' | 'content' | 'kind' | 'language' | 'groupId' | 'pinned' | 'image'>> = [
   { title: '让灵感有迹可循', content: '有些灵感像流星，只出现一瞬。\n\n把值得留下的文字、链接与代码，收进自己的小小星系。', kind: 'text', language: null, groupId: 1, pinned: true },
   { title: '一个温柔的问候', content: 'fn main() {\n    let universe = "你好，星笺";\n    println!("{universe} ✦");\n}', kind: 'code', language: 'rust', groupId: 2, pinned: true },
   { title: 'Tauri · 小巧的桌面应用', content: 'https://v2.tauri.app/', kind: 'link', language: null, groupId: 2, pinned: false },
@@ -12,6 +14,7 @@ const samples: Array<Pick<Clip, 'title' | 'content' | 'kind' | 'language' | 'gro
   { title: '一个轻巧的 debounce', content: 'function debounce(fn, delay = 300) {\n  let timer;\n  return (...args) => {\n    clearTimeout(timer);\n    timer = setTimeout(() => fn(...args), delay);\n  };\n}', kind: 'code', language: 'javascript', groupId: 2, pinned: true },
   { title: '今晚的待办', content: '☑ 留下一个好点子\n☑ 把常用代码收进收藏\n☐ 早点休息，明天再看星星', kind: 'text', language: null, groupId: null, pinned: false },
   { title: 'MDN Web 文档', content: 'https://developer.mozilla.org/zh-CN/', kind: 'link', language: null, groupId: 2, pinned: false },
+  { title: '月亮落在山丘上', content: 'starclip-image:original-demo-moon', kind: 'image', language: null, groupId: null, pinned: false, image: { width: 320, height: 180, bytes: 1147 } },
 ];
 let demo: AppState = {
   onboardingCompleted: false,
@@ -31,8 +34,8 @@ function pruneDemo() {
 }
 let cleanupSequence = 0;
 let pendingCleanup: { token: string; clips: Clip[] } | null = null;
-const contentBytes = (clip: Clip) => new TextEncoder().encode(clip.content).length + new TextEncoder().encode(clip.title).length;
-const cleanupFingerprint = (clip: Clip) => JSON.stringify([clip.id, clip.content, clip.title, clip.kind, clip.language, clip.pinned, clip.keepForever, clip.groupId, clip.createdAt, clip.updatedAt]);
+const contentBytes = (clip: Clip) => (clip.kind === 'image' ? clip.image?.bytes ?? 0 : new TextEncoder().encode(clip.content).length) + new TextEncoder().encode(clip.title).length;
+const cleanupFingerprint = (clip: Clip) => JSON.stringify([clip.id, clip.content, clip.title, clip.kind, clip.image, clip.language, clip.pinned, clip.keepForever, clip.groupId, clip.createdAt, clip.updatedAt]);
 function changed() { listeners.forEach((listener) => listener()); }
 function id() { return Math.max(0, ...demo.clips.map((clip) => clip.id)) + 1; }
 function requiredClip(clipId: number) { const clip = demo.clips.find((item) => item.id === clipId); if (!clip) throw new Error('记录不存在'); return clip; }
@@ -64,7 +67,7 @@ export const api = {
   },
   async previewCleanup(filter: CleanupFilter): Promise<CleanupPreview> {
     if (isDesktop) return invoke('preview_cleanup', { filter });
-    if (!Number.isSafeInteger(filter.minBytes) || filter.minBytes < 0 || !Number.isSafeInteger(filter.olderThanDays) || filter.olderThanDays < 0 || filter.olderThanDays > 36500 || !['all', 'text', 'link', 'code', 'color'].includes(filter.kind) || typeof filter.includeGrouped !== 'boolean') throw new Error('清理条件无效，请检查大小和天数。');
+    if (!Number.isSafeInteger(filter.minBytes) || filter.minBytes < 0 || !Number.isSafeInteger(filter.olderThanDays) || filter.olderThanDays < 0 || filter.olderThanDays > 36500 || !['all', 'text', 'link', 'code', 'color', 'image'].includes(filter.kind) || typeof filter.includeGrouped !== 'boolean') throw new Error('清理条件无效，请检查大小和天数。');
     const cutoff = Date.now() - filter.olderThanDays * 86400000;
     const clips = demo.clips.filter(c => !c.pinned && !c.keepForever && (filter.includeGrouped || c.groupId === null)
       && (filter.minBytes === 0 || contentBytes(c) > filter.minBytes)
@@ -73,7 +76,7 @@ export const api = {
     pendingCleanup = { token, clips: structuredClone(clips) };
     return { token, totalCount: demo.clips.length, protectedCount: demo.clips.filter(c => c.pinned || c.keepForever).length,
       matchedCount: clips.length, contentBytes: clips.reduce((sum, c) => sum + contentBytes(c), 0), databaseBytes: 0, reusableBytes: 0,
-      items: clips.map(c => ({ id: c.id, title: c.title || c.content.slice(0, 44), kind: c.kind, bytes: contentBytes(c), updatedAt: c.updatedAt })).sort((a, b) => b.bytes - a.bytes || a.id - b.id).slice(0, 100), truncated: clips.length > 100 };
+      items: clips.map(c => ({ id: c.id, title: c.title || (c.kind === 'image' ? '未命名图片' : c.content.slice(0, 44)), kind: c.kind, bytes: contentBytes(c), updatedAt: c.updatedAt })).sort((a, b) => b.bytes - a.bytes || a.id - b.id).slice(0, 100), truncated: clips.length > 100 };
   },
   async executeCleanup(token: string, compact: boolean): Promise<CleanupResult> {
     if (isDesktop) return invoke('execute_cleanup', { token, compact });
@@ -116,10 +119,15 @@ export const api = {
     return handwritingInvoke('render_handwriting', { options });
   },
   async getState(): Promise<AppState> { return isDesktop ? invoke('get_state') : structuredClone(demo); },
+  async imageData(id: number, thumbnail: boolean): Promise<string> {
+    if (isDesktop) return invoke('get_clip_image', { id, thumbnail });
+    if (requiredClip(id).kind !== 'image') throw new Error('这条记录不是图片');
+    return demoImage;
+  },
   async addClip(content: string, title: string, groupId: number | null, keepForever = false): Promise<Clip> {
     if (isDesktop) return invoke('add_clip', { content, title, groupId, keepForever });
     validateContent(content);
-    const existing = demo.clips.find((clip) => clip.content === content);
+    const existing = demo.clips.find((clip) => clip.kind !== 'image' && clip.content === content);
     if (existing) {
       existing.updatedAt = Date.now();
       existing.keepForever ||= keepForever;
@@ -137,7 +145,14 @@ export const api = {
   async deleteClip(id: number): Promise<void> { if (isDesktop) return invoke('delete_clip', { id }); if (requiredClip(id).keepForever) throw new Error('请先取消这条记录的永久保留，再删除。'); demo.clips = demo.clips.filter((clip) => clip.id !== id); pendingCleanup = null; changed(); },
   async copyClip(id: number): Promise<void> {
     if (isDesktop) return invoke('copy_clip', { id });
-    const clip = requiredClip(id); await navigator.clipboard.writeText(clip.content); clip.copyCount++; changed();
+    const clip = requiredClip(id);
+    if (clip.kind === 'image') {
+      if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') throw new Error('当前浏览器不支持复制图片，请使用桌面版。');
+      const blob = new Blob([Uint8Array.from(atob(demoImage.split(',')[1]!), char => char.charCodeAt(0))], { type: 'image/png' });
+      try { await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]); }
+      catch { throw new Error('图片未能复制，请允许剪贴板权限，或使用桌面版。'); }
+    } else await navigator.clipboard.writeText(clip.content);
+    clip.copyCount++; changed();
   },
   async createGroup(name: string, color: string): Promise<Group> {
     if (isDesktop) return invoke('create_group', { name, color });
@@ -167,6 +182,7 @@ export const api = {
   async clearHistory(): Promise<void> { if (isDesktop) return invoke('clear_history'); demo.clips = demo.clips.filter((clip) => clip.pinned || clip.keepForever); pendingCleanup = null; changed(); },
   async exportBackup(): Promise<string> {
     if (isDesktop) return invoke('export_backup');
+    if (demo.clips.some(clip => clip.kind === 'image')) throw new Error('浏览器演示暂不支持包含图片的备份，请在桌面版导出完整备份。没有导出任何记录。');
     const data = JSON.stringify({ format: 'starclip', version: 1, exportedAt: Date.now(), clips: demo.clips, groups: demo.groups }, null, 2);
     if (new TextEncoder().encode(data).length > 20 * 1024 * 1024 || demo.clips.length > 10000 || demo.groups.length > 1000) throw new Error('数据超过单个备份支持的范围（20 MB / 10000 条 / 1000 组）');
     return data;
@@ -177,6 +193,7 @@ export const api = {
     const parsed: unknown = JSON.parse(data);
     if (!parsed || typeof parsed !== 'object') throw new Error('备份格式无效');
     const backup = parsed as { format?: unknown; version?: unknown; clips?: unknown; groups?: unknown };
+    if (backup.version === 2 || (Array.isArray(backup.clips) && backup.clips.some(clip => clip && typeof clip === 'object' && (clip.kind === 'image' || clip.image != null))) || ('images' in backup && backup.images != null)) throw new Error('浏览器演示暂不支持图片备份，请在桌面版导入。现有记录未改动。');
     if (backup.format !== 'starclip' || backup.version !== 1 || !Array.isArray(backup.clips) || !Array.isArray(backup.groups) || backup.clips.length > 10000 || backup.groups.length > 1000) throw new Error('不支持的备份格式或条目过多');
     const next = structuredClone(demo), groupMap = new Map<number, number>();
     for (const group of backup.groups as Group[]) {
@@ -192,7 +209,7 @@ export const api = {
       if (clip.keepForever !== undefined && typeof clip.keepForever !== 'boolean') throw new Error('备份保留标记无效');
       if (clip.language != null && !languages.some(([key]) => key === clip.language)) throw new Error('未知的代码语言');
       if (clip.groupId != null && !groupMap.has(clip.groupId)) throw new Error('分组引用无效');
-      const existing = next.clips.find(c => c.content === clip.content);
+      const existing = next.clips.find(c => c.kind !== 'image' && c.content === clip.content);
       if (existing) {
         existing.keepForever ||= clip.keepForever ?? false;
         existing.pinned ||= clip.pinned;
@@ -213,6 +230,7 @@ export const api = {
   },
   async saveCode(id: number | null, title: string, content: string, language: string, groupId: number | null): Promise<Clip> {
     if (isDesktop) return invoke('save_code', { id, title, content, language, groupId });
+    if (id != null && requiredClip(id).kind === 'image') throw new Error('图片不能带入星绘坊，请选择文字或代码。');
     validateContent(content);
     if (!languages.some(([key]) => key === language)) throw new Error('未知的代码语言');
     const conflict = demo.clips.find((clip) => clip.content === content && clip.id !== id);

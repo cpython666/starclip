@@ -7,7 +7,7 @@ import UiSelect from './UiSelect.vue';
 
 const sizeUnits = [{ value: 'KiB', label: 'KiB' }, { value: 'MiB', label: 'MiB' }] as const;
 const ageChoices = [{ value: '0', label: '不限时间' }, { value: '7', label: '7 天前' }, { value: '30', label: '30 天前' }, { value: '90', label: '90 天前' }, { value: 'custom', label: '自定义天数' }];
-const kindChoices = [{ value: 'all', label: '全部类型' }, { value: 'text', label: '文本' }, { value: 'link', label: '链接' }, { value: 'code', label: '代码' }, { value: 'color', label: '色彩' }] as const;
+const kindChoices = [{ value: 'all', label: '全部类型' }, { value: 'text', label: '文本' }, { value: 'link', label: '链接' }, { value: 'code', label: '代码' }, { value: 'color', label: '色彩' }, { value: 'image', label: '图片' }] as const;
 const emit = defineEmits<{ busy: [value: boolean]; changed: [] }>();
 const size = ref<string | number>('0');
 const sizeUnit = ref<'KiB' | 'MiB'>('KiB');
@@ -25,7 +25,7 @@ const stale = ref('');
 const previewRegion = ref<HTMLElement>();
 const resultRegion = ref<HTMLElement>();
 const busy = computed(() => operation.value !== null);
-const kindNames = { text: '文本', link: '链接', code: '代码', color: '色彩' };
+const kindNames = { text: '文本', link: '链接', code: '代码', color: '色彩', image: '图片' };
 const dates = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 const sizeBytes = computed(() => Math.floor(Number(size.value) * (sizeUnit.value === 'MiB' ? 1048576 : 1024)));
 const days = computed(() => Number(age.value === 'custom' ? customDays.value : age.value));
@@ -127,11 +127,11 @@ async function execute() {
       <div class="cleanup-counts"><span>全部 <strong>{{ preview.totalCount }}</strong> 条</span><span><Icon name="shield" :size="13" />受保护 <strong>{{ preview.protectedCount }}</strong> 条</span><span>待删除 <strong>{{ preview.matchedCount }}</strong> 条</span></div>
       <p class="cleanup-small">保护数量为全库星标或永久保留记录，重复保护只计一次；默认排除的分组记录不计入这一数字。</p>
       <dl class="cleanup-metrics">
-        <div><dt>待删除文本内容</dt><dd :title="`${preview.contentBytes} 字节`">{{ bytes(preview.contentBytes) }}</dd></div>
+        <div><dt>待删除内容</dt><dd :title="`${preview.contentBytes} 字节`">{{ bytes(preview.contentBytes) }}</dd></div>
         <div><dt>当前数据库文件</dt><dd :title="`${preview.databaseBytes} 字节`">{{ bytes(preview.databaseBytes) }}</dd></div>
         <div><dt>已有可复用空间</dt><dd :title="`${preview.reusableBytes} 字节`">{{ bytes(preview.reusableBytes) }}</dd></div>
       </dl>
-      <p class="cleanup-estimate">内容大小按 UTF-8 字节统计，不是预计可释放的磁盘空间。索引和空闲页会影响数据库大小，实际缩减以执行结果为准。</p>
+      <p class="cleanup-estimate">文字与标题按 UTF-8 字节统计，图片按原图 PNG 字节加标题统计，不计缩略图。这不是预计可释放的磁盘空间；索引、缩略图和空闲页会影响数据库大小，实际缩减以执行结果为准。</p>
       <div v-if="items.length" class="cleanup-table-wrap" role="region" aria-label="待清理记录明细" tabindex="0">
         <table><thead><tr><th scope="col">片段标题</th><th scope="col">类型</th><th scope="col">内容占用</th><th scope="col">最近更新</th></tr></thead><tbody><tr v-for="item in items" :key="item.id"><td class="cleanup-title">{{ item.title || '未命名片段' }}</td><td>{{ kindNames[item.kind] }}</td><td :title="`${item.bytes} 字节`">{{ bytes(item.bytes) }}</td><td>{{ updatedAt(item.updatedAt) }}</td></tr></tbody></table>
       </div>
@@ -145,7 +145,7 @@ async function execute() {
 
     <section v-if="result" ref="resultRegion" class="cleanup-result" :class="{ 'has-warning': result.warning }" tabindex="-1" aria-label="本次整理结果">
       <h3><Icon :name="result.warning ? 'alert' : 'check'" :size="16" />本次整理结果</h3>
-      <dl class="cleanup-result-metrics"><div><dt>已删除记录</dt><dd>{{ result.deletedCount }} 条</dd></div><div><dt>删除的文本内容</dt><dd>{{ bytes(result.contentBytes) }}</dd></div><div><dt>数据库文件实际缩减</dt><dd>{{ bytes(result.releasedBytes) }}</dd></div></dl>
+      <dl class="cleanup-result-metrics"><div><dt>已删除记录</dt><dd>{{ result.deletedCount }} 条</dd></div><div><dt>删除的内容</dt><dd>{{ bytes(result.contentBytes) }}</dd></div><div><dt>数据库文件实际缩减</dt><dd>{{ bytes(result.releasedBytes) }}</dd></div></dl>
       <p class="cleanup-small">数据库文件：{{ bytes(result.databaseBytesBefore) }} → {{ bytes(result.databaseBytesAfter) }}{{ !isDesktop ? ' · 浏览器没有实际文件' : '' }}</p>
       <p v-if="result.warning" class="cleanup-warning" role="status">{{ result.warning }}<br />以上删除数量已生效。<span v-if="isDesktop">可重新预览后再决定是否整理数据库。</span></p>
       <p v-else class="cleanup-success" role="status">{{ result.deletedCount ? '选中的记录已清理，保护记录仍保留。' : '未删除任何记录。' }}</p>

@@ -9,6 +9,7 @@ test('cleanup previews exact UTF-8 candidates, protects retained records, reject
     .replace("from './snippets'", `from '${new URL('../src/snippets.ts', import.meta.url).href}'`);
   const code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
   const { api } = await import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'));
+  for (const clip of (await api.getState()).clips) if (clip.kind === 'image') await api.deleteClip(clip.id);
   const original = await api.getState();
   assert.equal(original.settings.maxHistory, 0);
   const old = Date.now() - 60 * 86400000;

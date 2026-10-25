@@ -6,7 +6,7 @@
       "commands": {
         "allow": [
           "get_state", "complete_onboarding", "add_clip", "update_clip", "save_code",
-          "delete_clip", "copy_clip", "create_group", "delete_group", "save_settings", "set_theme",
+          "delete_clip", "copy_clip", "get_clip_image", "create_group", "delete_group", "save_settings", "set_theme",
           "clear_history", "set_keep_forever", "preview_cleanup", "execute_cleanup",
           "export_backup", "import_backup", "save_backup", "save_export", "hide_window",
           "handwriting_assets", "choose_handwriting_app", "render_handwriting",

@@ -1,6 +1,8 @@
+pub mod capture;
 #[cfg(feature = "desktop")]
 mod desktop;
 pub mod handwriting;
+pub mod images;
 pub mod storage;
 pub mod store;
 #[cfg(feature = "desktop")]
