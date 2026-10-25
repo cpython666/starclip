@@ -28,8 +28,11 @@ test('demo backup import keeps all records and only explicit capture/settings ch
   const themed = await api.setTheme('forest');
   assert.deepEqual(themed, { ...imported.settings, theme: 'forest' }, 'theme save changes no other preference');
   assert.equal((await api.getState()).clips.length, imported.clips.length, 'changing theme must not run existing retention rules');
+  const white = await api.setTheme('white');
+  assert.deepEqual(white, { ...imported.settings, theme: 'white' }, 'pure white saves independently of capture, retention and other preferences');
+  assert.deepEqual((await api.getState()).clips, imported.clips, 'pure white must preserve expired records without running cleanup');
   await assert.rejects(api.setTheme('unknown-theme'));
-  assert.equal((await api.getState()).settings.theme, 'forest', 'invalid theme leaves the saved preference intact');
+  assert.equal((await api.getState()).settings.theme, 'white', 'invalid theme leaves the saved preference intact');
   await api.createGroup('通知不应清理记录', '#778899');
   assert.equal((await api.getState()).clips.length, imported.clips.length, 'unrelated change notifications must not prune');
   assert.equal((JSON.parse(await api.exportBackup())).clips.length, imported.clips.length);

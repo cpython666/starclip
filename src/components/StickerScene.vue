@@ -3,14 +3,14 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 
 const props = withDefaults(defineProps<{
   pack: 'none' | 'auto' | 'cosmos' | 'cats' | 'puppies' | 'garden'
-  theme: 'dark' | 'light' | 'forest' | 'rose' | 'system'
+  theme: 'dark' | 'light' | 'white' | 'forest' | 'rose' | 'system'
   placement?: 'sidebar' | 'header' | 'preview'
 }>(), { placement: 'sidebar' })
 
 const media = typeof window === 'undefined' ? null : window.matchMedia('(prefers-color-scheme: dark)')
 const systemDark = ref(media?.matches ?? true)
 const resolvedTheme = computed(() => props.theme === 'system' ? (systemDark.value ? 'dark' : 'light') : props.theme)
-const autoPacks = { dark: 'cosmos', light: 'puppies', forest: 'garden', rose: 'cats' } as const
+const autoPacks = { dark: 'cosmos', light: 'puppies', white: 'none', forest: 'garden', rose: 'cats' } as const
 const resolvedPack = computed(() => props.pack === 'auto' ? autoPacks[resolvedTheme.value] : props.pack)
 function updateSystemTheme(event: MediaQueryListEvent) { systemDark.value = event.matches }
 onMounted(() => media?.addEventListener('change', updateSystemTheme))
@@ -117,6 +117,7 @@ onUnmounted(() => media?.removeEventListener('change', updateSystemTheme))
 <style scoped>
 .sticker-scene{--paper:#fff9ec;--ink:#665664;--cream:#fff8e9;--butter:#f1d596;--rose:#eeb7c8;--lilac:#bcb5e3;--mint:#a9cfc2;display:block;width:180px;height:90px;max-width:100%;flex-shrink:0;overflow:visible;pointer-events:none;user-select:none}
 .sticker-scene[data-theme=light]{--paper:#fff;--ink:#6d655b;--cream:#fffaf0;--butter:#ecd39c;--rose:#e8b6aa;--lilac:#c9c4dc;--mint:#b4cdb8}
+.sticker-scene[data-theme=white]{--paper:#fff;--ink:#565656;--cream:#f5f5f5;--butter:#d5d5d5;--rose:#e3cbce;--lilac:#d4d4d4;--mint:#bfd2ca}
 .sticker-scene[data-theme=forest]{--paper:#fffef3;--ink:#526653;--cream:#f5f4d9;--butter:#e3d691;--rose:#e3b7aa;--lilac:#c4c5dd;--mint:#a9cba5}
 .sticker-scene[data-theme=rose]{--paper:#fffcf7;--ink:#825c6c;--cream:#fff4ec;--butter:#ecd4ab;--rose:#e7b3c4;--lilac:#c7b9dd;--mint:#b8cec0}
 .sticker-scene.placement-header{width:110px;height:48px}.sticker-scene.placement-preview{width:100%;height:72px;max-width:180px;margin:auto}.paper-piece{filter:drop-shadow(0 2px 1px #1e192919)}

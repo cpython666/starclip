@@ -108,7 +108,7 @@ impl Default for Settings {
 
 impl Settings {
     pub fn validate(&self) -> Result<()> {
-        if !["dark", "light", "forest", "rose", "system"].contains(&self.theme.as_str())
+        if !["dark", "light", "white", "forest", "rose", "system"].contains(&self.theme.as_str())
             || !["grid", "list", "horizontal"].contains(&self.layout.as_str())
             || (self.max_history != 0 && !(50..=10_000).contains(&self.max_history))
             || self.shortcut.trim().is_empty()
@@ -679,7 +679,7 @@ impl Store {
     }
 
     pub fn set_theme(&self, theme: &str) -> Result<Settings> {
-        if !["dark", "light", "forest", "rose", "system"].contains(&theme) {
+        if !["dark", "light", "white", "forest", "rose", "system"].contains(&theme) {
             return Err("不支持的应用主题。".into());
         }
         let tx = self.conn.unchecked_transaction().map_err(sql_error)?;
@@ -1652,16 +1652,21 @@ mod tests {
 
     #[test]
     fn immediate_theme_change_preserves_legacy_preferences_and_never_prunes() {
-        let fresh = store();
-        let initial = fresh.set_theme("light").unwrap();
+        let scratch = Scratch::new();
+        let path = scratch.0.join("theme.sqlite3");
+        let fresh = Store::open(&path).unwrap();
+        assert_eq!(fresh.settings().unwrap(), Settings::default());
+        let initial = fresh.set_theme("white").unwrap();
         assert_eq!(
             initial,
             Settings {
-                theme: "light".into(),
+                theme: "white".into(),
                 ..Settings::default()
             }
         );
         assert!(!fresh.onboarding_completed().unwrap());
+        drop(fresh);
+        assert_eq!(Store::open(&path).unwrap().settings().unwrap(), initial);
         let db = store();
         let legacy = r#"{"paused":false,"theme":"dark","layout":"horizontal","maxHistory":50,"shortcut":"CommandOrControl+Shift+V","retentionDays":1,"futurePreference":"preserve"}"#;
         db.conn
@@ -1673,7 +1678,7 @@ mod tests {
         db.conn.execute("INSERT INTO clips(content,kind,created_at,updated_at) VALUES('只换主题不能清理这条原创超期记录','text',0,0)", []).unwrap();
         db.conn.execute_batch("CREATE TRIGGER forbid_theme_prune BEFORE DELETE ON clips BEGIN SELECT RAISE(ABORT, 'theme must not prune'); END;").unwrap();
         let mut expected: serde_json::Value = serde_json::from_str(legacy).unwrap();
-        for theme in ["light", "forest", "rose", "system", "dark"] {
+        for theme in ["light", "white", "forest", "rose", "system", "dark"] {
             let settings = db.set_theme(theme).unwrap();
             assert_eq!(settings.theme, theme);
             assert!(!settings.paused);
@@ -2231,7 +2236,7 @@ mod tests {
         updated.retention_days = 7;
         updated.show_startup = false;
         updated.sticker_pack = "cats".into();
-        for theme in ["forest", "rose"] {
+        for theme in ["forest", "rose", "white"] {
             updated.theme = theme.into();
             destination.save_settings(&updated).unwrap();
             assert_eq!(destination.settings().unwrap(), updated);

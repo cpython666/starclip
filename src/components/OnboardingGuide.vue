@@ -6,7 +6,7 @@ import StickerScene from './StickerScene.vue'
 const props = withDefaults(defineProps<{
   busy?: boolean
   error?: string
-  theme: 'dark' | 'light' | 'forest' | 'rose'
+  theme: 'dark' | 'light' | 'white' | 'forest' | 'rose'
 }>(), { busy: false, error: '' })
 const emit = defineEmits<{ finish: []; dismiss: [] }>()
 const dialog = ref<HTMLDialogElement>()

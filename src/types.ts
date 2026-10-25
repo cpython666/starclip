@@ -15,7 +15,7 @@ export interface Clip {
 export interface Group { id: number; name: string; color: string }
 export interface Settings {
   paused: boolean;
-  theme: 'dark' | 'light' | 'forest' | 'rose' | 'system';
+  theme: 'dark' | 'light' | 'white' | 'forest' | 'rose' | 'system';
   showStartup: boolean;
   stickerPack: 'auto' | 'none' | 'cosmos' | 'cats' | 'puppies' | 'garden';
   layout: 'grid' | 'list' | 'horizontal';

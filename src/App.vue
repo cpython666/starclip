@@ -83,6 +83,7 @@ const shortcutLabel = computed(() => state.value.settings.shortcut.replace(/Comm
 const themeOptions = [
   { value: 'dark', name: '星夜', description: '深色 · 深邃夜空' },
   { value: 'light', name: '月白', description: '浅色 · 清透微光' },
+  { value: 'white', name: '素白', description: '纯净白色' },
   { value: 'forest', name: '青苔', description: '轻松绿意' },
   { value: 'rose', name: '暮樱', description: '柔和暖粉' },
   { value: 'system', name: '跟随系统', description: '随系统切换' },
@@ -93,7 +94,7 @@ const layoutChoices = [{ value: 'grid', label: '卡片网格' }, { value: 'list'
 const historyChoices = [0, 100, 500, 1000, 5000].map(value => ({ value, label: value ? `${value.toLocaleString('zh-CN')} 条` : '不限条数' }))
 const retentionChoices = [0, 1, 7, 30, 90, 180, 365].map(value => ({ value, label: value ? `${value} 天` : '不限天数' }))
 const stickerOptions = [
-  { value: 'auto', name: '随主题', description: '为每种底色配一份小可爱' },
+  { value: 'auto', name: '随主题', description: '随底色搭配，素白保持留白' },
   { value: 'cosmos', name: '星月漫游', description: '月亮、星星与小行星' },
   { value: 'cats', name: '奶油猫咪', description: '蝴蝶结与软乎乎的小猫' },
   { value: 'puppies', name: '云朵小狗', description: '线条小狗与小爪印' },
@@ -330,7 +331,7 @@ onUnmounted(() => { disposed = true; cancelThemeTransition(); unsubscribe?.(); c
           </nav>
           <div ref="settingsScroll" class="settings-scroll">
             <section v-show="settingsTab === 'appearance'" id="settings-panel-appearance" role="tabpanel" aria-labelledby="settings-tab-appearance" class="settings-panel">
-              <fieldset class="settings-section preferences-boundary" :disabled="busy || dataBusy" aria-label="外观"><div class="setting-row"><div><strong>主题</strong><p role="status">{{ themeSaving ? '主题已生效，正在保存…' : '选择后立即生效并保存，无需点底部保存' }}</p></div><UiSelect :model-value="themeChoice" :options="themeChoices" label="主题" :disabled="busy || dataBusy" @update:model-value="changeTheme" /></div><div class="sticker-settings"><div class="sticker-settings-heading"><strong>贴纸小伙伴</strong><span>原创小图案，陪你收好灵感</span></div><div class="sticker-options" role="group" aria-label="贴纸风格"><button v-for="option in stickerOptions" :key="option.value" type="button" :class="['sticker-option', { chosen: settingsDraft.stickerPack === option.value }]" :aria-pressed="settingsDraft.stickerPack === option.value" :aria-label="option.name" :title="option.description" @click="settingsDraft.stickerPack = option.value"><StickerScene v-if="option.value !== 'none'" :pack="option.value" :theme="settingsDraft.theme === 'system' ? resolvedTheme : settingsDraft.theme" placement="preview" /><span v-else class="sticker-none" aria-hidden="true">—</span><strong>{{ option.name }}</strong><span>{{ option.description }}</span></button></div></div></fieldset>
+              <fieldset class="settings-section preferences-boundary" :disabled="busy || dataBusy" aria-label="外观"><div class="setting-row"><div><strong>主题</strong><p role="status">{{ themeSaving ? '主题已生效，正在保存…' : '选择后立即生效并保存，无需点底部保存' }}</p></div><UiSelect :model-value="themeChoice" :options="themeChoices" label="主题" :disabled="busy || dataBusy" @update:model-value="changeTheme" /></div><div class="sticker-settings"><div class="sticker-settings-heading"><strong>贴纸小伙伴</strong><span>原创小图案，陪你收好灵感</span></div><div class="sticker-options" role="group" aria-label="贴纸风格"><button v-for="option in stickerOptions" :key="option.value" type="button" :class="['sticker-option', { chosen: settingsDraft.stickerPack === option.value }]" :aria-pressed="settingsDraft.stickerPack === option.value" :aria-label="option.name" :title="option.description" @click="settingsDraft.stickerPack = option.value"><StickerScene v-if="option.value !== 'none' && !(option.value === 'auto' && resolvedTheme === 'white')" :pack="option.value" :theme="settingsDraft.theme === 'system' ? resolvedTheme : settingsDraft.theme" placement="preview" /><span v-else class="sticker-none" aria-hidden="true">—</span><strong>{{ option.name }}</strong><span>{{ option.description }}</span></button></div></div></fieldset>
             </section>
             <section v-if="settingsTab === 'starpet'" id="settings-panel-starpet" role="tabpanel" aria-labelledby="settings-tab-starpet" class="settings-panel">
               <StarPetSettings :disabled="busy" @busy="dataBusy = $event" />
