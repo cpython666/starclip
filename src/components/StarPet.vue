@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue';
 import { getStarPetMood, starPetPalette } from '../starpet';
-import { blinkOpenness, starOutline, stepHop, stepSpring } from '../starpet-motion';
+import { blinkOpenness, starOutline, stepSpring } from '../starpet-motion';
+import { createPetBehavior } from '../starpet-behavior';
+import type { PetBehavior, PetContext } from '../starpet-behavior';
 
 const props = withDefaults(defineProps<{ mood?: string; size?: number; animated?: boolean; reaction?: number; color?: string }>(), { mood: 'idle', size: 180, animated: true, reaction: 0, color: '#FFD66E' });
 const desired = computed(() => getStarPetMood(props.mood));
@@ -31,65 +33,73 @@ const phase = [...uid].reduce((total, char) => total + char.charCodeAt(0), 0) % 
 const media = typeof window === 'undefined' ? null : window.matchMedia('(prefers-reduced-motion: reduce)');
 const reduced = ref(media?.matches ?? false), visible = ref(true), mounted = ref(false);
 const running = computed(() => mounted.value && props.animated && !reduced.value && visible.value);
-const still = () => ({ x: 0, y: 0, tilt: desired.value.tilt as number, sx: 1, sy: 1, eyeX: 0, eyeY: 0, faceX: 0, faceY: 0, blink: 1, reveal: 1, tip: 0, side: 0, hand: 0, burst: 0, burstRadius: 50 });
+const context = computed<PetContext>(() => {
+  if (desired.value.id === 'sleeping') return 'sleep';
+  if (['focused', 'reading', 'writing', 'drawing', 'searching'].includes(desired.value.id)) return 'focus';
+  if (['sleepy', 'sad', 'crying', 'angry', 'nervous', 'relieved'].includes(desired.value.id)) return 'quiet';
+  return ['bounce', 'hop', 'party'].includes(desired.value.motion) ? 'playful' : 'social';
+});
+const still = () => ({ x: 0, y: 0, tilt: desired.value.tilt as number, sx: 1, sy: 1, eyeX: 0, eyeY: 0, faceX: 0, faceY: 0, blink: 1, reveal: 1, tip: 0, side: 0, hand: 0, burst: 0, burstRadius: 50, squint: 0, widen: 0, wink: 0, smile: 0, wake: 0, behavior: 'rest' as PetBehavior });
 const frame = ref(still());
 const bodyTransform = computed(() => `translate(${frame.value.x} ${frame.value.y}) rotate(${frame.value.tilt} 120 124) translate(120 190) scale(${frame.value.sx} ${frame.value.sy}) translate(-120 -190)`);
 const faceTransform = computed(() => `translate(${frame.value.faceX} ${frame.value.faceY})`);
 const eyeOffset = computed(() => ({ x: frame.value.eyeX + (expression.value.eyes === 'side' ? -2 : 0), y: frame.value.eyeY }));
 const outline = computed(() => starOutline(frame.value.tip, frame.value.side));
-let gazeX = { value: 0, velocity: 0 }, gazeY = { value: 0, velocity: 0 }, tilt = { value: desired.value.tilt as number, velocity: 0 };
-let hop = { x: { value: 0, velocity: 0 }, y: { value: 0, velocity: 0 }, sx: { value: 1, velocity: 0 }, sy: { value: 1, velocity: 0 } };
+const spring = (value = 0) => ({ value, velocity: 0 });
+let gazeX = spring(), gazeY = spring(), faceX = spring(), faceY = spring(), tilt = spring(desired.value.tilt);
+let body = { x: spring(), y: spring(), sx: spring(1), sy: spring(1) };
+let feeling = { squint: spring(), widen: spring(), wink: spring(), smile: spring(), wake: spring() };
+let director = createPetBehavior();
 let pointer = { x: 0, y: 0, inside: false };
-let raf = 0, lastStamp = 0, elapsed = 0, hopEpoch = 0, reactionAge = Infinity, transitionAge = Infinity;
+let raf = 0, lastStamp = 0, elapsed = 0, transitionAge = Infinity;
+const touchMessage = ref('');
+let touchTimer: ReturnType<typeof setTimeout> | undefined;
 
 function animate(stamp: number) {
   raf = 0;
   if (!running.value) return;
   const dt = lastStamp ? Math.min(.1, (stamp - lastStamp) / 1000) : 0;
-  lastStamp = stamp; elapsed += dt; reactionAge += dt; transitionAge += dt;
+  lastStamp = stamp; elapsed += dt; transitionAge += dt;
   if (transitionAge >= .1) shownMood.value = desired.value.id;
-  const mode = desired.value.motion, t = elapsed + phase;
-  const quiet = mode === 'still' || expression.value.eyes === 'sleep';
-  const glancePhase = t % 11;
-  const glance = !quiet && glancePhase > 5.2 && glancePhase < 6.7 ? 3.8 : 0;
-  gazeX = stepSpring(gazeX, pointer.inside ? pointer.x : glance, dt, 23, .8);
-  gazeY = stepSpring(gazeY, pointer.inside ? pointer.y : 0, dt, 21, .8);
-  tilt = stepSpring(tilt, desired.value.tilt + gazeX.value * .7, dt, 10, .66);
-  let sway = quiet ? .35 * Math.sin(t * .9) : 2.4 * Math.sin(t * 1.15) + .8 * Math.sin(t * 2.13);
-  let y = quiet ? .5 * Math.sin(t * 1.7) : -2 - 2.1 * Math.sin(t * 1.7);
-  let sx = 1 + .012 * Math.sin(t * 2.1), sy = 1 - .016 * Math.sin(t * 2.1);
-  if (mode === 'wave') sway += 3.7 * Math.sin(t * 3.6);
-  if (mode === 'tilt') sway += 3 * Math.sin(t * .7);
-  if (mode === 'scan') sway += 3.5 * Math.sin(t * 1.8);
-  if (mode === 'nod' || mode === 'work') y += 1.7 * Math.sin(t * 3.1);
-  if (mode === 'shiver') sway += Math.sin(t * 25) * (t % 3.7 < .75 ? 2.4 : .15);
-  if (mode === 'stretch') { const reach = Math.max(0, Math.sin(t * 1.3)); sx -= reach * .06; sy += reach * .1; y -= reach * 3; }
-  const hopping = ['bounce', 'hop', 'party'].includes(mode);
-  const hopAge = reactionAge < 1.08 ? reactionAge : hopping ? (elapsed - hopEpoch) % (mode === 'party' ? 2.7 : 3.7) - .45 : -1;
-  hop = stepHop(hop, hopAge, dt);
-  const reveal = transitionAge < .24 ? 1 - .96 * Math.sin(Math.PI * transitionAge / .24) : 1;
-  const blink = Math.min(blinkOpenness(elapsed + phase + 1), reactionAge < .3 ? blinkOpenness(Math.max(0, reactionAge - .06)) : 1);
-  const burstProgress = (reactionAge - .14) / .81;
+  const pose = director.step(dt, context.value, pointer), t = elapsed + phase;
+  const quiet = context.value === 'sleep' || context.value === 'focus';
+  const breath = Math.sin(t * (context.value === 'sleep' ? 1.25 : 1.7));
+  // Attention leads: quick eyes, a softer face, then the slower weight of the body.
+  gazeX = stepSpring(gazeX, pose.gazeX, dt, 28, .86);
+  gazeY = stepSpring(gazeY, pose.gazeY, dt, 26, .86);
+  tilt = stepSpring(tilt, desired.value.tilt + pose.tilt + gazeX.value * .55, dt, 9, .76);
+  const bodySpeed = pose.behavior === 'hop' ? 36 : pose.behavior === 'tickle' ? 24 : 12;
+  body = {
+    x: stepSpring(body.x, pose.x + gazeX.value * .24, dt, bodySpeed, .74),
+    y: stepSpring(body.y, pose.y - (quiet ? .45 : 1) * breath, dt, bodySpeed, .74),
+    sx: stepSpring(body.sx, pose.sx + .008 * breath, dt, bodySpeed, .74),
+    sy: stepSpring(body.sy, pose.sy - .01 * breath, dt, bodySpeed, .74),
+  };
+  faceX = stepSpring(faceX, gazeX.value * .45 - tilt.velocity * .016, dt, 15, .8);
+  faceY = stepSpring(faceY, gazeY.value * .4 - body.y.velocity * .025, dt, 14, .8);
+  for (const key of ['squint', 'widen', 'wink', 'smile', 'wake'] as const) feeling[key] = stepSpring(feeling[key], pose[key], dt, key === 'wink' ? 24 : 17, .9);
   frame.value = {
-    x: (quiet ? 0 : Math.sin(t * .83) * 1.6) + hop.x.value, y: y + hop.y.value, tilt: tilt.value + sway,
-    sx: sx * hop.sx.value, sy: sy * hop.sy.value,
-    eyeX: gazeX.value, eyeY: gazeY.value,
-    faceX: gazeX.value * .46 - sway * .16,
-    faceY: gazeY.value * .4 + Math.sin(t * 2.1 - .65) * .9 - hop.y.velocity * .014,
-    blink, reveal,
-    tip: -hop.sy.velocity * 1.7 + Math.sin(t * 2.1 - .6) * 1.5,
-    side: -hop.y.velocity * .015 + Math.sin(t * 2.1 - .85) * 1.7,
-    hand: -hop.sy.velocity * 5.4 + Math.sin(t * 2.2 - .8) * (mode === 'wave' ? 8 : 4),
-    burst: burstProgress > 0 && burstProgress < 1 ? Math.sin(Math.PI * burstProgress) * .9 : 0,
-    burstRadius: 50 + Math.max(0, Math.min(1, burstProgress)) * 50,
+    x: body.x.value, y: body.y.value, tilt: tilt.value,
+    sx: body.sx.value, sy: body.sy.value,
+    eyeX: gazeX.value, eyeY: gazeY.value, faceX: faceX.value, faceY: faceY.value,
+    blink: context.value === 'sleep' ? 1 : blinkOpenness(elapsed + phase + 1),
+    reveal: transitionAge < .24 ? 1 - .96 * Math.sin(Math.PI * transitionAge / .24) : 1,
+    tip: -body.sy.velocity * 5 + Math.sin(t * 1.7 - .6) * .6,
+    side: -body.y.velocity * .04 + tilt.velocity * .12,
+    hand: -body.sy.velocity * 8 - tilt.velocity * .08,
+    burst: pose.energy * .8, burstRadius: 62 + pose.energy * 25,
+    squint: feeling.squint.value, widen: feeling.widen.value, wink: feeling.wink.value,
+    smile: feeling.smile.value, wake: feeling.wake.value, behavior: pose.behavior,
   };
   raf = requestAnimationFrame(animate);
 }
 function stop() {
-  cancelAnimationFrame(raf); raf = 0; lastStamp = 0; elapsed = hopEpoch = 0; reactionAge = transitionAge = Infinity;
-  pointer = { x: 0, y: 0, inside: false };
-  gazeX = { value: 0, velocity: 0 }; gazeY = { value: 0, velocity: 0 }; tilt = { value: desired.value.tilt, velocity: 0 };
-  hop = { x: { value: 0, velocity: 0 }, y: { value: 0, velocity: 0 }, sx: { value: 1, velocity: 0 }, sy: { value: 1, velocity: 0 } };
+  cancelAnimationFrame(raf); raf = 0; lastStamp = 0; elapsed = 0; transitionAge = Infinity;
+  clearTimeout(touchTimer); touchMessage.value = '';
+  pointer = { x: 0, y: 0, inside: false }; director = createPetBehavior();
+  gazeX = spring(); gazeY = spring(); faceX = spring(); faceY = spring(); tilt = spring(desired.value.tilt);
+  body = { x: spring(), y: spring(), sx: spring(1), sy: spring(1) };
+  feeling = { squint: spring(), widen: spring(), wink: spring(), smile: spring(), wake: spring() };
   shownMood.value = desired.value.id; frame.value = still();
 }
 watch(running, active => { stop(); if (active) raf = requestAnimationFrame(animate); }, { flush: 'sync' });
@@ -97,7 +107,14 @@ watch(() => desired.value.id, () => {
   if (running.value) transitionAge = 0;
   else { shownMood.value = desired.value.id; frame.value = still(); }
 });
-watch(() => props.reaction, () => { if (running.value) { reactionAge = 0; hopEpoch = elapsed + 1.08; } });
+watch(() => props.reaction, () => {
+  if (!mounted.value || !props.animated || !visible.value) return;
+  clearTimeout(touchTimer);
+  touchMessage.value = context.value === 'sleep' ? '星芽迷迷糊糊地回应了你' : context.value === 'focus' ? '星芽轻轻点头，收到你的摸摸' : '星芽眯着眼睛，收到你的摸摸';
+  if (running.value) director.touch(context.value, pointer);
+  else if (reduced.value) frame.value = { ...still(), smile: .8, squint: .8, wake: context.value === 'sleep' ? .5 : 0 };
+  touchTimer = setTimeout(() => { touchMessage.value = ''; if (!running.value) frame.value = still(); }, 1800);
+});
 function visibility() { visible.value = !document.hidden; }
 function motionPreference() { reduced.value = media?.matches ?? false; }
 onMounted(() => { visibility(); document.addEventListener('visibilitychange', visibility); media?.addEventListener('change', motionPreference); mounted.value = true; });
@@ -111,7 +128,7 @@ function look(event: PointerEvent) {
 </script>
 
 <template>
-  <div class="starpet" :class="{ 'starpet-animated': running }" :data-mood="expression.id" :data-motion="running ? 'active' : 'still'" :style="{ width: `${pixels}px`, '--starpet-accent': expression.accent }" role="img" :aria-label="`星芽，${expression.name}`" @pointermove="look" @pointerleave="pointer.inside = false">
+  <div class="starpet" :class="{ 'starpet-animated': running }" :data-mood="expression.id" :data-motion="running ? 'active' : 'still'" :data-behavior="frame.behavior" :style="{ width: `${pixels}px`, '--starpet-accent': expression.accent }" role="img" :aria-label="`星芽，${expression.name}`" @pointerenter="look" @pointermove="look" @pointerleave="pointer.inside = false">
     <svg class="starpet-canvas" viewBox="0 0 240 240" fill="none" aria-hidden="true" focusable="false">
       <defs>
         <radialGradient :id="gradientId" cx=".35" cy=".27" r=".8"><stop :stop-color="palette.light" /><stop offset=".52" :stop-color="palette.middle" /><stop offset=".83" :stop-color="palette.base" /><stop offset="1" :stop-color="palette.shade" /></radialGradient>
@@ -137,33 +154,36 @@ function look(event: PointerEvent) {
           </g>
           <g class="starpet-face" :transform="faceTransform">
 
-          <g :opacity="expression.blush" fill="#ed9f8f"><ellipse cx="82" cy="132" rx="12" ry="8" transform="rotate(-10 82 132)" /><ellipse cx="158" cy="132" rx="12" ry="8" transform="rotate(10 158 132)" /></g>
+          <g :opacity="Math.min(1, expression.blush + frame.smile * .25)" fill="#ed9f8f"><ellipse cx="82" cy="132" rx="12" ry="8" transform="rotate(-10 82 132)" /><ellipse cx="158" cy="132" rx="12" ry="8" transform="rotate(10 158 132)" /></g>
 
           <g v-if="expression.eyes === 'droop'" stroke="#7a6967" stroke-width="2.2" stroke-linecap="round"><path d="M87 103q8 0 17-7m32 0q9 7 17 7" /></g>
           <g v-if="expression.id === 'angry'" stroke="#6d5356" stroke-width="2.5" stroke-linecap="round"><path d="m88 101 17 5m30 0 17-5" /></g>
-          <g v-for="(x, side) in [98, 142]" :key="x" :transform="`translate(${x} 122) scale(1 ${frame.reveal})`">
+          <g v-for="(x, side) in [98, 142]" :key="x" :transform="`translate(${x} ${122 + (side ? 1 : -1) * frame.widen * 2}) scale(1 ${frame.reveal * frame.blink})`">
             <path v-if="expression.eyes === 'hearts'" d="M0 7C-20-4-5-16 0-7 5-16 20-4 0 7Z" fill="#bd7586" stroke="#9c6473" stroke-width="1" />
             <path v-else-if="expression.eyes === 'stars'" d="m0-12 3.5 7 7.5 1-5.5 5.5 1.3 7.5L0 5.5-6.8 9l1.3-7.5L-11-4l7.5-1Z" fill="#71658d" />
             <path v-else-if="expression.eyes === 'closed'" d="M-8 3Q0-7 8 3" stroke="#57322c" stroke-width="3.4" stroke-linecap="round" />
-            <path v-else-if="expression.eyes === 'sleep' || expression.eyes === 'wink' && side === 1" d="M-8-1Q0 7 8-1" stroke="#57322c" stroke-width="3.1" stroke-linecap="round" />
+            <path v-else-if="expression.eyes === 'sleep' && frame.wake < .02 || expression.eyes === 'wink' && side === 1" d="M-8-1Q0 7 8-1" stroke="#57322c" stroke-width="3.1" stroke-linecap="round" />
             <path v-else-if="expression.eyes === 'squeezed'" :d="side === 0 ? 'm-7-6 9 6-9 6' : 'm7-6-9 6 9 6'" stroke="#57322c" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
-            <g v-else class="starpet-blink" :transform="`scale(1 ${frame.blink})`">
+            <g v-else class="starpet-blink">
+              <g :opacity="1 - frame.squint * frame.smile" :transform="`scale(${1 + frame.widen * .25} ${Math.max(.08, (1 + frame.widen - frame.squint * .75 - (side ? frame.wink : 0)) * (expression.eyes === 'sleep' ? frame.wake * .7 : 1))})`">
               <ellipse v-if="expression.eyes === 'wide'" cy="1" rx="14.5" ry="16" fill="#fff9e9" />
               <g :transform="`translate(${eyeOffset.x} ${eyeOffset.y})`">
                 <path v-if="expression.eyes === 'focused'" d="M-7 1h14" stroke="#57322c" stroke-width="4.5" stroke-linecap="round" />
                 <g v-else><ellipse :cy="expression.eyes === 'half' || expression.eyes === 'droop' ? 3 : 0" :rx="expression.eyes === 'uneven' && side === 0 ? 5.5 : expression.eyes === 'soft' ? 6.5 : 7.5" :ry="expression.eyes === 'half' ? 5 : expression.eyes === 'soft' ? 9 : expression.eyes === 'droop' || expression.eyes === 'uneven' && side === 0 ? 8 : 12" :fill="`url(#${eyeId})`" /><ellipse v-if="expression.eyes !== 'half'" cx="-2" :cy="expression.eyes === 'droop' ? 1 : -3" rx="2.4" ry="2.9" fill="#fffcef" opacity=".92" /><circle v-if="expression.eyes === 'wide'" cx="2" cy="4" r="1.1" fill="#c5d0dd" /></g>
               </g>
               <path v-if="expression.eyes === 'half'" d="M-8 0h16" stroke="#5a5b69" stroke-width="2.2" stroke-linecap="round" />
+              </g>
+              <path :opacity="frame.squint * frame.smile" :d="`M-8 2Q0 ${-4 - frame.smile * 2} 8 2`" stroke="#57322c" stroke-width="3.2" stroke-linecap="round" />
             </g>
           </g>
 
-          <g :opacity=".2 + frame.reveal * .8" :transform="`translate(120 141) scale(1.1 ${.82 + frame.reveal * .28}) translate(-120 -141)`" stroke="#63372d" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
-            <path v-if="expression.mouth === 'smile'" d="M111 139q9 10 18 0" />
+          <g :opacity=".2 + frame.reveal * .8" :transform="`translate(120 141) scale(1.1 ${.82 + frame.reveal * .28 + frame.smile * .14}) translate(-120 -141)`" stroke="#63372d" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+            <path v-if="expression.mouth === 'smile'" :d="`M${111 - frame.smile} 139q${9 + frame.smile} ${10 + frame.smile * 5} ${18 + frame.smile * 2} 0`" />
             <g v-else-if="expression.mouth === 'grin'"><path d="M108 137q12 5 24 0c0 19-24 19-24 0Z" fill="#6d5662" /><path d="M113 146q7-4 14 0-7 7-14 0Z" fill="#e4a19d" stroke="none" /></g>
-            <path v-else-if="expression.mouth === 'tiny'" d="M116 141q4 4 8 0" />
+            <path v-else-if="expression.mouth === 'tiny'" :d="`M${116 - frame.smile * 4} 141q${4 + frame.smile * 4} ${4 + frame.smile * 6} ${8 + frame.smile * 8} 0`" />
             <ellipse v-else-if="expression.mouth === 'o'" cx="120" cy="141" rx="5" ry="7" fill="#74616b" stroke="none" />
             <g v-else-if="expression.mouth === 'yawn'"><ellipse cx="120" cy="143" rx="7" ry="10" fill="#75616b" stroke="none" /><ellipse cx="120" cy="148" rx="4" ry="2.4" fill="#dda5a1" stroke="none" /></g>
-            <path v-else-if="expression.mouth === 'flat'" d="M115 142h10" />
+            <path v-else-if="expression.mouth === 'flat'" :d="`M115 142q5 ${frame.smile * 7} 10 0`" />
             <path v-else-if="expression.mouth === 'wave'" d="M110 143q3-6 7 0t7 0 7 0" />
             <path v-else-if="expression.mouth === 'frown'" d="M111 145q9-10 18 0" />
             <path v-else-if="expression.mouth === 'wail'" d="M109 145q11-18 22 0c3 8-25 8-22 0Z" fill="#7f646c" />
@@ -214,10 +234,11 @@ function look(event: PointerEvent) {
       </g>
     </svg>
   </div>
+  <span v-if="animated" class="starpet-response" role="status">{{ touchMessage }}</span>
 </template>
 
 <style scoped>
-.starpet{display:inline-block;max-width:100%;aspect-ratio:1;vertical-align:middle;user-select:none;line-height:0;isolation:isolate}.starpet-canvas{display:block;width:100%;height:auto;overflow:visible}.starpet-body{filter:drop-shadow(0 3px 2px #443b4815)}.starpet-wave-hand{transform-origin:167px 137px}.starpet-orbiter{transform-origin:120px 122px}.starpet-writing-pencil{transform-origin:140px 167px}.starpet-confetti,.starpet-sparkles,.starpet-hearts,.starpet-floating-prop,.starpet-sleep-marks{transform-origin:120px 120px}.starpet-touch-burst{pointer-events:none}
+.starpet{display:inline-block;max-width:100%;aspect-ratio:1;vertical-align:middle;user-select:none;line-height:0;isolation:isolate}.starpet-response{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}.starpet-canvas{display:block;width:100%;height:auto;overflow:visible}.starpet-body{filter:drop-shadow(0 3px 2px #443b4815)}.starpet-wave-hand{transform-origin:167px 137px}.starpet-orbiter{transform-origin:120px 122px}.starpet-writing-pencil{transform-origin:140px 167px}.starpet-confetti,.starpet-sparkles,.starpet-hearts,.starpet-floating-prop,.starpet-sleep-marks{transform-origin:120px 120px}.starpet-touch-burst{pointer-events:none}
 .starpet-animated .starpet-wave-hand{animation:starpet-wave 1.9s cubic-bezier(.45,0,.2,1) infinite}.starpet-animated .starpet-orbiter{animation:starpet-orbit 3.9s linear infinite}.starpet-animated .starpet-writing-pencil{animation:starpet-pencil 1.6s cubic-bezier(.45,0,.2,1) infinite}.starpet-animated .starpet-floating-prop,.starpet-animated .starpet-sparkles,.starpet-animated .starpet-hearts{animation:starpet-float 3.2s cubic-bezier(.45,0,.2,1) infinite}.starpet-animated .starpet-sleep-marks{animation:starpet-dream 4s cubic-bezier(.45,0,.2,1) infinite}.starpet-animated .starpet-confetti{animation:starpet-confetti 2.8s cubic-bezier(.45,0,.2,1) infinite}.starpet-animated .starpet-steam,.starpet-animated .starpet-sigh{animation:starpet-dream 3.6s cubic-bezier(.45,0,.2,1) infinite}.starpet-animated .starpet-listen-lines{animation:starpet-listen 2.6s cubic-bezier(.45,0,.2,1) infinite}.starpet-animated .starpet-surprise-lines{animation:starpet-listen 3.3s cubic-bezier(.45,0,.2,1) infinite}.starpet-animated .starpet-tears{animation:starpet-tears 2.2s cubic-bezier(.45,0,.2,1) infinite}
 @keyframes starpet-float{0%,100%{transform:translateY(0) rotate(-2deg)}50%{transform:translateY(-5px) rotate(3deg)}}@keyframes starpet-wave{0%,100%{transform:rotate(-8deg)}20%,55%{transform:rotate(23deg)}37%,72%{transform:rotate(-12deg)}}@keyframes starpet-orbit{to{transform:rotate(360deg)}}@keyframes starpet-pencil{0%,100%{transform:rotate(-5deg)}25%,70%{transform:rotate(7deg)}}@keyframes starpet-dream{0%,100%{transform:translateY(1px);opacity:.6}50%{transform:translateY(-5px);opacity:1}}@keyframes starpet-confetti{0%,100%{transform:translateY(-3px) rotate(-2deg);opacity:.65}50%{transform:translateY(5px) rotate(3deg);opacity:1}}@keyframes starpet-listen{0%,100%{opacity:.35}40%,65%{opacity:1}}@keyframes starpet-tears{0%,100%{transform:translateY(0);opacity:.75}55%{transform:translateY(4px);opacity:1}}
 @media(prefers-reduced-motion:reduce){.starpet *{animation:none!important;transition:none!important}}

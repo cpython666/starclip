@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { blinkOpenness, cubicBezierEase, sampleHop, starOutline, stepHop, stepSpring } from '../src/starpet-motion.ts';
+import { blinkOpenness, cubicBezierEase, sampleHop, starOutline, stepSpring } from '../src/starpet-motion.ts';
 
 test('星芽视线弹簧与帧率无关，回中稳定，异常时间不传播到 SVG', () => {
   const simulate = (fps: number) => {
@@ -71,36 +71,4 @@ test('星芽动作具有蓄力、起跳、落地和回弹，眨眼节奏变化�
   }
   assert.equal(starOutline(100, -100), starOutline(6, -5));
   assert.equal(starOutline(NaN, Infinity), starOutline(0, 0));
-});
-
-test('连点重播与接回日常跳跃保留当前姿态和速度，快速衔接仍保留清楚的起落', () => {
-  const resting = { x: { value: 0, velocity: 0 }, y: { value: 0, velocity: 0 }, sx: { value: 1, velocity: 0 }, sy: { value: 1, velocity: 0 } };
-  let state = resting, highest = 0, widest = 1, lowestScale = 1, farthest = 0;
-  for (let i = 0; i < 78; i++) {
-    state = stepHop(state, i / 60, 1 / 60);
-    highest = Math.min(highest, state.y.value);
-    widest = Math.max(widest, state.sx.value);
-    lowestScale = Math.min(lowestScale, state.sy.value);
-    farthest = Math.max(farthest, Math.abs(state.x.value));
-  }
-  assert.ok(highest < -26 && highest > -32 && widest > 1.1 && lowestScale < .88);
-  assert.ok(farthest > 5 && farthest < 8);
-  for (const nextAge of [.42, 0, .42, 0, .42]) {
-    const before = state;
-    assert.deepEqual(stepHop(before, nextAge, 0), before);
-    const immediate = stepHop(before, nextAge, 1e-6);
-    for (const axis of ['x', 'y', 'sx', 'sy'] as const) {
-      assert.ok(Math.abs(immediate[axis].value - before[axis].value) < .001);
-      assert.ok(Number.isFinite(immediate[axis].velocity));
-    }
-    state = stepHop(before, nextAge, 1 / 60);
-    assert.ok(Math.abs(state.y.value - before.y.value) < 6);
-    assert.notEqual(state.y.value, sampleHop(nextAge).y);
-    for (let i = 1; i < 12; i++) state = stepHop(state, nextAge + i / 60, 1 / 60);
-  }
-  state = stepHop(state, 2, 3);
-  for (const axis of ['x', 'y', 'sx', 'sy'] as const) {
-    assert.ok(Math.abs(state[axis].value - resting[axis].value) < 1e-10);
-    assert.ok(Math.abs(state[axis].velocity) < 1e-10);
-  }
 });

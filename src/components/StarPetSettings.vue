@@ -115,8 +115,8 @@ function sizeInput(event: Event) { void changeSize(Number((event.target as HTMLI
 <template>
   <div class="starpet-settings">
     <div class="starpet-intro">
-      <div class="starpet-stage"><span class="starpet-orbit" aria-hidden="true" /><button type="button" class="starpet-touch" :disabled="blocked" aria-label="摸摸预览里的星芽" @click="reaction++"><StarPet :mood="selected" :color="preferences.color" :size="Math.round(144 * sizeDraft / 100)" :reaction="reaction" /></button><span class="starpet-stage-caption">靠近看看，再轻轻点一下</span></div>
-      <div class="starpet-intro-copy"><span class="starpet-eyebrow">MEET YOUR LITTLE STAR</span><h3>星伴 <span>· 星芽</span></h3><p>住在桌面的一角，眨眨眼，陪你慢慢收集灵感。</p><strong>{{ mood.name }}</strong><p class="starpet-description">{{ mood.description }}</p>
+      <div class="starpet-stage"><span class="starpet-orbit" aria-hidden="true" /><button type="button" class="starpet-touch" :disabled="blocked" aria-label="摸摸预览里的星芽" @click="reaction++"><StarPet :mood="selected" :color="preferences.color" :size="Math.round(144 * sizeDraft / 100)" :reaction="reaction" /></button><span class="starpet-stage-caption">轻轻摸一下，或连摸逗逗它</span></div>
+      <div class="starpet-intro-copy"><span class="starpet-eyebrow">MEET YOUR LITTLE STAR</span><h3>星伴 <span>· 星芽</span></h3><p>会张望、伸懒腰，也会回应你的摸摸。</p><strong>{{ mood.name }}</strong><p class="starpet-description">{{ mood.description }}</p>
         <button type="button" class="button primary" :disabled="blocked || !starPetDesktopAvailable" @click="save(!preferences.enabled)"><Icon :name="preferences.enabled ? 'moon' : 'star'" :size="15" />{{ busy ? '正在设置…' : preferences.enabled ? '收起桌面星伴' : '让星芽住在桌面' }}</button>
         <button v-if="preferences.enabled && selected !== preferences.mood" type="button" class="starpet-apply" :disabled="blocked" @click="save(true)">用这个表情陪我 <span aria-hidden="true">↗</span></button>
       </div>

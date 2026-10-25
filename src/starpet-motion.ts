@@ -49,17 +49,6 @@ export function sampleHop(seconds: number) {
   };
 }
 
-export interface HopState { x: Spring; y: Spring; sx: Spring; sy: Spring }
-export function stepHop(state: HopState, age: number, seconds: number): HopState {
-  const target = sampleHop(age);
-  return {
-    x: stepSpring(state.x, target.x, seconds, 42, .72),
-    y: stepSpring(state.y, target.y, seconds, 42, .72),
-    sx: stepSpring(state.sx, target.sx, seconds, 42, .72),
-    sy: stepSpring(state.sy, target.sy, seconds, 42, .72),
-  };
-}
-
 // Unequal intervals and an occasional double blink avoid a metronomic loop.
 const blinkIntervals = [2.7, 4.6, 3.2, 5.5, 3.8, 6.1];
 const blinkPeriod = blinkIntervals.reduce((sum, interval) => sum + interval, 0);

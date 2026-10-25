@@ -3,28 +3,24 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import StarPet from './StarPet.vue';
 import Icon from './Icon.vue';
 import { getStarPetMood, starPetMoods } from '../starpet';
-import type { StarPetMoodId } from '../starpet';
 import { dragStarPet, getStarPetPreferences, onStarPetChanged, setStarPetPreferences, showStarPetMainWindow } from '../starpet-api';
 import type { StarPetPreferencePatch, StarPetPreferences } from '../starpet-api';
 
 const preferences = ref<StarPetPreferences>({ enabled: false, mood: 'idle', color: '#FFD66E', size: 100 });
-const reaction = ref<StarPetMoodId | null>(null);
 const touchCount = ref(0);
 const visible = ref(!document.hidden);
 const busy = ref(false);
 const loading = ref(true);
 const error = ref('');
 const petSize = computed(() => 180 * preferences.value.size / 100);
-const mood = computed(() => getStarPetMood(reaction.value || preferences.value.mood));
-let timer: ReturnType<typeof setTimeout> | undefined;
+const mood = computed(() => getStarPetMood(preferences.value.mood));
 let unsubscribe: (() => void) | undefined;
 let disposed = false, preferenceRevision = 0;
-const reactions: StarPetMoodId[] = ['greet', 'happy', 'shy', 'delighted', 'love'];
 function visibility() { visible.value = !document.hidden; }
 onMounted(async () => {
   document.addEventListener('visibilitychange', visibility);
   try {
-    unsubscribe = await onStarPetChanged(value => { preferenceRevision++; preferences.value = value; reaction.value = null; clearTimeout(timer); });
+    unsubscribe = await onStarPetChanged(value => { preferenceRevision++; preferences.value = value; });
     if (disposed) { unsubscribe(); return; }
     const revision = preferenceRevision;
     const value = await getStarPetPreferences();
@@ -32,13 +28,10 @@ onMounted(async () => {
   } catch (reason) { if (!disposed) error.value = String(reason); }
   finally { if (!disposed) loading.value = false; }
 });
-onBeforeUnmount(() => { disposed = true; clearTimeout(timer); unsubscribe?.(); document.removeEventListener('visibilitychange', visibility); });
+onBeforeUnmount(() => { disposed = true; unsubscribe?.(); document.removeEventListener('visibilitychange', visibility); });
 function touch() {
   if (loading.value) return;
-  reaction.value = reactions[touchCount.value % reactions.length]!;
   touchCount.value++;
-  clearTimeout(timer);
-  timer = setTimeout(() => { reaction.value = null; }, 2800);
 }
 async function action(work: () => Promise<unknown>) {
   if (busy.value || loading.value) return;
