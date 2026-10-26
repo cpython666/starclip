@@ -1,0 +1,44 @@
+# 发布后自动更新 Homebrew
+
+`.github/workflows/homebrew.yml` 监听 GitHub Release 的 `published` 事件。维护者发布正式版本并设为 latest 后，工作流验证公开的 macOS 包，再自动提交 `cpython666/homebrew-tap` 中的 `Casks/starclip.rb`。它不创建 Release、不移动 tag、不公开草稿，也不重新构建或启动下载的应用。
+
+## 发布约定
+
+1. 完成对应版本的测试、构建和安装 / 升级验收，再发布稳定 tag `vX.Y.Z`。tag 必须包含这份工作流；旧 tag 可用下面的手动运行入口。
+2. Release 必须公开、不是 prerelease，且是 GitHub API 返回的最新稳定版本。alpha / beta 预览或较旧版本不会改动 Tap。
+3. 上传 `Starclip_X.Y.Z_aarch64.dmg` 和 `SHA256SUMS`。校验文件使用标准格式：每行 64 位小写 SHA-256、两个空格、文件名；同一 DMG 只能有一个条目。Release 中的对应附件也必须唯一、非空且上传完成。
+4. 再发布 Release。若发布时附件尚未齐全，工作流失败并保留原 Cask，补齐后手动重跑；不要让用户看到仍在上传的正式版本。
+
+目前自动同步只支持 Apple Silicon macOS、固定应用 `Starclip.app` / `com.starclip.desktop`。发布版应用内部版本必须与 tag 一致，不能把内部版本仍为 `0.1.0` 的旧包改名成 `0.2.0`。
+
+## 自动检查与写入边界
+
+只读验证 job 从公开 Release 下载文件，重新计算 DMG 的 SHA-256，核对 `SHA256SUMS`、附件大小和可用时的 GitHub digest；随后 `hdiutil verify`、只读挂载、`codesign --verify --deep --strict`、核对应用版本 / 标识 / arm64。应用不会被启动。ad-hoc 签名通过不等于 Apple Developer 公证或 Gatekeeper 首启验收。
+
+生成的 Cask 使用固定仓库和带版本的 URL，写入实际下载字节的 SHA-256；运行 `brew style --cask`、`brew audit --cask --strict --online` 和 `brew fetch --cask`。没有 `zap`、删除用户数据脚本或绕过系统隔离的步骤；不设置 `auto_updates`，保留普通 `brew upgrade --cask cpython666/tap/starclip` 的升级入口。
+
+全部检查通过后，独立写入 job 才取得 Tap 凭据，重新查询 Release 是否仍公开、仍为 latest、附件身份是否未改变，再生成 Cask 并提交。所有版本共用串行队列，同时按数字版本检查，避免旧任务覆盖新版本。同版本同摘要无操作，同版本换摘要拒绝；Git push 不使用 force，Tap 同时被别人修改时宁可失败重跑。
+
+这套同步检查证明下载文件与 Cask 一致，不能代替源代码测试、双平台发布构建成功、Windows / macOS 的安装和升级验收。维护者仍应完成发布前验收。
+
+## 一次性凭据
+
+仓库自己的 `GITHUB_TOKEN` 只负责读取 Release，不能直接写另一个仓库。使用专用 Ed25519 deploy key：
+
+- 公钥放在 `cpython666/homebrew-tap` → Settings → Deploy keys，允许写入。
+- 私钥放在 `cpython666/starclip` → Actions repository secret，名称为 `HOMEBREW_TAP_DEPLOY_KEY`。
+- 此密钥仅用于这个 Tap，不使用本机 GitHub 登录令牌，也不复用应用更新签名私钥；私钥不得提交到 Git、写进日志或 Release。
+- 停用或轮换时同时处理 Tap deploy key 与 Actions secret。默认 PR 验证不会执行写入 job。
+
+`actions/checkout` 使用严格 SSH 主机校验并在 job 结束时清理凭据。其他工作流若拿到同一 secret，也拥有该 Tap 的写权限，因此仍应保护主仓库的工作流修改权限。
+
+## 重试与预演
+
+Actions → **Update Homebrew after release** → **Run workflow**：选择 `main`，输入已经公开的 tag。
+
+- `dry_run = true`（默认）：执行完整验证并保留 `verified-homebrew-cask` artifact，不推送 Tap。
+- `dry_run = false`：验证通过后实际更新 Tap。缺少 secret、校验失败、网络失败或推送冲突会报错，保留原 Cask；修复后重跑相同 tag 即可。
+
+如果未来使用 `GITHUB_TOKEN` 在另一个 workflow 内自动发布 Release，GitHub 不会因此触发后续 `release` workflow；必须显式使用 `workflow_dispatch` 调用本工作流，传入同一 tag 和 `dry_run=false`。人工发布 Release 可直接触发，不需要这一步。
+
+参考：[GitHub Release 事件](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#release)、[GITHUB_TOKEN 的范围与事件限制](https://docs.github.com/en/actions/concepts/security/github_token)、[单仓库 deploy key](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys)、[Homebrew Cask Cookbook](https://docs.brew.sh/Cask-Cookbook)。
