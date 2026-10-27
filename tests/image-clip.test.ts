@@ -6,6 +6,7 @@ import ts from 'typescript';
 test('image demo keeps payload out of state, copies PNG, counts binary bytes and rejects lossy backups atomically', async () => {
   Object.assign(globalThis, { window: {} });
   const source = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8')
+    .replace("from './privacy'", `from '${new URL('../src/privacy.ts', import.meta.url).href}'`)
     .replace("from './snippets'", `from '${new URL('../src/snippets.ts', import.meta.url).href}'`);
   const code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
   const { api } = await import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'));
@@ -75,5 +76,5 @@ test('image demo keeps payload out of state, copies PNG, counts binary bytes and
   assert.equal(result.deletedCount, 1);
   assert.equal(result.contentBytes, expectedBytes);
   await assert.rejects(api.imageData(image.id, false), /不存在/);
-  assert.equal(JSON.parse(await api.exportBackup()).version, 1, 'text-only demo backup remains supported');
+  assert.equal(JSON.parse(await api.exportBackup()).version, 3, 'text-only demo backup remains supported');
 });

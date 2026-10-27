@@ -33,6 +33,12 @@ export async function onStarPetChanged(callback: (preferences: StarPetPreference
   listeners.add(callback);
   return () => { listeners.delete(callback); };
 }
+export async function onStarPetWindowBlur(callback: () => void): Promise<() => void> {
+  if (!starPetDesktopAvailable) return () => {};
+  return (await import('@tauri-apps/api/event')).listen('tauri://blur', callback, {
+    target: { kind: 'Window', label: 'starpet' },
+  });
+}
 export async function showStarPetMainWindow(): Promise<void> {
   if (starPetDesktopAvailable) await (await import('@tauri-apps/api/core')).invoke('show_main_window');
 }

@@ -1,10 +1,18 @@
+pub mod ai_access;
+pub mod ai_transport;
+pub mod appearance;
 pub mod capture;
 #[cfg(feature = "desktop")]
 mod desktop;
 pub mod handwriting;
 pub mod images;
+pub mod privacy;
+pub mod share;
+pub mod starpet_growth;
 pub mod storage;
 pub mod store;
+#[cfg(feature = "desktop")]
+mod updater;
 #[cfg(feature = "desktop")]
 pub use desktop::run;
 
@@ -37,6 +45,19 @@ mod capability_tests {
             "custom commands must go through the runtime ACL gate"
         );
         let authority = tauri::runtime_authority!(manifests, resolved);
+        for command in [
+            "plugin:updater|check",
+            "plugin:updater|download",
+            "plugin:updater|install",
+            "plugin:updater|download_and_install",
+        ] {
+            assert!(
+                authority
+                    .resolve_access(command, "main", "main", &tauri::ipc::Origin::Local)
+                    .is_none(),
+                "updater plugin IPC must not bypass backup and confirmation guards"
+            );
+        }
         let permissions: serde_json::Value =
             serde_json::from_str(include_str!("../permissions/windows.json")).unwrap();
         let main_commands = permissions["permission"]
@@ -50,6 +71,30 @@ mod capability_tests {
             .unwrap()
             .iter()
             .any(|command| command == "open_project_link"));
+        for command in [
+            "get_privacy_rules",
+            "save_privacy_rules",
+            "set_clip_privacy",
+            "set_clip_tags",
+            "preview_privacy_rescan",
+            "apply_privacy_rescan",
+            "get_ai_state",
+            "set_ai_enabled",
+            "create_ai_connection",
+            "revoke_ai_connection",
+            "get_ai_connection_config",
+            "clear_ai_audit",
+            "get_appearance",
+            "save_appearance",
+            "import_appearance_sticker",
+            "remove_appearance_sticker",
+        ] {
+            assert!(main_commands["commands"]["allow"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|allowed| allowed == command));
+        }
         for permission in permissions["permission"].as_array().unwrap() {
             let pet_allowed = permission["identifier"] == "starpet-commands";
             for command in permission["commands"]["allow"].as_array().unwrap() {
@@ -99,9 +144,14 @@ mod capability_tests {
             pet["commands"]["allow"],
             serde_json::json!([
                 "get_starpet_preferences",
+                "get_starpet_signal",
                 "set_starpet_preferences",
                 "show_main_window",
-                "starpet_start_dragging"
+                "starpet_start_dragging",
+                "get_starpet_growth",
+                "set_starpet_growth_enabled",
+                "interact_starpet",
+                "equip_starpet_item"
             ])
         );
         assert!(

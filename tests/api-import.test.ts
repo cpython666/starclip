@@ -7,6 +7,7 @@ import ts from 'typescript';
 test('demo backup import keeps all records and only explicit capture/settings changes apply retention', async () => {
   Object.assign(globalThis, { window: {} });
   const source = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8')
+    .replace("from './privacy'", `from '${new URL('../src/privacy.ts', import.meta.url).href}'`)
     .replace("from './snippets'", `from '${new URL('../src/snippets.ts', import.meta.url).href}'`);
   const code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
   const { api } = await import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'));

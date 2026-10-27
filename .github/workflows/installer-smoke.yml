@@ -1,0 +1,109 @@
+name: Test native installers
+on:
+  workflow_call:
+    inputs:
+      revision:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+      windows-artifact:
+        required: true
+        type: string
+      macos-artifact:
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  windows-install:
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [fresh, upgrade]
+    runs-on: windows-latest
+    timeout-minutes: 12
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.revision }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.windows-artifact }}
+          path: candidate-installer
+      - name: Verify the immutable Windows 0.1.0 baseline artifact
+        if: matrix.scenario == 'upgrade'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            if (context.repo.owner !== 'cpython666' || context.repo.repo !== 'starclip') throw new Error('Baseline is pinned to the original repository.');
+            const runId = 40356060862, artifactId = 12665574702;
+            const revision = '22181c0046b1265908334bc2efd31c0bcaa57110';
+            const run = (await github.rest.actions.getWorkflowRun({ ...context.repo, run_id: runId })).data;
+            const artifact = (await github.rest.actions.getArtifact({ ...context.repo, artifact_id: artifactId })).data;
+            if (run.status !== 'completed' || run.conclusion !== 'success' || run.head_sha !== revision || run.head_repository?.full_name !== 'cpython666/starclip') throw new Error('Baseline build identity or result does not match.');
+            if (artifact.id !== artifactId || artifact.name !== 'starclip-windows-x64' || artifact.expired || artifact.workflow_run?.id !== runId || artifact.workflow_run?.head_sha !== revision) throw new Error('Pinned Windows baseline artifact is unavailable or mismatched.');
+      - uses: actions/download-artifact@v4
+        if: matrix.scenario == 'upgrade'
+        with:
+          artifact-ids: '12665574702'
+          run-id: '40356060862'
+          github-token: ${{ github.token }}
+          path: baseline-installer
+      - name: Install and launch the actual Windows packages with fixed data
+        shell: pwsh
+        env:
+          SMOKE_VERSION: ${{ inputs.version }}
+          SMOKE_SCENARIO: ${{ matrix.scenario }}
+        run: |
+          $candidate = @(Get-ChildItem candidate-installer -Recurse -File -Filter '*-setup.exe')
+          if ($candidate.Count -ne 1) { throw 'Expected exactly one candidate NSIS installer.' }
+          $arguments = @{ Installer = $candidate[0].FullName; Version = $env:SMOKE_VERSION; Scenario = $env:SMOKE_SCENARIO }
+          if ($env:SMOKE_SCENARIO -eq 'upgrade') {
+            $baseline = @(Get-ChildItem baseline-installer -Recurse -File -Filter '*-setup.exe')
+            if ($baseline.Count -ne 1) { throw 'Expected exactly one pinned baseline NSIS installer.' }
+            $arguments.BaselineInstaller = $baseline[0].FullName
+          }
+          ./scripts/windows-smoke.ps1 @arguments
+  macos-install:
+    runs-on: macos-15
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [fresh, upgrade]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.revision }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.macos-artifact }}
+          path: ${{ runner.temp }}/candidate
+      - name: Download the verified historical 0.1.0 application
+        if: matrix.scenario == 'upgrade'
+        shell: bash
+        run: |
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/baseline.dmg" 'https://github.com/cpython666/starclip/releases/download/v0.1.0-alpha.2/Starclip_0.1.0-alpha.2_aarch64.dmg'
+          printf '%s  %s\n' 'c48568607037ec804613be8b2307e3041806849327b27aacd71d579062133240' "$RUNNER_TEMP/baseline.dmg" | shasum --algorithm 256 --check
+      - name: Test DMG startup and fixed-data preservation
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          SMOKE_SCENARIO: ${{ matrix.scenario }}
+        run: |
+          installer=$(python3 -c 'import os,pathlib; files=list((pathlib.Path(os.environ["RUNNER_TEMP"])/"candidate").rglob("Starclip_"+os.environ["RELEASE_VERSION"]+"_aarch64.dmg")); assert len(files)==1, "Expected exactly one candidate DMG"; print(files[0])')
+          args=(--installer "$installer" --version "$RELEASE_VERSION" --scenario "$SMOKE_SCENARIO")
+          if [ "$SMOKE_SCENARIO" = upgrade ]; then args+=(--baseline "$RUNNER_TEMP/baseline.dmg"); fi
+          python3 scripts/macos-smoke.py "${args[@]}"

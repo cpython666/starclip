@@ -1,0 +1,46 @@
+{
+  "texts": [
+    {
+      "id": "short",
+      "label": "简短推荐",
+      "content": "分享一个开源的本地剪贴板管理工具：星笺 Starclip ✦\n\n复制过的文字、图片和代码，随时搜索、再次复制；重要内容还能星标、分组、永久保留。\n\n记录存在本机，无需账户。支持 JSON 导入导出、自选数据目录和完整恢复点，数据由你自己管理。\n\n项目与下载：https://github.com/cpython666/starclip"
+    },
+    {
+      "id": "detailed",
+      "label": "产品介绍",
+      "content": "星笺 Starclip｜开源的本地剪贴板管理工具 ✦\n\n让剪贴板不止记住上一次复制。\n\n• 找回复制历史：文字、图片与代码，搜索后再次复制，减少重复查找。\n• 整理重要内容：星标、分组和永久保留；星码集单独收藏常用代码。\n• 自主管理数据：记录保存在本机，支持 JSON 导入导出、选择数据目录，以及完整恢复点。普通历史 JSON 包含记录、分组和图片，不包含应用偏好；星伴成长另有独立存档。\n• 创作与陪伴：星绘坊制作星码卡；可选的原创星伴星芽带来互动、成就和装扮。\n\n无需账户，无云端同步。首次使用默认暂停采集，由你决定何时开启。\n\n项目、源码与下载：https://github.com/cpython666/starclip\n当前为持续完善中的桌面预览版，具体平台支持以项目说明为准。"
+    }
+  ],
+  "images": [
+    {
+      "id": "overview",
+      "label": "产品总览",
+      "path": "share/overview.png",
+      "filename": "星笺-产品总览.png",
+      "width": 1080,
+      "height": 1440,
+      "bytes": 79739,
+      "description": "本地剪贴板管理：找回复制历史，搜索、再次复制、星标与分组。"
+    },
+    {
+      "id": "workflow",
+      "label": "数据自主",
+      "path": "share/workflow.png",
+      "filename": "星笺-数据自主.png",
+      "width": 1080,
+      "height": 1440,
+      "bytes": 72060,
+      "description": "剪贴板数据留在本机，支持 JSON 导入导出、自选目录与完整恢复点。"
+    },
+    {
+      "id": "companion",
+      "label": "星伴陪伴",
+      "path": "share/companion.png",
+      "filename": "星笺-星伴陪伴.png",
+      "width": 1080,
+      "height": 1440,
+      "bytes": 96713,
+      "description": "剪贴板管理工具里的原创星伴：互动、成长与装扮，按需开启。"
+    }
+  ]
+}

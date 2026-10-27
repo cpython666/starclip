@@ -25,7 +25,7 @@ concurrency:
 jobs:
   verify:
     if: github.repository == 'cpython666/starclip'
-    runs-on: macos-14
+    runs-on: macos-15
     outputs:
       skip: ${{ steps.plan.outputs.skip }}
       tag: ${{ steps.plan.outputs.tag }}

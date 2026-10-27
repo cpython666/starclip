@@ -1,6 +1,6 @@
 [package]
 name = "starclip"
-version = "0.1.0"
+version = "0.2.1"
 description = "星笺 Starclip — a local-first clipboard manager"
 authors = ["Starclip contributors"]
 edition = "2021"
@@ -18,7 +18,7 @@ required-features = ["desktop"]
 
 [features]
 default = ["desktop"]
-desktop = ["dep:tauri", "dep:tauri-build", "dep:arboard", "dep:tauri-plugin-global-shortcut", "dep:tauri-plugin-single-instance", "dep:tauri-plugin-dialog", "dep:objc2", "dep:objc2-app-kit", "dep:windows-sys"]
+desktop = ["dep:tauri", "dep:tauri-build", "dep:arboard", "dep:tauri-plugin-global-shortcut", "dep:tauri-plugin-single-instance", "dep:tauri-plugin-dialog", "dep:objc2", "dep:objc2-app-kit", "dep:windows-sys", "dep:tauri-plugin-updater"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [], optional = true }
@@ -29,19 +29,22 @@ serde_json = "1"
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png"] }
 sha2 = "0.10"
+url = "2"
+getrandom = "0.3"
 rusqlite = { version = "0.32", features = ["bundled"] }
 tauri = { version = "2", features = ["tray-icon", "macos-private-api"], optional = true }
 arboard = { version = "3.6", default-features = false, features = ["image-data"], optional = true }
 tauri-plugin-global-shortcut = { version = "2", optional = true }
 tauri-plugin-single-instance = { version = "2", optional = true }
 tauri-plugin-dialog = { version = "2", optional = true }
+tauri-plugin-updater = { version = "2", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", optional = true }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard"], optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61", default-features = false, features = ["Win32_System_DataExchange"], optional = true }
+windows-sys = { version = "0.61", default-features = false, features = ["Win32_System_DataExchange", "Win32_System_Console"], optional = true }
 
 [profile.dev]
 debug = 0

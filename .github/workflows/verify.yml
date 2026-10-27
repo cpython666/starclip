@@ -1,6 +1,7 @@
 name: Verify and build Starclip
 on:
   push:
+    branches: ['**']
   pull_request:
   workflow_dispatch:
 permissions:
@@ -10,6 +11,8 @@ concurrency:
   cancel-in-progress: true
 jobs:
   core:
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,6 +21,10 @@ jobs:
           node-version: 22
       - uses: dtolnay/rust-toolchain@1.90.0
       - run: npm ci --no-audit --no-fund
+      - id: version
+        run: |
+          version=$(npm run --silent version:check)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - run: npm test
       - run: npm run build
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features
@@ -36,7 +43,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-14
+          - platform: macos-15
             target: aarch64-apple-darwin
             bundles: app,dmg
             artifact: starclip-macos-apple-silicon
@@ -58,7 +65,19 @@ jobs:
           workspaces: src-tauri
       - run: npm ci --no-audit --no-fund
       - run: npm run tauri icon public/starclip.svg
-      - run: npm run tauri build -- --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib --test ai_stdio
+      - run: npm run tauri build -- --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config '{"bundle":{"createUpdaterArtifacts":false}}'
+        shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY: '-'
+      - name: Test the packaged release CLI and MCP transport
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          binary="$PWD/src-tauri/target/${{ matrix.target }}/release/starclip"
+          if [ "$RUNNER_OS" = Windows ]; then binary="$binary.exe"; fi
+          if [ "$RUNNER_OS" = macOS ]; then binary="$PWD/src-tauri/target/${{ matrix.target }}/release/bundle/macos/Starclip.app/Contents/MacOS/starclip"; fi
+          STARCLIP_TEST_BINARY="$binary" cargo test --locked --manifest-path src-tauri/Cargo.toml --test ai_stdio
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
@@ -66,3 +85,14 @@ jobs:
             src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
             src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
           if-no-files-found: error
+  installers:
+    needs: [core, desktop]
+    uses: ./.github/workflows/installer-smoke.yml
+    permissions:
+      contents: read
+      actions: read
+    with:
+      revision: ${{ github.sha }}
+      version: ${{ needs.core.outputs.version }}
+      windows-artifact: starclip-windows-x64
+      macos-artifact: starclip-macos-apple-silicon

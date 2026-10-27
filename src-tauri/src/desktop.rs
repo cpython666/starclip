@@ -1,10 +1,15 @@
+use crate::ai_access::{self, AiAccess, CreateConnection};
+use crate::appearance::Appearance;
 use crate::capture::{CaptureKey, CaptureState};
-use crate::images;
-use crate::storage::{DataDirectoryPlan, DataLocation, DirectoryMode, Storage};
+use crate::privacy::{PrivacyRescan, PrivacyRules};
+use crate::starpet_growth::{self, GrowthChange, GrowthState};
+use crate::storage::{DataDirectoryPlan, DataLocation, DirectoryMode, RecoveryPoint, Storage};
 use crate::store::{
     starpet_resize_position, CleanupFilter, CleanupPreview, CleanupResult, CleanupSnapshot, Clip,
     Group, Result, Settings, StarpetPreferencePatch, StarpetPreferences, Store, STALE_CLEANUP,
 };
+use crate::updater::{self, UpdateStatus, Updates};
+use crate::{images, share};
 use arboard::{Clipboard, ImageData};
 use base64::Engine;
 use serde::Serialize;
@@ -23,6 +28,7 @@ use tauri::{
 };
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+use tauri_plugin_updater::UpdaterExt;
 
 struct Reader {
     clipboard: Option<Clipboard>,
@@ -30,6 +36,7 @@ struct Reader {
 }
 struct Context {
     storage: Mutex<Storage>,
+    ai: Mutex<AiAccess>,
     store: Mutex<Store>,
     reader: Mutex<Reader>,
     clipboard_error: Mutex<Option<String>>,
@@ -53,21 +60,129 @@ fn write_guard(context: &Context) -> Result<MutexGuard<'_, Storage>> {
 fn changed(app: &AppHandle) {
     let _ = app.emit("clips-changed", ());
 }
+
+#[derive(Default)]
+struct MainWindowSession {
+    operation: Mutex<()>,
+    close_request: Mutex<u64>,
+    geometry: Mutex<Option<MainWindowGeometry>>,
+}
+impl MainWindowSession {
+    fn next_request(&self) -> Result<u64> {
+        let mut request = lock(&self.close_request)?;
+        *request = request.wrapping_add(1);
+        Ok(*request)
+    }
+    fn is_current(&self, request: u64) -> Result<bool> {
+        Ok(*lock(&self.close_request)? == request)
+    }
+}
+
+struct MainWindowGeometry {
+    size: tauri::PhysicalSize<u32>,
+    position: tauri::PhysicalPosition<i32>,
+    maximized: bool,
+}
+impl MainWindowGeometry {
+    fn capture(window: &WebviewWindow) -> tauri::Result<Self> {
+        Ok(Self {
+            size: window.inner_size()?,
+            position: window.outer_position()?,
+            maximized: window.is_maximized()?,
+        })
+    }
+}
+
+// Window creation must run off the event-loop thread, especially on Windows.
+fn show_window_inner(app: &AppHandle) -> Result<()> {
+    let session = app.state::<MainWindowSession>();
+    let _operation = lock(&session.operation)?;
+    let window = if let Some(window) = app.get_webview_window("main") {
+        window
+    } else {
+        let config = app
+            .config()
+            .app
+            .windows
+            .iter()
+            .find(|window| window.label == "main")
+            .ok_or("主窗口配置不存在。")?;
+        let window = WebviewWindowBuilder::from_config(app, config)
+            .map_err(|error| error.to_string())?
+            .visible(false)
+            .initialization_script("window.__STARCLIP_REOPENED__ = true;")
+            .build()
+            .map_err(|error| format!("无法重新创建主窗口：{error}"))?;
+        if let Some(geometry) = lock(&session.geometry)?.as_ref() {
+            let _ = window.set_size(geometry.size);
+            let _ = window.set_position(geometry.position);
+            if geometry.maximized {
+                let _ = window.maximize();
+            }
+        }
+        if let Some(context) = app.try_state::<Arc<Context>>() {
+            let settings = lock(&context.store)?.settings()?;
+            window
+                .set_always_on_top(settings.always_on_top)
+                .map_err(|error| error.to_string())?;
+        }
+        window
+    };
+    window
+        .show()
+        .and_then(|_| window.unminimize())
+        .and_then(|_| window.set_focus())
+        .map_err(|error| format!("无法打开主窗口：{error}"))
+}
+
 fn show_window(app: &AppHandle) {
+    // Invalidate a delayed close reply before scheduling the show operation.
+    let _ = app.state::<MainWindowSession>().next_request();
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(error) = show_window_inner(&app) {
+            app.dialog().message(error).title("星笺").show(|_| {});
+        }
+    });
+}
+
+fn request_main_window_close(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
+        // Conservatively hide first. Only a live frontend that has checked its
+        // drafts and pending work may approve releasing this WebView.
+        if let Ok(request) = app.state::<MainWindowSession>().next_request() {
+            let _ = window.hide();
+            let _ = app.emit_to(
+                "main",
+                "main-window-close-requested",
+                serde_json::json!({ "requestId": request }),
+            );
+        }
     }
 }
 fn toggle_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        if window.is_visible().unwrap_or(false) && window.is_focused().unwrap_or(false) {
-            let _ = window.hide();
-        } else {
-            show_window(app);
-        }
+    if app.get_webview_window("main").is_some_and(|window| {
+        window.is_visible().unwrap_or(false) && window.is_focused().unwrap_or(false)
+    }) {
+        request_main_window_close(app);
+    } else {
+        show_window(app);
     }
+}
+
+fn destroy_webview_and_wait(app: &AppHandle, window: &WebviewWindow) -> Result<()> {
+    let label = window.label();
+    window.destroy().map_err(|error| error.to_string())?;
+    // destroy() queues a native event. Serialize a rapid reopen until the old
+    // label has actually left Tauri's manager; never wait on the UI thread.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while app.get_webview_window(label).is_some() {
+        if Instant::now() >= deadline {
+            return Err("窗口正在释放资源，请稍后再打开。".into());
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
 }
 
 fn create_starpet(app: &AppHandle, preferences: &StarpetPreferences) -> Result<WebviewWindow> {
@@ -276,6 +391,15 @@ fn update_starpet(
     for label in ["main", "starpet"] {
         let _ = app.emit_to(label, "starpet-changed", &preferences);
     }
+    if !preferences.enabled {
+        // Do not replay an old Agent message when the user enables the pet again.
+        lock(&context.ai)?.clear_pet();
+        if let Some(window) = window {
+            if let Err(error) = destroy_webview_and_wait(app, &window) {
+                starpet_error(app, format!("星伴已停用，窗口资源释放未完成：{error}"));
+            }
+        }
+    }
     Ok(preferences)
 }
 
@@ -310,13 +434,11 @@ async fn set_starpet_preferences(
 }
 
 #[tauri::command]
-fn show_main_window(app: AppHandle) -> Result<()> {
-    let window = app.get_webview_window("main").ok_or("主窗口不存在。")?;
-    window
-        .show()
-        .and_then(|_| window.unminimize())
-        .and_then(|_| window.set_focus())
-        .map_err(|e| format!("无法打开主窗口：{e}"))
+async fn show_main_window(app: AppHandle) -> Result<()> {
+    app.state::<MainWindowSession>().next_request()?;
+    tauri::async_runtime::spawn_blocking(move || show_window_inner(&app))
+        .await
+        .map_err(|_| "主窗口创建任务失败，请重试。".to_string())?
 }
 
 #[tauri::command]
@@ -327,6 +449,127 @@ fn starpet_start_dragging(window: WebviewWindow) -> Result<()> {
     window
         .start_dragging()
         .map_err(|e| format!("无法拖动星伴：{e}"))
+}
+
+fn publish_growth(app: &AppHandle, growth: &GrowthState) {
+    for label in ["main", "starpet"] {
+        let _ = app.emit_to(label, "starpet-growth-changed", growth);
+    }
+}
+
+fn change_growth(
+    app: &AppHandle,
+    context: &Context,
+    change: GrowthChange<'_>,
+) -> Result<GrowthState> {
+    let _write = write_guard(context)?;
+    let growth = lock(&context.store)?.change_starpet_growth(change)?;
+    publish_growth(app, &growth);
+    Ok(growth)
+}
+
+// Call only after the primary operation succeeds, while the caller owns its write guard.
+// A pet-storage failure must never turn an already-saved code/card into an apparent failure.
+fn reward_creation(app: &AppHandle, context: &Context) {
+    let result =
+        lock(&context.store).and_then(|store| store.change_starpet_growth(GrowthChange::Creation));
+    match result {
+        Ok(growth) => publish_growth(app, &growth),
+        Err(_) => {
+            let _ = app.emit_to(
+                "main",
+                "starpet-growth-error",
+                "操作已完成，但星伴成长未能保存。请稍后在星伴页重试互动。",
+            );
+        }
+    }
+}
+
+#[tauri::command]
+fn get_starpet_growth(context: AppContext<'_>) -> Result<GrowthState> {
+    lock(&context.store)?.starpet_growth()
+}
+
+#[tauri::command]
+fn set_starpet_growth_enabled(
+    app: AppHandle,
+    context: AppContext<'_>,
+    enabled: bool,
+) -> Result<GrowthState> {
+    change_growth(&app, &context, GrowthChange::Enabled(enabled))
+}
+
+#[tauri::command]
+fn interact_starpet(
+    app: AppHandle,
+    context: AppContext<'_>,
+    action: String,
+) -> Result<GrowthState> {
+    change_growth(&app, &context, GrowthChange::Interaction(&action))
+}
+
+#[tauri::command]
+fn equip_starpet_item(
+    app: AppHandle,
+    context: AppContext<'_>,
+    slot: String,
+    item_id: Option<String>,
+) -> Result<GrowthState> {
+    change_growth(
+        &app,
+        &context,
+        GrowthChange::Equip(&slot, item_id.as_deref()),
+    )
+}
+
+#[tauri::command]
+fn import_starpet_growth(
+    app: AppHandle,
+    context: AppContext<'_>,
+    data: String,
+    expected_revision: u64,
+) -> Result<GrowthState> {
+    change_growth(
+        &app,
+        &context,
+        GrowthChange::Import {
+            data: &data,
+            expected_revision,
+        },
+    )
+}
+
+#[tauri::command]
+fn reset_starpet_growth(
+    app: AppHandle,
+    context: AppContext<'_>,
+    expected_revision: u64,
+) -> Result<GrowthState> {
+    change_growth(&app, &context, GrowthChange::Reset { expected_revision })
+}
+
+#[tauri::command]
+async fn export_starpet_growth(app: AppHandle, context: AppContext<'_>) -> Result<Option<String>> {
+    let context = context.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let data = starpet_growth::encode_save(lock(&context.store)?.starpet_growth()?)?;
+        let parent = app.get_webview_window("main").ok_or("主窗口不存在。")?;
+        let Some(file) = app
+            .dialog()
+            .file()
+            .set_parent(&parent)
+            .add_filter("星伴成长存档", &["json"])
+            .set_file_name("starclip-starpet.json")
+            .blocking_save_file()
+        else {
+            return Ok(None);
+        };
+        let path = file.into_path().map_err(|_| "请选择本地文件路径。")?;
+        write_private(&path, data.as_bytes())?;
+        Ok(Some(path.to_string_lossy().into_owned()))
+    })
+    .await
+    .map_err(|_| "导出成长存档失败。".to_string())?
 }
 
 #[derive(Serialize)]
@@ -405,6 +648,7 @@ fn save_code(
 ) -> Result<Clip> {
     let _write = write_guard(&context)?;
     let clip = lock(&context.store)?.save_code(id, &title, &content, &language, group_id)?;
+    reward_creation(&app, &context);
     changed(&app);
     Ok(clip)
 }
@@ -429,6 +673,122 @@ async fn get_clip_image(context: AppContext<'_>, id: i64, thumbnail: bool) -> Re
     .await
     .map_err(|_| "图片读取任务失败。".to_string())?
 }
+enum ClipboardWrite {
+    Text(String),
+    Image((u32, u32, Vec<u8>)),
+}
+fn write_and_suppress(
+    capture: &mut CaptureState,
+    key: CaptureKey,
+    write: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    write()?;
+    capture.copied(key);
+    Ok(())
+}
+fn write_clipboard(context: &Context, content: ClipboardWrite) -> Result<()> {
+    let key = match &content {
+        ClipboardWrite::Text(text) => CaptureKey::Text(text.clone()),
+        ClipboardWrite::Image((width, height, rgba)) => {
+            CaptureKey::Image(images::fingerprint_rgba(*width, *height, rgba)?)
+        }
+    };
+    let mut reader = lock(&context.reader)?;
+    if reader.clipboard.is_none() {
+        reader.clipboard = Some(Clipboard::new().map_err(|e| format!("无法访问剪贴板：{e}"))?);
+    }
+    let Reader { clipboard, capture } = &mut *reader;
+    write_and_suppress(capture, key, || match content {
+        ClipboardWrite::Text(text) => clipboard
+            .as_mut()
+            .unwrap()
+            .set_text(text)
+            .map_err(|e| format!("复制失败：{e}")),
+        ClipboardWrite::Image((width, height, rgba)) => clipboard
+            .as_mut()
+            .unwrap()
+            .set_image(ImageData {
+                width: width as usize,
+                height: height as usize,
+                bytes: rgba.into(),
+            })
+            .map_err(|e| format!("图片复制失败：{e}")),
+    })
+}
+fn product_share_png(app: &AppHandle, image: &share::ShareImage) -> Result<Vec<u8>> {
+    let asset = app
+        .asset_resolver()
+        .get(image.path.clone())
+        .ok_or("产品介绍图缺失，请重新安装星笺；开发模式请先构建前端。")?;
+    Ok(asset.bytes)
+}
+#[tauri::command]
+async fn copy_product_share_text(
+    app: AppHandle,
+    context: AppContext<'_>,
+    id: String,
+) -> Result<()> {
+    let text = share::text(&id)?;
+    let context = context.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _write = write_guard(&context)?;
+        write_clipboard(&context, ClipboardWrite::Text(text))?;
+        set_clipboard_error(&app, &context, None);
+        Ok(())
+    })
+    .await
+    .map_err(|_| "分享文案复制失败，请重试。".to_string())?
+}
+#[tauri::command]
+async fn copy_product_share_image(
+    app: AppHandle,
+    context: AppContext<'_>,
+    id: String,
+) -> Result<()> {
+    let image = share::image(&id)?;
+    let context = context.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _write = write_guard(&context)?;
+        let png = product_share_png(&app, &image)?;
+        let pixels = share::decode_image(&image, &png)?;
+        write_clipboard(&context, ClipboardWrite::Image(pixels))?;
+        set_clipboard_error(&app, &context, None);
+        Ok(())
+    })
+    .await
+    .map_err(|_| "产品介绍图复制失败，请重试。".to_string())?
+}
+#[tauri::command]
+async fn save_product_share_image(
+    app: AppHandle,
+    context: AppContext<'_>,
+    id: String,
+) -> Result<Option<String>> {
+    let image = share::image(&id)?;
+    let context = context.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        {
+            let _write = write_guard(&context)?;
+        }
+        let png = product_share_png(&app, &image)?;
+        share::decode_image(&image, &png)?;
+        let Some(file) = app
+            .dialog()
+            .file()
+            .add_filter("PNG 图片", &["png"])
+            .set_file_name(&image.filename)
+            .blocking_save_file()
+        else {
+            return Ok(None);
+        };
+        let path = file.into_path().map_err(|_| "请选择本地文件路径。")?;
+        let _write = write_guard(&context)?;
+        write_private(&path, &png)?;
+        Ok(Some(path.to_string_lossy().into_owned()))
+    })
+    .await
+    .map_err(|_| "产品介绍图保存失败，请重试。".to_string())?
+}
 #[tauri::command]
 async fn copy_clip(app: AppHandle, context: AppContext<'_>, id: i64) -> Result<()> {
     let context = context.inner().clone();
@@ -444,37 +804,11 @@ async fn copy_clip(app: AppHandle, context: AppContext<'_>, id: i64) -> Result<(
             };
             (clip, png)
         };
-        let pixels = png.as_deref().map(images::decode_png).transpose()?;
-        {
-            let mut reader = lock(&context.reader)?;
-            if reader.clipboard.is_none() {
-                reader.clipboard =
-                    Some(Clipboard::new().map_err(|e| format!("无法访问剪贴板：{e}"))?);
-            }
-            let key = if let Some((width, height, rgba)) = pixels {
-                let digest = images::fingerprint_rgba(width, height, &rgba)?;
-                reader
-                    .clipboard
-                    .as_mut()
-                    .unwrap()
-                    .set_image(ImageData {
-                        width: width as usize,
-                        height: height as usize,
-                        bytes: rgba.into(),
-                    })
-                    .map_err(|e| format!("图片复制失败：{e}"))?;
-                CaptureKey::Image(digest)
-            } else {
-                reader
-                    .clipboard
-                    .as_mut()
-                    .unwrap()
-                    .set_text(clip.content.clone())
-                    .map_err(|e| format!("复制失败：{e}"))?;
-                CaptureKey::Text(clip.content)
-            };
-            reader.capture.copied(key);
-        }
+        let content = match png {
+            Some(png) => ClipboardWrite::Image(images::decode_png(&png)?),
+            None => ClipboardWrite::Text(clip.content),
+        };
+        write_clipboard(&context, content)?;
         lock(&context.store)?.mark_copied(id)?;
         *lock(&context.clipboard_error)? = None;
         changed(&app);
@@ -502,6 +836,216 @@ fn delete_group(app: AppHandle, context: AppContext<'_>, id: i64) -> Result<()> 
     changed(&app);
     Ok(())
 }
+// Custom loopback protocol, not HTTP: remote web pages cannot supply valid
+// frames or the random connection credential. No contents are logged.
+// Single worker and bounded frames/timeouts keep this a small local bridge. A
+// hostile same-account process can still deny service; this is not a network API.
+fn start_ai_broker(
+    context: &Arc<Context>,
+    mut emit_pet: impl FnMut(&ai_access::PetSnapshot) -> Result<()> + Send + 'static,
+) {
+    use std::net::TcpListener;
+    let Ok(listener) = TcpListener::bind(("127.0.0.1", 0)) else {
+        return;
+    };
+    let Ok(address) = listener.local_addr() else {
+        return;
+    };
+    if listener.set_nonblocking(true).is_err() {
+        return;
+    }
+    if let Ok(mut ai) = context.ai.lock() {
+        ai.port = Some(address.port());
+    } else {
+        return;
+    }
+    let weak = Arc::downgrade(context);
+    thread::spawn(move || {
+        while weak.strong_count() > 0 {
+            match listener.accept() {
+                Ok((mut stream, address)) => {
+                    if !address.ip().is_loopback() {
+                        continue;
+                    }
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+                    let request = ai_access::read_frame(
+                        &mut std::io::BufReader::new(&mut stream),
+                        ai_access::MAX_REQUEST,
+                    )
+                    .ok()
+                    .flatten()
+                    .and_then(|bytes| serde_json::from_slice::<ai_access::Request>(&bytes).ok());
+                    let handled = (|| -> Result<()> {
+                        let context = weak.upgrade().ok_or(ai_access::DENIED)?;
+                        // The same lock order as mutations. Busy/frozen storage fails
+                        // closed; guards live through socket write, so revoke/privacy
+                        // changes cannot interleave between filtering and emission.
+                        let storage = context.storage.try_lock().map_err(|_| ai_access::DENIED)?;
+                        storage.writable().map_err(|_| ai_access::DENIED)?;
+                        let store = lock(&context.store)?;
+                        let mut ai = lock(&context.ai)?;
+                        let response = ai.respond_with_pet(
+                            &store,
+                            request.ok_or(ai_access::DENIED)?,
+                            &mut emit_pet,
+                        );
+                        ai_access::write_frame(&mut stream, &response)
+                            .map_err(|_| ai_access::DENIED.to_string())
+                    })();
+                    if handled.is_err() {
+                        let _ = ai_access::write_frame(
+                            &mut stream,
+                            &serde_json::json!({"error": ai_access::DENIED}),
+                        );
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(50))
+                }
+                Err(_) => break,
+            }
+        }
+    });
+}
+
+#[tauri::command]
+fn get_privacy_rules(context: AppContext<'_>) -> Result<PrivacyRules> {
+    lock(&context.store)?.privacy_rules()
+}
+#[tauri::command]
+fn save_privacy_rules(
+    app: AppHandle,
+    context: AppContext<'_>,
+    rules: PrivacyRules,
+) -> Result<PrivacyRules> {
+    let _write = write_guard(&context)?;
+    let result = lock(&context.store)?.save_privacy_rules(&rules)?;
+    changed(&app);
+    Ok(result)
+}
+#[tauri::command]
+fn set_clip_privacy(
+    app: AppHandle,
+    context: AppContext<'_>,
+    id: i64,
+    is_private: bool,
+    reviewed: bool,
+) -> Result<Clip> {
+    let _write = write_guard(&context)?;
+    let result = lock(&context.store)?.set_clip_privacy(id, is_private, reviewed)?;
+    changed(&app);
+    Ok(result)
+}
+#[tauri::command]
+fn set_clip_tags(
+    app: AppHandle,
+    context: AppContext<'_>,
+    id: i64,
+    tags: Vec<String>,
+) -> Result<Clip> {
+    let _write = write_guard(&context)?;
+    let result = lock(&context.store)?.set_clip_tags(id, &tags)?;
+    changed(&app);
+    Ok(result)
+}
+#[tauri::command]
+fn preview_privacy_rescan(context: AppContext<'_>) -> Result<PrivacyRescan> {
+    lock(&context.store)?.privacy_rescan_preview()
+}
+#[tauri::command]
+fn apply_privacy_rescan(
+    app: AppHandle,
+    context: AppContext<'_>,
+    token: String,
+) -> Result<PrivacyRescan> {
+    let _write = write_guard(&context)?;
+    let result = lock(&context.store)?.privacy_rescan_apply(&token)?;
+    changed(&app);
+    Ok(result)
+}
+#[tauri::command]
+fn get_ai_state(context: AppContext<'_>) -> Result<serde_json::Value> {
+    Ok(lock(&context.ai)?.state())
+}
+#[tauri::command]
+fn get_starpet_signal(context: AppContext<'_>) -> Result<ai_access::PetSnapshot> {
+    Ok(lock(&context.ai)?.pet_snapshot())
+}
+#[tauri::command]
+fn set_ai_enabled(
+    app: AppHandle,
+    context: AppContext<'_>,
+    enabled: bool,
+) -> Result<serde_json::Value> {
+    if enabled {
+        let _write = write_guard(&context)?;
+        return lock(&context.ai)?.enable(true);
+    }
+    let mut ai = lock(&context.ai)?;
+    let state = ai.enable(false)?;
+    let _ = app.emit_to("starpet", "starpet-signal", ai.pet_snapshot());
+    Ok(state)
+}
+#[tauri::command]
+fn create_ai_connection(
+    context: AppContext<'_>,
+    request: CreateConnection,
+) -> Result<serde_json::Value> {
+    let _write = write_guard(&context)?;
+    let store = lock(&context.store)?;
+    let executable = std::env::current_exe().map_err(|_| "无法定位星笺程序。")?;
+    lock(&context.ai)?.create(&store, request, &executable)
+}
+#[tauri::command]
+fn revoke_ai_connection(
+    app: AppHandle,
+    context: AppContext<'_>,
+    id: String,
+) -> Result<serde_json::Value> {
+    let mut ai = lock(&context.ai)?;
+    let state = ai.revoke(&id);
+    let _ = app.emit_to("starpet", "starpet-signal", ai.pet_snapshot());
+    Ok(state)
+}
+#[tauri::command]
+fn get_ai_connection_config(context: AppContext<'_>, id: String) -> Result<serde_json::Value> {
+    let executable = std::env::current_exe().map_err(|_| "无法定位星笺程序。")?;
+    lock(&context.ai)?.config(&id, &executable)
+}
+#[tauri::command]
+fn clear_ai_audit(context: AppContext<'_>) -> Result<serde_json::Value> {
+    Ok(lock(&context.ai)?.clear_audit())
+}
+
+#[tauri::command]
+fn get_appearance(context: AppContext<'_>) -> Result<Appearance> {
+    lock(&context.store)?.appearance()
+}
+#[tauri::command]
+fn save_appearance(context: AppContext<'_>, appearance: serde_json::Value) -> Result<Appearance> {
+    let _write = write_guard(&context)?;
+    lock(&context.store)?.save_appearance(&appearance)
+}
+#[tauri::command]
+async fn import_appearance_sticker(
+    context: AppContext<'_>,
+    png_base64: String,
+    name: String,
+) -> Result<Appearance> {
+    let context = context.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _write = write_guard(&context)?;
+        lock(&context.store)?.import_appearance_sticker(&png_base64, &name)
+    })
+    .await
+    .map_err(|_| "贴纸导入任务失败，请重试。".to_string())?
+}
+#[tauri::command]
+fn remove_appearance_sticker(context: AppContext<'_>) -> Result<Appearance> {
+    let _write = write_guard(&context)?;
+    lock(&context.store)?.remove_appearance_sticker()
+}
 #[tauri::command]
 fn set_theme(app: AppHandle, context: AppContext<'_>, theme: String) -> Result<Settings> {
     let _write = write_guard(&context)?;
@@ -520,16 +1064,21 @@ fn save_settings(app: AppHandle, context: AppContext<'_>, settings: Settings) ->
         .map_err(|_| "快捷键格式无效，例如 CommandOrControl+Shift+V。")?;
     let old_shortcut = old.shortcut.parse::<Shortcut>().ok();
     let shortcut_changed = old_shortcut != Some(shortcut);
-    let window = app
-        .get_webview_window("main")
-        .ok_or("主窗口不存在，未保存偏好设置。")?;
-    let previous_top = window.is_always_on_top().unwrap_or(old.always_on_top);
+    // Tray pause remains available while the main WebView has been released.
+    let window = app.get_webview_window("main");
+    let previous_top = window
+        .as_ref()
+        .and_then(|window| window.is_always_on_top().ok())
+        .unwrap_or(old.always_on_top);
     if shortcut_changed {
         app.global_shortcut()
             .register(shortcut)
             .map_err(|_| "该快捷键无法注册，可能被其他应用占用。")?;
     }
-    if let Err(error) = window.set_always_on_top(settings.always_on_top) {
+    if let Some(error) = window
+        .as_ref()
+        .and_then(|window| window.set_always_on_top(settings.always_on_top).err())
+    {
         if shortcut_changed {
             let _ = app.global_shortcut().unregister(shortcut);
         }
@@ -552,8 +1101,8 @@ fn save_settings(app: AppHandle, context: AppContext<'_>, settings: Settings) ->
             let _ = app.global_shortcut().unregister(shortcut);
         }
         let rollback_error = window
-            .set_always_on_top(previous_top)
-            .err()
+            .as_ref()
+            .and_then(|window| window.set_always_on_top(previous_top).err())
             .map(|error| format!("恢复原窗口置顶状态失败，请重试保存偏好：{error}"));
         *lock(&context.window_error)? = rollback_error.clone();
         changed(&app);
@@ -718,11 +1267,13 @@ async fn save_backup(app: AppHandle, context: AppContext<'_>) -> Result<Option<S
 #[tauri::command]
 async fn save_export(
     app: AppHandle,
+    context: AppContext<'_>,
     data: String,
     format: String,
     filename: Option<String>,
 ) -> Result<bool> {
     use base64::Engine;
+    let context = context.inner().clone();
     let bytes = match format.as_str() {
         "md" => {
             if data.len() > 1024 * 1024 {
@@ -774,17 +1325,44 @@ async fn save_export(
         };
         let path = file.into_path().map_err(|_| "请选择本地文件路径。")?;
         write_private(&path, &bytes)?;
+        if let Ok(_write) = write_guard(&context) {
+            reward_creation(&app, &context);
+        }
         Ok(true)
     })
     .await
     .map_err(|_| "导出任务失败。".to_string())?
 }
 #[tauri::command]
-fn hide_window(app: AppHandle) -> Result<()> {
-    app.get_webview_window("main")
-        .ok_or("窗口不存在。")?
-        .hide()
-        .map_err(|e| e.to_string())
+async fn hide_window(app: AppHandle, release: Option<bool>, request_id: Option<u64>) -> Result<()> {
+    let request = match request_id {
+        Some(request) => request,
+        None => app.state::<MainWindowSession>().next_request()?,
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let session = app.state::<MainWindowSession>();
+        let _operation = lock(&session.operation)?;
+        if !session.is_current(request)? {
+            return Ok(());
+        }
+        let Some(window) = app.get_webview_window("main") else {
+            return Ok(());
+        };
+        window.hide().map_err(|error| error.to_string())?;
+        if !release.unwrap_or(false) || app.state::<Updates>().ensure_idle().is_err() {
+            return Ok(());
+        }
+        let Some(context) = app.try_state::<Arc<Context>>() else {
+            return Ok(());
+        };
+        if lock(&context.storage)?.writable().is_err() {
+            return Ok(());
+        }
+        *lock(&session.geometry)? = MainWindowGeometry::capture(&window).ok();
+        destroy_webview_and_wait(&app, &window)
+    })
+    .await
+    .map_err(|_| "收起主窗口失败，请重试。".to_string())?
 }
 
 #[tauri::command]
@@ -882,6 +1460,9 @@ async fn apply_data_directory(
 }
 #[tauri::command]
 fn restart_app(app: AppHandle, context: AppContext<'_>) -> Result<()> {
+    if app.state::<Updates>().installing() {
+        return Err("正在备份或安装更新，请等待完成后再重启。".into());
+    }
     lock(&context.storage)?.release_for_restart()?;
     app.restart();
 }
@@ -948,6 +1529,194 @@ fn offer_storage_recovery(app: &AppHandle, default: PathBuf, error: String) {
                 });
             });
         });
+}
+
+fn offer_upgrade_recovery(app: &AppHandle, default: PathBuf, error: String) {
+    let latest = Storage::recovery_points_at_startup(&default)
+        .ok()
+        .and_then(|points| points.into_iter().find(|point| point.compatible));
+    let Some(point) = latest else {
+        offer_storage_recovery(app, default, error);
+        return;
+    };
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+    let handle = app.clone();
+    app.dialog().message(format!("{error}\n\n可恢复到最近的恢复点 {}（应用版本 {}）。恢复将在新目录中完成并重启，当前目录和恢复点均保留；恢复点之后的变动不会出现在还原结果中。", point.id, point.app_version))
+        .title("星笺数据升级与恢复")
+        .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancelCustom("恢复并重启".into(), "其他方式".into()))
+        .show(move |restore| {
+            if !restore { offer_storage_recovery(&handle, default, error); return; }
+            thread::spawn(move || match Storage::restore_recovery_point_at_startup(&default, &point.id) {
+                Ok(_) => handle.restart(),
+                Err(error) => offer_storage_recovery(&handle, default, error),
+            });
+        });
+}
+
+#[tauri::command]
+fn get_update_status(app: AppHandle) -> Result<UpdateStatus> {
+    app.state::<Updates>().status()
+}
+
+#[tauri::command]
+async fn check_starclip_update(app: AppHandle, context: AppContext<'_>) -> Result<UpdateStatus> {
+    lock(&context.storage)?.writable()?;
+    app.state::<Updates>().begin_check(&app)?;
+    let before_exit = app.clone();
+    let cleanup_started = app.state::<Updates>().cleanup_flag()?;
+    let result = async {
+        let update = app
+            .updater_builder()
+            .timeout(Duration::from_secs(30))
+            .restart_after_install(true)
+            .on_before_exit(move || {
+                cleanup_started.store(true, std::sync::atomic::Ordering::SeqCst);
+                before_exit.cleanup_before_exit();
+            })
+            .build()
+            .map_err(|error| format!("更新配置无法读取：{error}"))?
+            .check()
+            .await
+            .map_err(updater::check_error_message)?;
+        app.state::<Updates>().checked(&app, update)
+    }
+    .await;
+    if let Err(error) = result {
+        return app.state::<Updates>().failed(&app, error);
+    }
+    app.state::<Updates>().status()
+}
+
+#[tauri::command]
+async fn download_starclip_update(
+    app: AppHandle,
+    context: AppContext<'_>,
+    expected_version: String,
+) -> Result<UpdateStatus> {
+    lock(&context.storage)?.writable()?;
+    let update = app
+        .state::<Updates>()
+        .begin_download(&app, &expected_version)?;
+    let result: Result<()> = async {
+        let mut downloaded = 0_u64;
+        let mut last_progress = Instant::now();
+        let bytes = update
+            .download(
+                |chunk, total| {
+                    downloaded += chunk as u64;
+                    if last_progress.elapsed() >= Duration::from_millis(100)
+                        || total == Some(downloaded)
+                    {
+                        app.state::<Updates>().progress(&app, downloaded, total);
+                        last_progress = Instant::now();
+                    }
+                },
+                || {},
+            )
+            .await
+            .map_err(|error| format!("下载或签名校验失败，未开始安装：{error}"))?;
+        // download() verifies both the package signature and its bound version.
+        // Keep it only in this session until the user confirms installation.
+        app.state::<Updates>()
+            .downloaded(&app, &expected_version, bytes)
+    }
+    .await;
+    if let Err(error) = result {
+        return app.state::<Updates>().failed(&app, error);
+    }
+    app.state::<Updates>().status()
+}
+
+#[tauri::command]
+async fn install_starclip_update(
+    app: AppHandle,
+    context: AppContext<'_>,
+    expected_version: String,
+) -> Result<UpdateStatus> {
+    lock(&context.storage)?.writable()?;
+    let (update, bytes, cleanup_started) = app
+        .state::<Updates>()
+        .begin_install(&app, &expected_version)?;
+    let context = context.inner().clone();
+    let result: Result<()> = async {
+        let worker_app = app.clone();
+        let worker_context = context.clone();
+        tauri::async_runtime::spawn_blocking(move || -> Result<()> {
+            let mut storage = write_guard(&worker_context)?;
+            let point =
+                storage.create_recovery_point(&*lock(&worker_context.store)?, "before-update")?;
+            worker_app
+                .state::<Updates>()
+                .backed_up(&worker_app, point.id.clone())?;
+            updater::preserve_application(storage.default_directory(), &point.id)?;
+            storage.freeze_for_update()?;
+            drop(storage);
+            worker_app
+                .state::<Updates>()
+                .phase(&worker_app, "installing")?;
+            update
+                .install(bytes)
+                .map_err(|error| format!("安装未完成，旧版应用和数据恢复点已保留：{error}"))?;
+            worker_app
+                .state::<Updates>()
+                .phase(&worker_app, "installed")?;
+            Ok(())
+        })
+        .await
+        .map_err(|_| "更新任务异常终止；已生成的恢复点仍保留。".to_string())?
+    }
+    .await;
+    if let Err(error) = result {
+        if cleanup_started.load(std::sync::atomic::Ordering::SeqCst) {
+            return app.state::<Updates>().restart_required(
+                &app,
+                format!("安装器未能成功启动，当前会话已停止写入。请重启星笺后再试。{error}"),
+            );
+        }
+        lock(&context.storage)?.cancel_update_freeze();
+        return app.state::<Updates>().failed(&app, error);
+    }
+    app.state::<Updates>().status()
+}
+
+#[tauri::command]
+async fn list_recovery_points(context: AppContext<'_>) -> Result<Vec<RecoveryPoint>> {
+    let context = context.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || lock(&context.storage)?.recovery_points())
+        .await
+        .map_err(|_| "读取恢复点失败。".to_string())?
+}
+
+#[tauri::command]
+async fn create_recovery_point(app: AppHandle, context: AppContext<'_>) -> Result<RecoveryPoint> {
+    app.state::<Updates>().ensure_idle()?;
+    let context = context.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let storage = write_guard(&context)?;
+        storage.create_recovery_point(&*lock(&context.store)?, "manual")
+    })
+    .await
+    .map_err(|_| "创建恢复点失败。".to_string())?
+}
+
+#[tauri::command]
+async fn restore_recovery_point(
+    app: AppHandle,
+    context: AppContext<'_>,
+    id: String,
+) -> Result<RecoveryPoint> {
+    app.state::<Updates>().ensure_idle()?;
+    let context = context.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut storage = write_guard(&context)?;
+        let point = storage.restore_recovery_point(&*lock(&context.store)?, &id)?;
+        changed(&app);
+        Ok(point)
+    })
+    .await
+    .map_err(|_| "恢复任务异常，请检查当前目录状态。".to_string())?
 }
 
 fn set_clipboard_error(app: &AppHandle, context: &Context, error: Option<String>) {
@@ -1185,6 +1954,9 @@ pub fn run() {
             show_window(app)
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(Updates::new())
+        .manage(MainWindowSession::default())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _, event| {
@@ -1199,15 +1971,15 @@ pub fn run() {
             let storage = match Storage::open(&default, &app.path().app_config_dir()?) {
                 Ok(storage) => storage,
                 Err(error) => {
-                    offer_storage_recovery(app.handle(), default, error);
+                    offer_upgrade_recovery(app.handle(), default, error);
                     return Ok(());
                 }
             };
             let db_path = storage.current.join("starclip.sqlite3");
-            let store = match Store::open(&db_path) {
+            let store = match storage.open_store() {
                 Ok(store) => store,
                 Err(error) => {
-                    offer_storage_recovery(app.handle(), default, error);
+                    offer_upgrade_recovery(app.handle(), default, error);
                     return Ok(());
                 }
             };
@@ -1241,6 +2013,7 @@ pub fn run() {
                 .err();
             let context = Arc::new(Context {
                 storage: Mutex::new(storage),
+                ai: Mutex::new(AiAccess::default()),
                 store: Mutex::new(store),
                 reader: Mutex::new(Reader {
                     clipboard: None,
@@ -1252,6 +2025,17 @@ pub fn run() {
                 cleanup: Mutex::new(None),
                 starpet_operation: Mutex::new(()),
                 tray_pause: OnceLock::new(),
+            });
+            let pet_app = app.handle().clone();
+            start_ai_broker(&context, move |snapshot| {
+                // No show/focus or synchronous native-window queries under the
+                // broker locks. A disabled/destroyed pet cannot be awakened by AI.
+                if pet_app.get_webview_window("starpet").is_none() {
+                    return Err("星伴窗口不可用。".into());
+                }
+                pet_app
+                    .emit_to("starpet", "starpet-signal", snapshot)
+                    .map_err(|_| "星伴消息未能发送。".into())
             });
             app.manage(context.clone());
             let show = MenuItem::with_id(app, "show", "打开星笺", true, None::<&str>)?;
@@ -1318,7 +2102,7 @@ pub fn run() {
                 match window.label() {
                     "main" => {
                         api.prevent_close();
-                        let _ = window.hide();
+                        request_main_window_close(window.app_handle());
                     }
                     "starpet" => {
                         api.prevent_close();
@@ -1339,20 +2123,47 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_state,
             get_starpet_preferences,
+            get_starpet_signal,
             set_starpet_preferences,
             show_main_window,
             starpet_start_dragging,
+            get_starpet_growth,
+            set_starpet_growth_enabled,
+            interact_starpet,
+            equip_starpet_item,
+            export_starpet_growth,
+            import_starpet_growth,
+            reset_starpet_growth,
             complete_onboarding,
             add_clip,
             update_clip,
             save_code,
             delete_clip,
             copy_clip,
+            copy_product_share_text,
+            copy_product_share_image,
+            save_product_share_image,
             get_clip_image,
             create_group,
             delete_group,
             save_settings,
             set_theme,
+            get_privacy_rules,
+            save_privacy_rules,
+            set_clip_privacy,
+            set_clip_tags,
+            preview_privacy_rescan,
+            apply_privacy_rescan,
+            get_ai_state,
+            set_ai_enabled,
+            create_ai_connection,
+            revoke_ai_connection,
+            get_ai_connection_config,
+            clear_ai_audit,
+            get_appearance,
+            save_appearance,
+            import_appearance_sticker,
+            remove_appearance_sticker,
             clear_history,
             set_keep_forever,
             preview_cleanup,
@@ -1370,15 +2181,246 @@ pub fn run() {
             apply_data_directory,
             open_data_directory,
             open_project_link,
+            get_update_status,
+            check_starclip_update,
+            download_starclip_update,
+            install_starclip_update,
+            list_recovery_points,
+            create_recovery_point,
+            restore_recovery_point,
             restart_app
         ])
-        .run(tauri::generate_context!())
-        .expect("星笺启动失败，请检查本地数据目录权限或磁盘空间。");
+        .build(tauri::generate_context!())
+        .expect("星笺启动失败，请检查本地数据目录权限或磁盘空间。")
+        .run(|app, event| match event {
+            // A visible starpet does not mean the main window is open.
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { .. } => show_window(app),
+            tauri::RunEvent::ExitRequested { api, .. } if app.state::<Updates>().installing() => {
+                api.prevent_exit();
+                show_window(app);
+            }
+            tauri::RunEvent::ExitRequested {
+                code: None, api, ..
+            } if app.try_state::<Arc<Context>>().is_some() => {
+                // Releasing the last WebView must not stop clipboard capture,
+                // the tray, shortcuts or the local AI broker. Explicit quit /
+                // restart requests carry an exit code and remain permitted.
+                api.prevent_exit();
+            }
+            _ => {}
+        });
 }
 
 #[cfg(test)]
 mod tests {
-    use super::project_link;
+    use super::{project_link, write_and_suppress};
+    use crate::capture::{CaptureKey, CaptureState};
+
+    #[test]
+    fn reopening_invalidates_delayed_main_window_release_requests() {
+        let session = super::MainWindowSession::default();
+        let close = session.next_request().unwrap();
+        assert!(session.is_current(close).unwrap());
+
+        // A Dock / tray / shortcut reopen invalidates an old frontend reply
+        // before it queues a native show, even when the worker is still busy.
+        let reopen = session.next_request().unwrap();
+        assert!(!session.is_current(close).unwrap());
+        assert!(session.is_current(reopen).unwrap());
+
+        let next_close = session.next_request().unwrap();
+        assert!(!session.is_current(reopen).unwrap());
+        assert!(session.is_current(next_close).unwrap());
+    }
+
+    #[test]
+    fn ai_broker_checks_privacy_revoke_freeze_and_concurrent_changes() {
+        use super::*;
+        use serde_json::json;
+        let mut random = [0u8; 16];
+        getrandom::fill(&mut random).unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "starclip-broker-test-{:x}",
+            u128::from_le_bytes(random)
+        ));
+        fs::create_dir_all(&path).unwrap();
+        let storage = Storage::open(&path, &path).unwrap();
+        let store = storage.open_store().unwrap();
+        let clip = store
+            .add("原创星图 https://linux.do/fixed", "原创测试", None)
+            .unwrap();
+        store.set_clip_tags(clip.id, &["星图".into()]).unwrap();
+        let context = Arc::new(Context {
+            storage: Mutex::new(storage),
+            store: Mutex::new(store),
+            ai: Mutex::new(AiAccess::default()),
+            reader: Mutex::new(Reader {
+                clipboard: None,
+                capture: CaptureState::default(),
+            }),
+            clipboard_error: Mutex::new(None),
+            shortcut_error: Mutex::new(None),
+            window_error: Mutex::new(None),
+            cleanup: Mutex::new(None),
+            starpet_operation: Mutex::new(()),
+            tray_pause: OnceLock::new(),
+        });
+        let (pet_events, received_pet_events) = std::sync::mpsc::channel();
+        start_ai_broker(&context, move |snapshot| {
+            pet_events.send(snapshot.clone()).map_err(|e| e.to_string())
+        });
+        let port = context.ai.lock().unwrap().port.unwrap();
+        let store = context.store.lock().unwrap();
+        let mut ai = context.ai.lock().unwrap();
+        ai.enable(true).unwrap();
+        let config = ai
+            .create(
+                &store,
+                CreateConnection {
+                    name: "原创测试".into(),
+                    clip_ids: vec![clip.id],
+                    fields: vec![
+                        "title".into(),
+                        "content".into(),
+                        "tags".into(),
+                        "sources".into(),
+                    ],
+                    max_results: 5,
+                    expires_hours: 1,
+                    allow_pet_control: false,
+                },
+                Path::new("/fixture/starclip"),
+            )
+            .unwrap();
+        let token = config["config"]["mcp"]["mcpServers"]["starclip"]["env"]["STARCLIP_AI_TOKEN"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let id = config["connectionId"].as_str().unwrap().to_owned();
+        drop(ai);
+        drop(store);
+        assert_eq!(
+            ai_access::client(port, &token, "search", json!({})).unwrap()["total"],
+            1
+        );
+        // The request cannot emit data while a privacy mutation owns the store.
+        let store = context.store.lock().unwrap();
+        let worker_token = token.clone();
+        let worker = thread::spawn(move || {
+            ai_access::client(port, &worker_token, "get", json!({"id": clip.id}))
+        });
+        store.set_clip_privacy(clip.id, true, false).unwrap();
+        drop(store);
+        assert_eq!(worker.join().unwrap().unwrap_err(), ai_access::DENIED);
+        assert_eq!(
+            ai_access::client(port, &token, "search", json!({})).unwrap()["total"],
+            0
+        );
+        for action in ["list_sources", "list_tags"] {
+            assert_eq!(
+                ai_access::client(port, &token, action, json!({})).unwrap()["returned"],
+                0
+            );
+        }
+        context.storage.lock().unwrap().freeze_for_update().unwrap();
+        assert!(ai_access::client(port, &token, "status", json!({})).is_err());
+        context.storage.lock().unwrap().cancel_update_freeze();
+        context.ai.lock().unwrap().revoke(&id);
+        for action in ai_access::TOOLS {
+            let args = if action == "get" {
+                json!({"id": clip.id})
+            } else {
+                json!({})
+            };
+            assert!(ai_access::client(port, &token, action, args).is_err());
+        }
+        // Exercise the real loopback-to-pet callback with synthetic data only.
+        // This creates no native window and never opens a system clipboard.
+        let pet_config = {
+            let store = context.store.lock().unwrap();
+            let mut preferences = store.starpet_preferences().unwrap();
+            preferences.enabled = true;
+            store.save_starpet_preferences(&preferences).unwrap();
+            context
+                .ai
+                .lock()
+                .unwrap()
+                .create(
+                    &store,
+                    CreateConnection {
+                        name: "原创 Agent 测试".into(),
+                        clip_ids: vec![],
+                        fields: vec![],
+                        max_results: 5,
+                        expires_hours: 1,
+                        allow_pet_control: true,
+                    },
+                    Path::new("/fixture/starclip"),
+                )
+                .unwrap()
+        };
+        let pet_token = pet_config["config"]["mcp"]["mcpServers"]["starclip"]["env"]
+            ["STARCLIP_AI_TOKEN"]
+            .as_str()
+            .unwrap();
+        assert!(ai_access::client(port, pet_token, "search", json!({})).is_err());
+        assert_eq!(
+            ai_access::client(
+                port,
+                pet_token,
+                "pet_signal",
+                json!({"status":"working","action":"greet","message":"原创测试进度"})
+            )
+            .unwrap()["accepted"],
+            true
+        );
+        let signal = received_pet_events
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(
+            signal.signal.unwrap().message.as_deref(),
+            Some("原创测试进度")
+        );
+        assert_eq!(
+            ai_access::client(port, pet_token, "pet_clear", json!({})).unwrap()["cleared"],
+            true
+        );
+        assert!(received_pet_events
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .signal
+            .is_none());
+        context.ai.lock().unwrap().enable(false).unwrap();
+        assert!(ai_access::client(port, &token, "status", json!({})).is_err());
+        drop(context);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn shared_clipboard_writer_suppresses_only_successful_own_writes() {
+        let mut capture = CaptureState::default();
+        capture.accept(
+            Some(1),
+            Some(CaptureKey::Text("fixed previous text".into())),
+        );
+        let text = CaptureKey::Text("fixed product copy".into());
+        write_and_suppress(&mut capture, text.clone(), || Ok(())).unwrap();
+        assert!(capture.should_read(Some(2)));
+        assert!(!capture.needs_capture(&Some(text.clone())));
+        let image = CaptureKey::Image("fixed image digest".into());
+        assert!(write_and_suppress(
+            &mut capture,
+            image.clone(),
+            || Err("fixture failure".into())
+        )
+        .is_err());
+        assert!(!capture.needs_capture(&Some(text)));
+        assert!(capture.needs_capture(&Some(image.clone())));
+        write_and_suppress(&mut capture, image.clone(), || Ok(())).unwrap();
+        assert!(!capture.needs_capture(&Some(image)));
+        assert!(capture.needs_capture(&Some(CaptureKey::Text("later external text".into()))));
+    }
 
     #[test]
     fn project_links_only_accept_fixed_targets_without_opening_a_browser() {

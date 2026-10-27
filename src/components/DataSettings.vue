@@ -120,7 +120,7 @@ onMounted(() => { if (isDesktop) void refresh(); });
             <button type="button" class="data-button" :disabled="blocked" @click="choose('use')">使用已有数据目录</button>
           </div>
           <p class="data-hint">迁移会在所选位置新建专用目录，不覆盖已有目录。包括历史、星标、分组、已保存的偏好和目录内手写组件；旧目录保留。目录外的手写组件不会复制。</p>
-          <p class="data-hint">确认后将立即重启，请先保存其他偏好。迁移与 JSON 备份不同：JSON 备份只包含片段和分组。</p>
+          <p class="data-hint">确认后将立即重启，请先保存其他偏好。JSON 备份包含记录、图片、分组、标签和隐私规则；完整迁移还包含已保存的外观等偏好及受管手写组件。</p>
         </template>
       </template>
       <div v-if="plan && !pending" ref="confirmation" class="data-confirmation" tabindex="-1" role="region" aria-label="确认数据目录变更">
