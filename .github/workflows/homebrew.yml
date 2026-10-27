@@ -115,6 +115,7 @@ jobs:
           tap_path=$(brew --repository cpython666/tap)
           node scripts/homebrew-release.mjs cask evidence.json "$tap_path/Casks/starclip.rb"
           brew style --cask cpython666/tap/starclip
+          brew trust --cask cpython666/tap/starclip
           brew audit --cask --strict --online cpython666/tap/starclip
           brew fetch --cask cpython666/tap/starclip
           cp "$tap_path/Casks/starclip.rb" starclip.rb
