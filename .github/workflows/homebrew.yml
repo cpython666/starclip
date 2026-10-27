@@ -107,6 +107,8 @@ jobs:
           test "$(lipo -archs "$app/Contents/MacOS/starclip")" = arm64
       - name: Generate and validate the Cask with Homebrew
         if: steps.plan.outputs.skip != 'true'
+        env:
+          HOMEBREW_GITHUB_API_TOKEN: ${{ github.token }}
         run: |
           # Runner images can lag behind Homebrew's matching style/audit rules.
           brew update
