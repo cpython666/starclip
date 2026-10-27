@@ -20,7 +20,9 @@ if mode == 'seed':
     now = int(time.time() * 1000)
     with db:
         db.execute('INSERT INTO groups(id,name,color) VALUES(1001,?,?)', (group, '#7BBEB0'))
-        db.execute('INSERT INTO clips(id,content,title,kind,pinned,keep_forever,group_id,created_at,updated_at,copy_count) VALUES(1001,?,?,?,1,1,1001,?,?,7)', (content, title, 'text', now, now))
+        # The public Mac 0.1.0 predates keep_forever; its upgrade must add the
+        # default column itself. Use only columns present in both baselines.
+        db.execute('INSERT INTO clips(id,content,title,kind,pinned,group_id,created_at,updated_at,copy_count) VALUES(1001,?,?,?,1,1001,?,?,7)', (content, title, 'text', now, now))
         db.execute("INSERT INTO preferences(key,value) VALUES('settings',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(settings),))
     db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
 else:
@@ -31,7 +33,7 @@ else:
         assert db.execute('SELECT count(*) FROM clips').fetchone()[0] == 0, 'Fresh application recorded the canary'
     else:
         assert saved is not None and json.loads(saved[0]) == settings, 'Upgrade did not preserve settings'
-        assert db.execute('SELECT content,title,kind,pinned,keep_forever,group_id,copy_count FROM clips').fetchall() == [(content,title,'text',1,1,1001,7)], 'Upgrade changed the fixed record or recorded the canary'
+        assert db.execute('SELECT content,title,kind,pinned,keep_forever,group_id,copy_count FROM clips').fetchall() == [(content,title,'text',1,0,1001,7)], 'Upgrade changed the fixed record or recorded the canary'
         assert db.execute('SELECT name,color FROM groups WHERE id=1001').fetchone() == (group,'#7BBEB0'), 'Upgrade changed the fixed group'
         snapshots = list((path.parent / 'recovery').glob('*/snapshot.json'))
         valid = [p for p in snapshots if json.loads(p.read_text())['reason'] == 'before-migration']
