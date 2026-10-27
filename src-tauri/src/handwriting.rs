@@ -55,7 +55,7 @@ struct CliAssets {
 }
 #[derive(Deserialize, Serialize)]
 struct AppSelection {
-    path: PathBuf,
+    path: String,
 }
 
 fn unavailable(error: impl Into<String>) -> HandwritingAssets {
@@ -140,7 +140,10 @@ fn discover(directory: &Path) -> Result<PathBuf> {
             File::open(selected).map_err(|_| "无法读取手写应用设置，请重新选择星笺应用。")?;
         let selection: AppSelection = serde_json::from_reader(file.take(16 * 1024))
             .map_err(|_| "手写应用设置无效，请重新选择星笺应用。")?;
-        return normalize_app(&crate::storage::renderer_path(directory, &selection.path)?);
+        return normalize_app(&crate::storage::renderer_path(
+            directory,
+            Path::new(&selection.path),
+        )?);
     }
     automatic_candidates().iter().find_map(|path| normalize_app(path).ok())
         .ok_or_else(|| "未发现本机星笺手写应用。请先安装星笺，再点击「选择星笺应用」选择 .app 或 xingjian CLI。".into())
@@ -343,7 +346,13 @@ pub fn select_app(directory: &Path, selected: &Path) -> Result<HandwritingAssets
         .strip_prefix(directory)
         .ok()
         .filter(|path| path.starts_with("renderers"));
-    let path = portable.unwrap_or(&executable).to_owned();
+    let path = match portable {
+        Some(relative) => crate::storage::portable_renderer_path(relative)?,
+        None => executable
+            .to_str()
+            .ok_or("手写应用路径不是有效的 Unicode。")?
+            .to_owned(),
+    };
     let bytes = serde_json::to_vec(&AppSelection { path }).map_err(|_| "无法保存手写应用位置。")?;
     file.write_all(&bytes)
         .and_then(|_| file.sync_all())

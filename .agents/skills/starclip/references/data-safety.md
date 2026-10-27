@@ -54,7 +54,7 @@
 - 单份 JSON 限 20 MiB、10,000 条片段、1,000 组及累计 2.56 亿图片像素；浏览器明确拒绝含图导入/导出，不丢图后声称备份成功。
 - 导入规则以新 ID、停用状态追加到规则列表，用户可查看后自行启用，不覆盖活动规则；同策略重复导入去重，超过总 100 条整份拒绝。追加会递增 revision，已有未重扫记录暂不可供 AI 读取。
 - Windows / macOS 桌面共用 `store.rs::export/import` 的 v3 导出与 v1 / v2 / v3 导入，与系统无关；跨系统记录互导是格式层面支持，尚未双机实测。普通历史 JSON 不含成长，成长另用 `starpet_growth.rs` / `starpet-growth.ts` 的 `starclip-starpet` v1 存档。记录格式兼容不等于完整环境兼容；路径、快捷键和手写可执行组件须单独处理，详见产品迁移边界。
-- 已核实待办（2026-10-26 源码核对）：`handwriting.rs::select_app` / `storage.rs::selection_data` 直接序列化 `PathBuf`，Windows 受管路径中的反斜杠到 macOS 无法通过 `renderer_path` 的 `starts_with("renderers")`；`verified_recovery` 会调用该校验并拒绝含此配置的恢复点。尚无外部完整恢复点导入入口，`prepare_recovery` 只按 ID 从本机默认 `recovery/` 读取。待补跨平台路径规范及双机验收；不把待办写成已有兼容能力。
+- 2026-10-27 修复受管手写路径的跨平台表示：`select_app` / `selection_data` 共用 `portable_renderer_path` 写正斜杠，`renderer_path` 兼容旧 Windows 分隔符并先校验组件；拒绝上级目录、盘符/ADS与尾点空格等越界写法，保留原生外部绝对路径含义。两个固定样例覆盖编码边界、旧配置迁移及有正确摘要的旧恢复点读取/恢复；不代表跨系统可执行文件兼容。外部完整恢复点导入入口、双机验收仍待完成，`prepare_recovery` 只按 ID 从本机默认 `recovery/` 读取。
 - 目录操作最终确认成功后冻结写入并请求重启；重启前不再写旧库，失败可重试。选择或取消不改位置，未保存草稿不会自动提交；失效定位不能静默创建空库掩盖问题。
 - 数据及备份均为本机明文、未加密。位置以偏好中显示的实际目录为准，默认目录不保证是当前目录。受管占用不是整个目录占用，不含系统 WebView 缓存或无关文件。
 - 不读正式数据验证功能。使用隔离应用标识与原创固定夹具；`artifacts/`、`.local/`、数据库、备份、日志已在 `.gitignore` 中排除，忽略规则不等于可发布这些内容。

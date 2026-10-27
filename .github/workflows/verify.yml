@@ -65,19 +65,7 @@ jobs:
           workspaces: src-tauri
       - run: npm ci --no-audit --no-fund
       - run: npm run tauri icon public/starclip.svg
-      - id: desktop-tests
-        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib --test ai_stdio
-      - name: Diagnose Windows test loader failures
-        if: failure() && runner.os == 'Windows' && steps.desktop-tests.outcome == 'failure'
-        shell: pwsh
-        run: ./scripts/windows-loader-diagnostics.ps1 -OutputDirectory "$env:RUNNER_TEMP/starclip-loader-diagnostics"
-      - uses: actions/upload-artifact@v4
-        if: always() && runner.os == 'Windows' && steps.desktop-tests.outcome == 'failure'
-        with:
-          name: starclip-windows-loader-diagnostics
-          path: ${{ runner.temp }}/starclip-loader-diagnostics
-          retention-days: 7
-          if-no-files-found: warn
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib --test ai_stdio
       - run: npm run tauri build -- --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config '{"bundle":{"createUpdaterArtifacts":false}}'
         shell: bash
         env:

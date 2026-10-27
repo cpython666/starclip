@@ -175,20 +175,55 @@ fn check_directory(path: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// Resolve renderer selections copied between machines without trusting `..` paths.
-/// Managed renderer paths are relative so the whole directory remains portable.
+fn renderer_components(path: &str) -> Result<Vec<&str>> {
+    // Accept old Windows selections on every platform, but validate before joining:
+    // Path::components on Unix does not recognize Windows separators or drive paths.
+    let parts: Vec<_> = path.split(['/', '\\']).collect();
+    if parts.first() != Some(&"renderers")
+        || parts.iter().any(|part| {
+            part.is_empty()
+                || *part == "."
+                || *part == ".."
+                || part.ends_with('.')
+                || part.ends_with(' ')
+                || part.contains(':')
+                || part.chars().any(char::is_control)
+        })
+    {
+        return Err("相对渲染器路径必须位于数据目录的 renderers 文件夹。".into());
+    }
+    Ok(parts)
+}
+
+/// Encode native managed paths with a platform-independent separator.
+pub(crate) fn portable_renderer_path(relative: &Path) -> Result<String> {
+    let mut parts = Vec::new();
+    for part in relative.components() {
+        let Component::Normal(part) = part else {
+            return Err("受管渲染器路径不能包含根目录或上级目录。".into());
+        };
+        let part = part
+            .to_str()
+            .ok_or("受管渲染器文件名不是有效的 Unicode。")?;
+        // A literal Unix backslash would become a directory separator on Windows.
+        if part.contains('\\') {
+            return Err("受管渲染器文件名不能包含反斜杠。".into());
+        }
+        parts.push(part);
+    }
+    let path = parts.join("/");
+    renderer_components(&path)?;
+    Ok(path)
+}
+
+/// Resolve portable and legacy Windows managed paths without trusting `..` paths.
 pub fn renderer_path(directory: &Path, selected: &Path) -> Result<PathBuf> {
     // Never replace a user's absolute external selection with a similarly named
     // program inside this directory. A missing external program must be reselected.
     if !selected.is_absolute() {
-        if !selected
-            .components()
-            .all(|part| matches!(part, Component::Normal(_)))
-            || !selected.starts_with("renderers")
-        {
-            return Err("相对渲染器路径必须位于数据目录的 renderers 文件夹。".into());
-        }
-        return Ok(directory.join(selected));
+        let selected = selected.to_str().ok_or("渲染器路径不是有效的 Unicode。")?;
+        let relative: PathBuf = renderer_components(selected)?.into_iter().collect();
+        return Ok(directory.join(relative));
     }
     Ok(selected.to_owned())
 }
@@ -218,7 +253,7 @@ fn selection_data(directory: &Path, source: &Path) -> Result<Option<(Vec<u8>, bo
         .filter(|relative| relative.starts_with("renderers"));
     let external = relative.is_none();
     if let Some(relative) = relative {
-        json["path"] = serde_json::to_value(relative).map_err(|error| error.to_string())?;
+        json["path"] = portable_renderer_path(relative)?.into();
     } else if resolved.starts_with(directory) {
         return Err("数据目录中的手写渲染器需放在 renderers 子目录后再迁移。原数据未改变。".into());
     }
@@ -508,19 +543,20 @@ pub(crate) fn create_recovery_snapshot(
     {
         return Err("未知的恢复点用途。".into());
     }
-    let root = managed_directory(root)?;
+    let root = managed_directory(root).map_err(|error| format!("准备恢复点目录失败：{error}"))?;
     let id = format!("{}-{}", nonce(), std::process::id());
     let temporary = root.join(format!(".pending-{id}"));
-    create_private_directory(&temporary)?;
+    create_private_directory(&temporary)
+        .map_err(|error| format!("创建恢复点临时目录失败：{error}"))?;
     let result = (|| -> Result<RecoveryPoint> {
         let database = temporary.join(DATABASE);
-        drop(private_file(&database)?);
-        snapshot(&database)?;
+        drop(private_file(&database).map_err(|error| format!("创建恢复点数据库失败：{error}"))?);
+        snapshot(&database).map_err(|error| format!("复制恢复点数据库失败：{error}"))?;
         OpenOptions::new()
             .write(true)
             .open(&database)
             .and_then(|file| file.sync_all())
-            .map_err(io_error)?;
+            .map_err(|error| format!("恢复点数据库刷盘失败：{error}"))?;
         let mut warnings = vec![];
         if let Some((bytes, external)) = selection_data(current, selection)? {
             let mut file = private_file(&temporary.join(SELECTION))?;
@@ -535,7 +571,8 @@ pub(crate) fn create_recovery_snapshot(
         if fs::symlink_metadata(&renderers).is_ok() {
             copy_tree(&renderers, &temporary.join("renderers"))?;
         }
-        let files = collect_recovery_files(&temporary)?;
+        let files = collect_recovery_files(&temporary)
+            .map_err(|error| format!("校验恢复点文件失败：{error}"))?;
         let manifest = RecoveryManifest {
             format_version: 1,
             id: id.clone(),
@@ -550,18 +587,22 @@ pub(crate) fn create_recovery_snapshot(
             warnings,
             files,
         };
-        let mut file = private_file(&temporary.join("snapshot.json"))?;
+        let mut file = private_file(&temporary.join("snapshot.json"))
+            .map_err(|error| format!("创建恢复点清单失败：{error}"))?;
         let bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
         if bytes.len() > 2 * 1024 * 1024 {
             return Err("恢复点清单超过 2 MiB，未继续操作。".into());
         }
         file.write_all(&bytes)
             .and_then(|_| file.sync_all())
-            .map_err(io_error)?;
-        sync_directory(&temporary)?;
+            .map_err(|error| format!("写入恢复点清单失败：{error}"))?;
+        // Windows cannot rename a directory while one of its children is open.
+        drop(file);
+        sync_directory(&temporary).map_err(|error| format!("同步恢复点临时目录失败：{error}"))?;
         let destination = root.join(&id);
-        fs::rename(&temporary, &destination).map_err(io_error)?;
-        sync_directory(&root)?;
+        fs::rename(&temporary, &destination)
+            .map_err(|error| format!("提交恢复点目录失败：{error}"))?;
+        sync_directory(&root).map_err(|error| format!("同步恢复点目录失败：{error}"))?;
         Ok(manifest.point(&destination))
     })();
     if result.is_err() {
@@ -1112,6 +1153,117 @@ mod tests {
                 .query_row("SELECT count(*) FROM clips", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
             1
+        );
+    }
+
+    #[test]
+    fn managed_renderer_paths_are_portable_and_reject_platform_escapes() {
+        let directory = Path::new("synthetic-data");
+        let relative = Path::new("renderers")
+            .join("星光 pack")
+            .join("xingjian.exe");
+        assert_eq!(
+            portable_renderer_path(&relative).unwrap(),
+            "renderers/星光 pack/xingjian.exe"
+        );
+        for saved in [
+            "renderers/星光 pack/xingjian.exe",
+            r"renderers\星光 pack\xingjian.exe",
+            r"renderers\星光 pack/xingjian.exe",
+        ] {
+            assert_eq!(
+                renderer_path(directory, Path::new(saved)).unwrap(),
+                directory.join(&relative)
+            );
+        }
+        for invalid in [
+            "",
+            "../renderers/xingjian",
+            "./renderers/xingjian",
+            r"\renderers\xingjian",
+            r"renderers\..\outside",
+            r"renderers/..\outside",
+            r"renderers\C:\outside",
+            r"C:renderers\xingjian",
+            "renderers/pack:stream/xingjian",
+            "renderers/.. /outside",
+            "renderers/pack./xingjian",
+            "renderers//xingjian",
+            "renderers/\0xingjian",
+        ] {
+            assert!(
+                renderer_path(directory, Path::new(invalid)).is_err(),
+                "{invalid:?}"
+            );
+        }
+        #[cfg(unix)]
+        {
+            assert!(portable_renderer_path(Path::new(r"renderers/pack\literal")).is_err());
+            for external in [
+                r"C:\external\renderers\xingjian.exe",
+                r"\\server\share\xingjian.exe",
+            ] {
+                assert!(renderer_path(directory, Path::new(external)).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_windows_renderer_selection_survives_migration_and_recovery() {
+        let scratch = Scratch::new();
+        let source = scratch.0.join("source");
+        let mut storage = Storage::open(&source, &source).unwrap();
+        let store = Store::open(&source.join(DATABASE)).unwrap();
+        fs::create_dir_all(source.join("renderers/pack")).unwrap();
+        fs::write(
+            source.join("renderers/pack/xingjian.exe"),
+            "fixed fixture, never executed",
+        )
+        .unwrap();
+        let legacy = serde_json::json!({"path": r"renderers\pack\xingjian.exe", "fixed": true});
+        fs::write(source.join(SELECTION), legacy.to_string()).unwrap();
+        let (bytes, external) = selection_data(&source, &source).unwrap().unwrap();
+        let normalized: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(!external);
+        assert_eq!(normalized["path"], "renderers/pack/xingjian.exe");
+        assert_eq!(normalized["fixed"], true);
+        assert_eq!(
+            fs::read_to_string(source.join(SELECTION)).unwrap(),
+            legacy.to_string()
+        );
+
+        let point = storage.create_recovery_point(&store, "manual").unwrap();
+        let snapshot = storage.recovery_directory().join(&point.id);
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(snapshot.join(SELECTION)).unwrap()).unwrap();
+        assert_eq!(saved["path"], "renderers/pack/xingjian.exe");
+        // Model an authentic old Windows recovery point, including matching hashes.
+        fs::write(snapshot.join(SELECTION), legacy.to_string()).unwrap();
+        let (_, mut manifest) = read_manifest(&storage.recovery_directory(), &point.id).unwrap();
+        manifest.files = collect_recovery_files(&snapshot).unwrap();
+        manifest.total_bytes = manifest.files.values().map(|file| file.bytes).sum();
+        fs::write(
+            snapshot.join("snapshot.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        verified_recovery(&storage.recovery_directory(), &point.id).unwrap();
+        let (restored, _) = prepare_recovery(&source, &point.id).unwrap();
+        assert!(
+            renderer_path(&restored, Path::new(r"renderers\pack\xingjian.exe"))
+                .unwrap()
+                .is_file()
+        );
+
+        let target = scratch.0.join("migrated");
+        storage.apply(&store, DirectoryMode::Move, &target).unwrap();
+        let moved: serde_json::Value =
+            serde_json::from_slice(&fs::read(target.join(SELECTION)).unwrap()).unwrap();
+        assert_eq!(moved["path"], "renderers/pack/xingjian.exe");
+        assert!(
+            renderer_path(&target, Path::new(moved["path"].as_str().unwrap()))
+                .unwrap()
+                .is_file()
         );
     }
 
