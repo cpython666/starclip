@@ -1,0 +1,6 @@
+:root[data-view=starpet],:root[data-view=starpet] body,:root[data-view=starpet] #app{width:100%;height:100%;margin:0;min-width:0;overflow:hidden;background:transparent;color-scheme:dark}
+:root[data-view=starpet]{font-family:system-ui,-apple-system,sans-serif;font-synthesis:none;text-rendering:optimizeLegibility;-webkit-font-smoothing:antialiased}
+:root[data-view=starpet] *{box-sizing:border-box}
+:root[data-view=starpet] button{font:inherit;color:inherit}
+:root[data-view=starpet] button:disabled{cursor:wait}
+:root[data-view=starpet] svg{flex-shrink:0}

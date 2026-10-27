@@ -5,6 +5,7 @@ const props = withDefaults(defineProps<{
   pack: 'none' | 'auto' | 'cosmos' | 'cats' | 'puppies' | 'garden'
   theme: 'dark' | 'light' | 'white' | 'forest' | 'rose' | 'system'
   placement?: 'sidebar' | 'header' | 'preview'
+  customImage?: string | null
 }>(), { placement: 'sidebar' })
 
 const media = typeof window === 'undefined' ? null : window.matchMedia('(prefers-color-scheme: dark)')
@@ -18,7 +19,8 @@ onUnmounted(() => media?.removeEventListener('change', updateSystemTheme))
 </script>
 
 <template>
-  <svg v-if="resolvedPack !== 'none'" class="sticker-scene" :class="`placement-${placement}`" :data-pack="resolvedPack" :data-theme="resolvedTheme" viewBox="0 0 180 90" fill="none" aria-hidden="true" focusable="false">
+  <img v-if="customImage" class="sticker-scene imported-sticker" :class="`placement-${placement}`" :src="customImage" alt="" aria-hidden="true" draggable="false" />
+  <svg v-else-if="resolvedPack !== 'none'" class="sticker-scene" :class="`placement-${placement}`" :data-pack="resolvedPack" :data-theme="resolvedTheme" viewBox="0 0 180 90" fill="none" aria-hidden="true" focusable="false">
     <g v-if="resolvedPack === 'cosmos'">
       <path class="trail" d="M27 61c13 17 45 20 76 14m30-38c12-5 23-4 28 1" />
       <g class="paper-piece" transform="rotate(-8 92 43)">
@@ -115,6 +117,7 @@ onUnmounted(() => media?.removeEventListener('change', updateSystemTheme))
 </template>
 
 <style scoped>
+.imported-sticker{object-fit:contain;object-position:center;filter:drop-shadow(0 2px 2px #00000018)}
 .sticker-scene{--paper:#fff9ec;--ink:#665664;--cream:#fff8e9;--butter:#f1d596;--rose:#eeb7c8;--lilac:#bcb5e3;--mint:#a9cfc2;display:block;width:180px;height:90px;max-width:100%;flex-shrink:0;overflow:visible;pointer-events:none;user-select:none}
 .sticker-scene[data-theme=light]{--paper:#fff;--ink:#6d655b;--cream:#fffaf0;--butter:#ecd39c;--rose:#e8b6aa;--lilac:#c9c4dc;--mint:#b4cdb8}
 .sticker-scene[data-theme=white]{--paper:#fff;--ink:#565656;--cream:#f5f5f5;--butter:#d5d5d5;--rose:#e3cbce;--lilac:#d4d4d4;--mint:#bfd2ca}

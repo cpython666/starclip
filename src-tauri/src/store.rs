@@ -1,7 +1,11 @@
+use crate::appearance::{self, Appearance};
 use crate::images::{self, ImageMetadata, PreparedImage};
+use crate::privacy::{self, Metadata, PrivacyRescan, PrivacyRules};
+use crate::starpet_growth::{GrowthChange, GrowthState, MAX_REVISION};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -11,6 +15,7 @@ use std::{
 };
 
 pub type Result<T> = std::result::Result<T, String>;
+pub const SCHEMA_VERSION: u32 = 2;
 pub const MAX_CONTENT_BYTES: usize = 256 * 1024;
 const MAX_BACKUP_BYTES: usize = 20 * 1024 * 1024;
 const MAX_BACKUP_CLIPS: usize = 10_000;
@@ -40,6 +45,8 @@ fn check_backup_image_limits(clips: &[Clip]) -> Result<()> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Clip {
+    #[serde(skip)]
+    pub record_identity: String,
     pub id: i64,
     pub content: String,
     pub title: String,
@@ -55,6 +62,22 @@ pub struct Clip {
     pub created_at: i64,
     pub updated_at: i64,
     pub copy_count: i64,
+    #[serde(default)]
+    pub privacy_manual: bool,
+    #[serde(default)]
+    pub is_private: bool,
+    #[serde(default)]
+    pub privacy_reasons: Vec<String>,
+    #[serde(default)]
+    pub scan_version: u32,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub manual_tags: Vec<String>,
+    #[serde(default)]
+    pub link_sources: Vec<String>,
+    #[serde(default)]
+    pub link_hosts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -321,6 +344,8 @@ struct Backup {
     groups: Vec<Group>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     images: Vec<BackupImage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    privacy_rules: Option<PrivacyRules>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -330,7 +355,7 @@ struct BackupImage {
     png: String,
 }
 
-const CLIP_SELECT: &str = "SELECT c.id,c.content,c.title,c.kind,c.pinned,c.group_id,c.created_at,c.updated_at,c.copy_count,c.language,c.keep_forever,i.width,i.height,i.bytes FROM clips c LEFT JOIN clip_images i ON i.clip_id=c.id";
+const CLIP_SELECT: &str = "SELECT c.id,c.content,c.title,c.kind,c.pinned,c.group_id,c.created_at,c.updated_at,c.copy_count,c.language,c.keep_forever,i.width,i.height,i.bytes,p.metadata FROM clips c LEFT JOIN clip_images i ON i.clip_id=c.id LEFT JOIN clip_privacy p ON p.clip_id=c.id";
 
 pub struct Store {
     conn: Connection,
@@ -346,7 +371,9 @@ fn now() -> i64 {
         .as_millis() as i64
 }
 fn clip_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Clip> {
+    let metadata = metadata_from_json(row.get(14)?)?;
     Ok(Clip {
+        record_identity: metadata.record_identity.clone(),
         id: row.get(0)?,
         content: row.get(1)?,
         title: row.get(2)?,
@@ -366,7 +393,78 @@ fn clip_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Clip> {
             None => None,
         },
         keep_forever: row.get(10)?,
+        privacy_manual: metadata.privacy_manual,
+        is_private: metadata.is_private(),
+        tags: metadata.tags(),
+        manual_tags: metadata.manual_tags.clone(),
+        privacy_reasons: metadata.privacy_reasons,
+        scan_version: metadata.scan_version,
+        link_sources: metadata.link_sources,
+        link_hosts: metadata.link_hosts,
     })
+}
+
+fn metadata_from_json(json: Option<String>) -> rusqlite::Result<Metadata> {
+    match json {
+        Some(json) => serde_json::from_str(&json).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(14, rusqlite::types::Type::Text, Box::new(e))
+        }),
+        None => Ok(Metadata::default()),
+    }
+}
+fn read_metadata(conn: &Connection, id: i64) -> Result<Metadata> {
+    let json: Option<String> = conn
+        .query_row(
+            "SELECT metadata FROM clip_privacy WHERE clip_id=?1",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sql_error)?;
+    metadata_from_json(json).map_err(sql_error)
+}
+fn put_metadata(conn: &Connection, id: i64, metadata: &Metadata) -> Result<()> {
+    validate_backup_tags(&metadata.tags())?;
+    conn.execute("INSERT INTO clip_privacy(clip_id,metadata) VALUES(?1,?2) ON CONFLICT(clip_id) DO UPDATE SET metadata=excluded.metadata", params![id, serde_json::to_string(metadata).map_err(|e| e.to_string())?]).map_err(sql_error)?;
+    Ok(())
+}
+fn validate_backup_tags(tags: &[String]) -> Result<()> {
+    if tags.len() > 256 {
+        return Err("标签合并后超过 256 个，未写入。".into());
+    }
+    for chunk in tags.chunks(32) {
+        privacy::validate_tags(chunk)?;
+    }
+    Ok(())
+}
+fn read_privacy_rules(conn: &Connection) -> Result<PrivacyRules> {
+    let json: Option<String> = conn
+        .query_row(
+            "SELECT value FROM preferences WHERE key='privacy_rules_v1'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sql_error)?;
+    let rules: PrivacyRules = match json {
+        Some(json) => serde_json::from_str(&json).map_err(|_| "隐私规则损坏，已停止开放数据。")?,
+        None => PrivacyRules::default(),
+    };
+    rules.validate()?;
+    Ok(rules)
+}
+fn scan_clip(conn: &Connection, id: i64, rules: &PrivacyRules, reviewed: bool) -> Result<Metadata> {
+    let (content, title, kind): (String, String, String) = conn
+        .query_row(
+            "SELECT content,title,kind FROM clips WHERE id=?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(sql_error)?;
+    let mut metadata = read_metadata(conn, id)?.scanned(&content, &title, &kind, rules, reviewed);
+    metadata.ensure_identity()?;
+    put_metadata(conn, id, &metadata)?;
+    Ok(metadata)
 }
 
 pub fn validate_content(content: &str, title: &str) -> Result<()> {
@@ -459,6 +557,9 @@ impl Store {
             .map_err(sql_error)?;
         conn.busy_timeout(std::time::Duration::from_secs(3))
             .map_err(sql_error)?;
+        if Self::check_schema_version(&conn)? == SCHEMA_VERSION {
+            Self::validate_current_schema(&conn)?;
+        }
         let tx = conn.unchecked_transaction().map_err(sql_error)?;
         let integrity: String = tx
             .query_row("PRAGMA integrity_check", [], |row| row.get(0))
@@ -507,24 +608,109 @@ impl Store {
         Ok(())
     }
 
+    fn validate_current_schema(conn: &Connection) -> Result<()> {
+        for query in [
+            "SELECT id,content,title,kind,pinned,group_id,created_at,updated_at,copy_count,language,keep_forever FROM clips LIMIT 0",
+            "SELECT id,name,color FROM groups LIMIT 0",
+            "SELECT key,value FROM preferences LIMIT 0",
+            "SELECT clip_id,width,height,bytes,png,thumbnail FROM clip_images LIMIT 0",
+            "SELECT clip_id,metadata FROM clip_privacy LIMIT 0",
+        ] {
+            conn.prepare(query).map_err(|_| "数据库结构损坏，请从恢复点恢复。".to_string())?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn check_schema_version(conn: &Connection) -> Result<u32> {
+        let version: u32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(sql_error)?;
+        if version > SCHEMA_VERSION {
+            return Err(format!("此数据由较新版本的星笺创建（结构版本 {version}，当前支持 {SCHEMA_VERSION}）。请安装较新版本；原数据未更改。"));
+        }
+        Ok(version)
+    }
+
+    pub fn schema_version(&self) -> Result<u32> {
+        Self::check_schema_version(&self.conn)
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
-        let conn = Connection::open(path).map_err(sql_error)?;
-        Self::from_connection(conn)
+        let directory = path.parent().ok_or("数据库路径缺少父目录。")?;
+        Self::open_with_recovery(path, directory, &directory.join("recovery"))
+    }
+
+    pub(crate) fn open_with_recovery(
+        path: &Path,
+        selection: &Path,
+        recovery: &Path,
+    ) -> Result<Self> {
+        let mut snapshot = None;
+        if path.exists() {
+            if fs::symlink_metadata(path)
+                .map_err(|e| e.to_string())?
+                .file_type()
+                .is_symlink()
+            {
+                return Err("数据库不能是符号链接。".into());
+            }
+            // Inspect read-only before any writable connection or migration is opened.
+            let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(sql_error)?;
+            conn.busy_timeout(std::time::Duration::from_secs(3))
+                .map_err(sql_error)?;
+            let version = Self::check_schema_version(&conn)?;
+            let existing: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='clips')", [], |row| row.get(0)).map_err(sql_error)?;
+            if existing && version < SCHEMA_VERSION {
+                snapshot = Some(crate::storage::create_recovery_snapshot(
+                    recovery,
+                    path.parent().ok_or("数据库路径无效。")?,
+                    selection,
+                    version,
+                    "before-migration",
+                    |target| {
+                        conn.execute(
+                            "VACUUM main INTO ?1",
+                            [target.to_str().ok_or("备份路径无效。")?],
+                        )
+                        .map_err(sql_error)?;
+                        Ok(())
+                    },
+                )?);
+            }
+        }
+        let result = Connection::open(path)
+            .map_err(sql_error)
+            .and_then(Self::from_connection);
+        result.map_err(|error| match snapshot {
+            Some(point) => format!("数据库升级失败：{error}\n升级前恢复点已保留：{}。可在启动恢复中选择该恢复点；不会覆盖原目录。", point.path),
+            None => error,
+        })
     }
 
     fn from_connection(conn: Connection) -> Result<Self> {
         conn.busy_timeout(std::time::Duration::from_secs(3))
             .map_err(sql_error)?;
-        let existing_database: bool = conn
+        let version = Self::check_schema_version(&conn)?;
+        conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON;")
+            .map_err(sql_error)?;
+        if version == SCHEMA_VERSION {
+            Self::validate_current_schema(&conn)?;
+            let store = Self { conn };
+            store.prune_history()?;
+            return Ok(store);
+        }
+        // Every schema change and its version marker commit together. An error rolls
+        // back even early ADD COLUMN steps, preserving the pre-upgrade database.
+        let tx = conn.unchecked_transaction().map_err(sql_error)?;
+        let existing_database: bool = tx
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='clips')",
                 [],
                 |row| row.get(0),
             )
             .map_err(sql_error)?;
-        conn.execute_batch("PRAGMA foreign_keys=ON;
-            PRAGMA secure_delete=ON;
-            CREATE TABLE IF NOT EXISTS groups (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, color TEXT NOT NULL);
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS groups (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, color TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS clips (
                 id INTEGER PRIMARY KEY, content TEXT NOT NULL, title TEXT NOT NULL DEFAULT '',
                 kind TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0, keep_forever INTEGER NOT NULL DEFAULT 0,
@@ -534,12 +720,10 @@ impl Store {
             CREATE INDEX IF NOT EXISTS clips_updated ON clips(updated_at DESC);
             CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);").map_err(sql_error)?;
         if !existing_database {
-            conn.execute("INSERT INTO preferences(key,value) VALUES('onboarding_v1','false') ON CONFLICT(key) DO NOTHING", []).map_err(sql_error)?;
+            tx.execute("INSERT INTO preferences(key,value) VALUES('onboarding_v1','false') ON CONFLICT(key) DO NOTHING", []).map_err(sql_error)?;
         }
         let columns = {
-            let mut stmt = conn
-                .prepare("PRAGMA table_info(clips)")
-                .map_err(sql_error)?;
+            let mut stmt = tx.prepare("PRAGMA table_info(clips)").map_err(sql_error)?;
             let columns = stmt
                 .query_map([], |row| row.get::<_, String>(1))
                 .map_err(sql_error)?;
@@ -548,11 +732,11 @@ impl Store {
                 .map_err(sql_error)?
         };
         if !columns.iter().any(|name| name == "language") {
-            conn.execute("ALTER TABLE clips ADD COLUMN language TEXT", [])
+            tx.execute("ALTER TABLE clips ADD COLUMN language TEXT", [])
                 .map_err(sql_error)?;
         }
         if !columns.iter().any(|name| name == "keep_forever") {
-            conn.execute(
+            tx.execute(
                 "ALTER TABLE clips ADD COLUMN keep_forever INTEGER NOT NULL DEFAULT 0",
                 [],
             )
@@ -560,14 +744,13 @@ impl Store {
         }
         // The original UNIQUE(content) mixed text and image identities. Rebuild once,
         // in one transaction, before any image table exists; preserve every original field.
-        let legacy_unique: bool = conn
+        let legacy_unique: bool = tx
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM pragma_index_list('clips') WHERE origin='u')",
                 [],
                 |row| row.get(0),
             )
             .map_err(sql_error)?;
-        let tx = conn.unchecked_transaction().map_err(sql_error)?;
         if legacy_unique {
             let has_images: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='clip_images')", [], |row| row.get(0)).map_err(sql_error)?;
             if has_images {
@@ -591,10 +774,46 @@ impl Store {
                 width INTEGER NOT NULL CHECK(width>0), height INTEGER NOT NULL CHECK(height>0),
                 bytes INTEGER NOT NULL CHECK(bytes>0), png BLOB NOT NULL, thumbnail BLOB NOT NULL
             );").map_err(sql_error)?;
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS clip_privacy (clip_id INTEGER PRIMARY KEY REFERENCES clips(id) ON DELETE CASCADE, metadata TEXT NOT NULL);").map_err(sql_error)?;
+        let rules = read_privacy_rules(&tx)?;
+        let ids = {
+            let mut stmt = tx.prepare("SELECT id FROM clips").map_err(sql_error)?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, i64>(0))
+                .map_err(sql_error)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(sql_error)?
+        };
+        for id in ids {
+            scan_clip(&tx, id, &rules, false)?;
+        }
+        Self::validate_current_schema(&tx)?;
+        if tx
+            .prepare("PRAGMA foreign_key_check")
+            .map_err(sql_error)?
+            .exists([])
+            .map_err(sql_error)?
+        {
+            return Err("数据库引用损坏，升级已撤销。".into());
+        }
+        let json: Option<String> = tx
+            .query_row(
+                "SELECT value FROM preferences WHERE key='settings'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error)?;
+        let settings: Settings = match json {
+            Some(json) => serde_json::from_str(&json).map_err(|_| "偏好设置损坏，升级已撤销。")?,
+            None => Settings::default(),
+        };
+        settings.validate()?;
+        Self::prune_with_settings(&tx, &settings, now())?;
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(sql_error)?;
         tx.commit().map_err(sql_error)?;
-        let store = Self { conn };
-        store.prune_history()?;
-        Ok(store)
+        Ok(Self { conn })
     }
 
     pub fn settings(&self) -> Result<Settings> {
@@ -640,6 +859,57 @@ impl Store {
         Ok(())
     }
 
+    pub fn appearance(&self) -> Result<Appearance> {
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM preferences WHERE key='appearance_v1'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error)?;
+        let value = match json {
+            Some(json) => serde_json::from_str::<Appearance>(&json)
+                .map_err(|_| "自定义外观数据损坏，未修改已保存的数据。")?,
+            None => Appearance::default(),
+        };
+        value
+            .validate()
+            .map_err(|_| "自定义外观数据损坏，未修改已保存的数据。")?;
+        Ok(value)
+    }
+
+    fn change_appearance(
+        &self,
+        change: impl FnOnce(&Appearance) -> Result<Appearance>,
+    ) -> Result<Appearance> {
+        // Appearance updates never save ordinary settings, run retention or award growth.
+        let tx = self.conn.unchecked_transaction().map_err(sql_error)?;
+        let old = self.appearance()?;
+        let next = change(&old)?;
+        next.validate()?;
+        if next != old {
+            let json = serde_json::to_string(&next).map_err(|_| "无法保存自定义外观。")?;
+            tx.execute("INSERT INTO preferences(key,value) VALUES('appearance_v1',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [json]).map_err(sql_error)?;
+        }
+        tx.commit().map_err(sql_error)?;
+        Ok(next)
+    }
+
+    pub fn save_appearance(&self, patch: &serde_json::Value) -> Result<Appearance> {
+        self.change_appearance(|value| value.patched(patch))
+    }
+
+    pub fn import_appearance_sticker(&self, png_base64: &str, name: &str) -> Result<Appearance> {
+        let sticker = appearance::prepare_sticker(png_base64, name)?;
+        self.change_appearance(|value| Ok(value.with_sticker(sticker)))
+    }
+
+    pub fn remove_appearance_sticker(&self) -> Result<Appearance> {
+        self.change_appearance(|value| Ok(value.without_sticker()))
+    }
+
     pub fn starpet_preferences(&self) -> Result<StarpetPreferences> {
         let json: Option<String> = self
             .conn
@@ -660,6 +930,58 @@ impl Store {
             }
             None => Ok(StarpetPreferences::default()),
         }
+    }
+
+    pub fn starpet_growth(&self) -> Result<GrowthState> {
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM preferences WHERE key='starpet_growth_v1'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error)?;
+        let state = match json {
+            Some(json) => serde_json::from_str::<GrowthState>(&json)
+                .map_err(|_| "星伴成长存档损坏，未修改已保存的数据。")?,
+            None => GrowthState::default(),
+        };
+        state.validate()?;
+        Ok(state)
+    }
+
+    pub fn change_starpet_growth(&self, change: GrowthChange<'_>) -> Result<GrowthState> {
+        let today: String = self
+            .conn
+            .query_row("SELECT strftime('%Y-%m-%d','now','localtime')", [], |row| {
+                row.get(0)
+            })
+            .map_err(sql_error)?;
+        self.change_starpet_growth_on(change, &today)
+    }
+
+    fn change_starpet_growth_on(
+        &self,
+        change: GrowthChange<'_>,
+        today: &str,
+    ) -> Result<GrowthState> {
+        // One transaction contains read, validation and write; unrelated preferences and clips are untouched.
+        let tx = self.conn.unchecked_transaction().map_err(sql_error)?;
+        let old = self.starpet_growth()?;
+        let mut state = old.clone();
+        change.apply(&mut state, today)?;
+        if state != old {
+            state.revision = old
+                .revision
+                .checked_add(1)
+                .filter(|r| *r <= MAX_REVISION)
+                .ok_or("成长存档修订次数超限，未修改数据。")?;
+            let json = serde_json::to_string(&state).map_err(|_| "无法保存星伴成长数据。")?;
+            tx.execute("INSERT INTO preferences(key,value) VALUES('starpet_growth_v1',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [json]).map_err(sql_error)?;
+        }
+        tx.commit().map_err(sql_error)?;
+        Ok(state)
     }
 
     pub fn save_starpet_preferences(&self, preferences: &StarpetPreferences) -> Result<()> {
@@ -714,6 +1036,114 @@ impl Store {
         tx.execute("INSERT INTO preferences(key,value) VALUES('settings',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [json]).map_err(sql_error)?;
         Self::prune_with_settings(&tx, settings, now())?;
         tx.commit().map_err(sql_error)
+    }
+
+    pub fn privacy_rules(&self) -> Result<PrivacyRules> {
+        read_privacy_rules(&self.conn)
+    }
+
+    pub fn save_privacy_rules(&self, requested: &PrivacyRules) -> Result<PrivacyRules> {
+        let mut requested = requested.clone();
+        for rule in &mut requested.rules {
+            rule.tag = rule
+                .tag
+                .as_ref()
+                .map(|tag| tag.trim().to_owned())
+                .filter(|tag| !tag.is_empty());
+        }
+        requested.validate()?;
+        let tx = self.conn.unchecked_transaction().map_err(sql_error)?;
+        let current = self.privacy_rules()?;
+        if requested.revision != current.revision {
+            return Err("规则已变化，请重新打开后再保存。".into());
+        }
+        let mut next = requested.clone();
+        if current.rules == next.rules {
+            return Ok(current);
+        }
+        next.revision = current
+            .revision
+            .checked_add(1)
+            .ok_or("规则版本达到上限。")?;
+        tx.execute("INSERT INTO preferences(key,value) VALUES('privacy_rules_v1',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [serde_json::to_string(&next).map_err(|e| e.to_string())?]).map_err(sql_error)?;
+        // Older scans immediately become ineligible for AI; only a completed new scan restores eligibility.
+        tx.commit().map_err(sql_error)?;
+        Ok(next)
+    }
+
+    pub fn set_clip_privacy(&self, id: i64, private: bool, reviewed: bool) -> Result<Clip> {
+        if !private && !reviewed {
+            return Err("解除隐私前需要在本机确认已经复核内容。".into());
+        }
+        let tx = self.conn.unchecked_transaction().map_err(sql_error)?;
+        self.clip(id)?;
+        let mut metadata = read_metadata(&tx, id)?;
+        metadata.privacy_manual = private;
+        put_metadata(&tx, id, &metadata)?;
+        // A local review may remove stale reasons, never an active match.
+        scan_clip(&tx, id, &self.privacy_rules()?, !private && reviewed)?;
+        let clip = self.clip(id)?;
+        tx.commit().map_err(sql_error)?;
+        Ok(clip)
+    }
+
+    pub fn set_clip_tags(&self, id: i64, tags: &[String]) -> Result<Clip> {
+        privacy::validate_tags(tags)?;
+        let tx = self.conn.unchecked_transaction().map_err(sql_error)?;
+        self.clip(id)?;
+        let mut metadata = read_metadata(&tx, id)?;
+        metadata.manual_tags = privacy::union(tags, &[]);
+        put_metadata(&tx, id, &metadata)?;
+        let clip = self.clip(id)?;
+        tx.commit().map_err(sql_error)?;
+        Ok(clip)
+    }
+
+    fn privacy_rescan_plan(&self) -> Result<(PrivacyRescan, Vec<(i64, Metadata)>)> {
+        let rules = self.privacy_rules()?;
+        let clips = self.clips()?;
+        let mut digest = Sha256::new();
+        digest.update(serde_json::to_vec(&rules).map_err(|e| e.to_string())?);
+        let mut report = PrivacyRescan {
+            token: String::new(),
+            total: clips.len(),
+            private_count: 0,
+            newly_private_count: 0,
+            changed_count: 0,
+        };
+        let mut changes = Vec::new();
+        for clip in clips {
+            let old = read_metadata(&self.conn, clip.id)?;
+            digest.update(serde_json::to_vec(&clip).map_err(|e| e.to_string())?);
+            digest.update(serde_json::to_vec(&old).map_err(|e| e.to_string())?);
+            let mut next = old.scanned(&clip.content, &clip.title, &clip.kind, &rules, false);
+            next.ensure_identity()?;
+            report.private_count += usize::from(next.is_private());
+            report.newly_private_count += usize::from(next.is_private() && !old.is_private());
+            if old != next {
+                report.changed_count += 1;
+                changes.push((clip.id, next));
+            }
+        }
+        report.token = format!("{:x}", digest.finalize());
+        Ok((report, changes))
+    }
+
+    pub fn privacy_rescan_preview(&self) -> Result<PrivacyRescan> {
+        self.privacy_rescan_plan().map(|(report, _)| report)
+    }
+
+    pub fn privacy_rescan_apply(&self, token: &str) -> Result<PrivacyRescan> {
+        let tx = self.conn.unchecked_transaction().map_err(sql_error)?;
+        let (report, changes) = self.privacy_rescan_plan()?;
+        if report.token != token {
+            return Err("记录或规则已变化，请重新预览扫描结果。".into());
+        }
+        for (id, metadata) in changes {
+            put_metadata(&tx, id, &metadata)?;
+        }
+        tx.commit().map_err(sql_error)?;
+        Ok(report)
     }
 
     pub fn clips(&self) -> Result<Vec<Clip>> {
@@ -788,6 +1218,7 @@ impl Store {
             )
             .map_err(sql_error)?;
         Self::put_image(&tx, id, image)?;
+        scan_clip(&tx, id, &self.privacy_rules()?, false)?;
         Self::prune_with_settings(&tx, &self.settings()?, timestamp)?;
         let clip = self.clip(id)?;
         tx.commit().map_err(sql_error)?;
@@ -823,6 +1254,7 @@ impl Store {
                 |row| row.get(0),
             )
             .map_err(sql_error)?;
+        scan_clip(&tx, id, &self.privacy_rules()?, false)?;
         Self::prune_with_settings(&tx, &self.settings()?, timestamp)?;
         let clip = self.clip(id)?;
         tx.commit().map_err(sql_error)?;
@@ -840,6 +1272,7 @@ impl Store {
         validate_content(content, title)?;
         validate_language(language)?;
         let timestamp = now();
+        let tx = self.conn.unchecked_transaction().map_err(sql_error)?;
         let clip = match id {
             Some(id) => {
                 if self.clip(id)?.kind == "image" {
@@ -861,7 +1294,10 @@ impl Store {
                 self.clip(self.conn.last_insert_rowid())
             }
         }?;
+        scan_clip(&tx, clip.id, &self.privacy_rules()?, false)?;
         self.prune_history()?;
+        let clip = self.clip(clip.id)?;
+        tx.commit().map_err(sql_error)?;
         Ok(clip)
     }
 
@@ -869,6 +1305,7 @@ impl Store {
         if title.chars().count() > 200 {
             return Err("标题不能超过 200 个字符。".into());
         }
+        let tx = self.conn.unchecked_transaction().map_err(sql_error)?;
         let changed = self
             .conn
             .execute(
@@ -879,6 +1316,8 @@ impl Store {
         if changed == 0 {
             return Err("这条星笺已被删除。".into());
         }
+        scan_clip(&tx, id, &self.privacy_rules()?, false)?;
+        tx.commit().map_err(sql_error)?;
         Ok(())
     }
 
@@ -974,7 +1413,11 @@ impl Store {
             .take(100)
             .map(|clip| CleanupItem {
                 id: clip.id,
-                title: clip.title.clone(),
+                title: if clip.is_private {
+                    "隐私记录".into()
+                } else {
+                    clip.title.clone()
+                },
                 kind: clip.kind.clone(),
                 bytes: clip_bytes(clip),
                 updated_at: clip.updated_at,
@@ -1183,11 +1626,12 @@ impl Store {
         }
         let json = serde_json::to_string_pretty(&Backup {
             format: "starclip".into(),
-            version: if images.is_empty() { 1 } else { 2 },
+            version: 3,
             exported_at: now(),
             clips,
             groups,
             images,
+            privacy_rules: Some(self.privacy_rules()?),
         })
         .map_err(|e| e.to_string())?;
         check_backup_limits(json.len(), 0, 0)?;
@@ -1199,12 +1643,49 @@ impl Store {
         let backup: Backup = serde_json::from_str(json)
             .map_err(|_| "无法读取备份文件，请选择星笺导出的 JSON 文件。")?;
         if backup.format != "starclip"
-            || ![1, 2].contains(&backup.version)
+            || ![1, 2, 3].contains(&backup.version)
             || (backup.version == 1 && !backup.images.is_empty())
         {
             return Err("不支持的备份版本。".into());
         }
         check_backup_limits(json.len(), backup.clips.len(), backup.groups.len())?;
+        if let Some(rules) = &backup.privacy_rules {
+            rules.validate()?;
+        }
+        let current_rules = self.privacy_rules()?;
+        let mut active_rules = current_rules.clone();
+        if let Some(imported_rules) = &backup.privacy_rules {
+            for (index, imported) in imported_rules.rules.iter().enumerate() {
+                // Re-importing the same policy does not accumulate duplicate drafts.
+                if active_rules.rules.iter().any(|local| {
+                    local.name == imported.name
+                        && local.condition == imported.condition
+                        && local.value == imported.value
+                        && local.tag == imported.tag
+                        && local.mark_private == imported.mark_private
+                }) {
+                    continue;
+                }
+                let mut draft = imported.clone();
+                draft.enabled = false;
+                let mut suffix = index;
+                loop {
+                    draft.id = format!("import-{}-{suffix}", current_rules.revision);
+                    if !active_rules.rules.iter().any(|rule| rule.id == draft.id) {
+                        break;
+                    }
+                    suffix += 1;
+                }
+                active_rules.rules.push(draft);
+            }
+            if active_rules.rules != current_rules.rules {
+                active_rules.revision = current_rules
+                    .revision
+                    .checked_add(1)
+                    .ok_or("规则版本达到上限。")?;
+            }
+            active_rules.validate()?;
+        }
         let mut group_ids = HashSet::new();
         for group in &backup.groups {
             validate_group(&group.name, &group.color)?;
@@ -1215,6 +1696,13 @@ impl Store {
         let mut clip_ids = HashSet::new();
         for clip in &backup.clips {
             validate_content(&clip.content, &clip.title)?;
+            validate_backup_tags(&clip.tags)?;
+            validate_backup_tags(&clip.manual_tags)?;
+            if clip.privacy_reasons.len() > 128
+                || clip.privacy_reasons.iter().any(|reason| reason.len() > 512)
+            {
+                return Err("备份隐私原因无效。".into());
+            }
             if !clip_ids.insert(clip.id) {
                 return Err("备份存在重复星笺编号。".into());
             }
@@ -1229,7 +1717,7 @@ impl Store {
                 return Err("备份包含无效分组或记录。".into());
             }
             if (clip.kind == "image"
-                && (backup.version != 2 || clip.image.is_none() || clip.language.is_some()))
+                && (backup.version < 2 || clip.image.is_none() || clip.language.is_some()))
                 || (clip.kind != "image" && clip.image.is_some())
             {
                 return Err("备份图片类型或元数据无效。".into());
@@ -1276,6 +1764,9 @@ impl Store {
         }
         // All image bytes are validated before the transaction creates any group or clip.
         let tx = self.conn.transaction().map_err(sql_error)?;
+        if active_rules != current_rules {
+            tx.execute("INSERT INTO preferences(key,value) VALUES('privacy_rules_v1',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[serde_json::to_string(&active_rules).map_err(|e|e.to_string())?]).map_err(sql_error)?;
+        }
         let mut group_mapping = HashMap::new();
         for group in backup.groups {
             tx.execute(
@@ -1324,10 +1815,24 @@ impl Store {
                 language=COALESCE(clips.language,excluded.language),
                 kind=CASE WHEN clips.language IS NOT NULL OR excluded.language IS NOT NULL THEN 'code' ELSE clips.kind END"),
                 params![clip.content, clip.title, kind, clip.pinned, group_id, clip.created_at, clip.updated_at, clip.copy_count, clip.language, clip.keep_forever]).map_err(sql_error)?;
+            let id = existed.unwrap_or_else(|| tx.last_insert_rowid());
             if let Some(image) = prepared.remove(&clip.id) {
-                let id = existed.unwrap_or_else(|| tx.last_insert_rowid());
                 Self::put_image(&tx, id, &image)?;
             }
+            let mut metadata = read_metadata(&tx, id)?;
+            metadata.privacy_manual |=
+                clip.privacy_manual || (clip.is_private && clip.privacy_reasons.is_empty());
+            metadata.privacy_reasons =
+                privacy::union(&metadata.privacy_reasons, &clip.privacy_reasons);
+            let manual_tags = if backup.version >= 3 {
+                &clip.manual_tags
+            } else {
+                &clip.tags
+            };
+            metadata.manual_tags = privacy::union(&metadata.manual_tags, manual_tags);
+            // Imported scan version/classification cannot grant trust. Reclassify the final merged row.
+            put_metadata(&tx, id, &metadata)?;
+            scan_clip(&tx, id, &active_rules, false)?;
             if existed.is_none() {
                 imported += 1;
             }
@@ -1371,6 +1876,510 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn cleanup_preview_masks_private_titles_without_changing_candidates() {
+        let db = store();
+        let clip = db
+            .add("原创保护预览", "只在主动展开时显示的标题", None)
+            .unwrap();
+        db.set_clip_privacy(clip.id, true, false).unwrap();
+        let preview = db.preview_cleanup(&all_cleanup()).unwrap().preview;
+        assert_eq!(preview.matched_count, 1);
+        assert_eq!(preview.items[0].id, clip.id);
+        assert_eq!(preview.items[0].title, "隐私记录");
+        assert_eq!(db.clip(clip.id).unwrap().title, "只在主动展开时显示的标题");
+    }
+
+    #[test]
+    fn record_identity_survives_merge_but_never_reuses_a_deleted_grant() {
+        let mut db = store();
+        let original = db.add("记录身份原创夹具", "", None).unwrap();
+        assert_eq!(original.record_identity.len(), 64);
+        assert_eq!(
+            db.add(&original.content, "", None).unwrap().record_identity,
+            original.record_identity
+        );
+        let backup = db.export().unwrap();
+        assert!(!backup.contains("recordIdentity"));
+        db.import(&backup).unwrap();
+        assert_eq!(
+            db.clip(original.id).unwrap().record_identity,
+            original.record_identity
+        );
+        db.delete(original.id).unwrap();
+        let replacement = db.add("后来新增的另一条记录", "", None).unwrap();
+        assert_eq!(
+            replacement.id, original.id,
+            "fixture must exercise SQLite rowid reuse"
+        );
+        assert_ne!(replacement.record_identity, original.record_identity);
+        let mut imported = store();
+        imported.import(&backup).unwrap();
+        assert_ne!(
+            imported.clips().unwrap()[0].record_identity,
+            original.record_identity
+        );
+    }
+
+    #[test]
+    fn privacy_is_independent_of_labels_and_never_downgraded_by_merges() {
+        let mut db = store();
+        let clip = db.add("原创私密笔记", "", None).unwrap();
+        assert!(!clip.is_private);
+        assert_eq!(clip.scan_version, 1);
+        db.set_clip_privacy(clip.id, true, false).unwrap();
+        db.set_clip_tags(clip.id, &["资料".into()]).unwrap();
+        let before = db.export().unwrap();
+        assert!(db.add("原创私密笔记", "新标题", None).unwrap().is_private);
+        db.set_clip_tags(clip.id, &[]).unwrap();
+        assert!(db.clip(clip.id).unwrap().is_private);
+        assert!(db.set_clip_privacy(clip.id, false, false).is_err());
+        let mut untrusted: serde_json::Value = serde_json::from_str(&before).unwrap();
+        untrusted["clips"][0]["privacyManual"] = false.into();
+        untrusted["clips"][0]["isPrivate"] = false.into();
+        untrusted["clips"][0]["privacyReasons"] = serde_json::json!([]);
+        untrusted["clips"][0]["scanVersion"] = 999.into();
+        db.import(&untrusted.to_string()).unwrap();
+        assert!(db.clip(clip.id).unwrap().is_private);
+        assert_eq!(db.clip(clip.id).unwrap().scan_version, 1);
+        assert!(
+            !db.set_clip_privacy(clip.id, false, true)
+                .unwrap()
+                .is_private
+        );
+        let sensitive = db.add("password = fixed-fixture-only", "", None).unwrap();
+        assert!(sensitive.is_private);
+        assert!(
+            db.set_clip_privacy(sensitive.id, false, true)
+                .unwrap()
+                .is_private
+        );
+        db.save_code(
+            Some(sensitive.id),
+            "",
+            "let safe_fixture = 42;",
+            "javascript",
+            None,
+        )
+        .unwrap();
+        assert!(
+            db.clip(sensitive.id).unwrap().is_private,
+            "editing cannot silently remove prior protection"
+        );
+        assert!(
+            !db.set_clip_privacy(sensitive.id, false, true)
+                .unwrap()
+                .is_private
+        );
+    }
+
+    #[test]
+    fn privacy_rules_rescan_preview_is_readonly_and_stale_application_is_rejected() {
+        let db = store();
+        let clip = db
+            .add("原创内部计划 https://linux.do/t/fixture", "", None)
+            .unwrap();
+        let mut rules = db.privacy_rules().unwrap();
+        rules.rules.push(privacy::PrivacyRule {
+            id: "work".into(),
+            name: "内部".into(),
+            enabled: true,
+            condition: "keyword".into(),
+            value: "内部".into(),
+            tag: Some("工作".into()),
+            mark_private: true,
+        });
+        rules = db.save_privacy_rules(&rules).unwrap();
+        assert_eq!(rules.revision, 2);
+        assert_eq!(db.clip(clip.id).unwrap().scan_version, 1);
+        let preview = db.privacy_rescan_preview().unwrap();
+        assert_eq!(preview.newly_private_count, 1);
+        assert!(
+            !db.clip(clip.id).unwrap().is_private,
+            "preview must not persist a scan"
+        );
+        db.add("预览后的新记录", "", None).unwrap();
+        assert!(db.privacy_rescan_apply(&preview.token).is_err());
+        let preview = db.privacy_rescan_preview().unwrap();
+        db.privacy_rescan_apply(&preview.token).unwrap();
+        let scanned = db.clip(clip.id).unwrap();
+        assert!(scanned.is_private);
+        assert_eq!(scanned.scan_version, 2);
+        assert_eq!(scanned.tags, vec!["工作"]);
+        assert!(scanned.manual_tags.is_empty());
+        db.set_clip_tags(clip.id, &["手动".into()]).unwrap();
+        assert_eq!(db.clip(clip.id).unwrap().tags, vec!["工作", "手动"]);
+        rules.rules[0].enabled = false;
+        let current = db.save_privacy_rules(&rules).unwrap();
+        assert!(db.save_privacy_rules(&rules).is_err());
+        assert_eq!(current.revision, 3);
+        db.privacy_rescan_apply(&db.privacy_rescan_preview().unwrap().token)
+            .unwrap();
+        assert!(
+            db.clip(clip.id).unwrap().is_private,
+            "rule removal does not remove protection"
+        );
+        assert_eq!(db.clip(clip.id).unwrap().tags, vec!["手动"]);
+        assert!(
+            !db.set_clip_privacy(clip.id, false, true)
+                .unwrap()
+                .is_private
+        );
+    }
+
+    #[test]
+    fn privacy_backup_v3_roundtrip_reclassifies_and_keeps_imported_rules_disabled() {
+        let mut source = store();
+        let mut rules = source.privacy_rules().unwrap();
+        rules.rules.push(privacy::PrivacyRule {
+            id: "work".into(),
+            name: "内部".into(),
+            enabled: true,
+            condition: "keyword".into(),
+            value: "内部".into(),
+            tag: Some("工作".into()),
+            mark_private: true,
+        });
+        source.save_privacy_rules(&rules).unwrap();
+        let original = source
+            .add(
+                "原创内部记录 https://www.bilibili.com/video/fixture",
+                "",
+                None,
+            )
+            .unwrap();
+        let manual = source.add("原创手动保护记录", "", None).unwrap();
+        source.set_clip_privacy(manual.id, true, false).unwrap();
+        source.set_clip_tags(manual.id, &["手动".into()]).unwrap();
+        let json = source.export().unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&json).unwrap()["version"],
+            3
+        );
+        let mut destination = store();
+        destination.import(&json).unwrap();
+        let imported = destination
+            .clips()
+            .unwrap()
+            .into_iter()
+            .find(|clip| clip.content == original.content)
+            .unwrap();
+        assert!(imported.is_private);
+        assert!(
+            imported.tags.is_empty(),
+            "automatic tags are recomputed under local active rules"
+        );
+        assert_eq!(imported.link_sources, vec!["bilibili"]);
+        assert_eq!(
+            imported.scan_version,
+            destination.privacy_rules().unwrap().revision,
+            "imported scan version must not be trusted"
+        );
+        let local_rules = destination.privacy_rules().unwrap();
+        assert_eq!(local_rules.rules.len(), 1);
+        assert!(!local_rules.rules[0].enabled);
+        assert!(local_rules.rules[0].id.starts_with("import-"));
+        destination.import(&json).unwrap();
+        assert_eq!(
+            destination.privacy_rules().unwrap().rules.len(),
+            1,
+            "reimport must not duplicate drafts"
+        );
+        let imported_manual = destination
+            .clips()
+            .unwrap()
+            .into_iter()
+            .find(|clip| clip.content == manual.content)
+            .unwrap();
+        assert!(imported_manual.privacy_manual);
+        assert_eq!(imported_manual.manual_tags, vec!["手动"]);
+        // Real v1 input omits all privacy metadata; it still goes through the detector.
+        let legacy = serde_json::json!({"format":"starclip","version":1,"exportedAt":0,"groups":[],"clips":[{"id":99,"content":"https://fixture.test/?api_key=fixture","title":"","kind":"link","pinned":false,"groupId":null,"createdAt":0,"updatedAt":0,"copyCount":0}]});
+        source.import(&legacy.to_string()).unwrap();
+        assert!(
+            source
+                .clips()
+                .unwrap()
+                .iter()
+                .find(|clip| clip.content.starts_with("https://fixture"))
+                .unwrap()
+                .is_private
+        );
+    }
+
+    #[test]
+    fn privacy_migration_scans_v1_and_full_snapshot_preserves_metadata() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("privacy-upgrade.sqlite3");
+        let db = Store::open(&path).unwrap();
+        let clip = db.add("password=original-fixed-fixture", "", None).unwrap();
+        db.set_clip_tags(clip.id, &["备份测试".into()]).unwrap();
+        let snapshot = scratch.0.join("snapshot.sqlite3");
+        db.snapshot(&snapshot).unwrap();
+        let restored = Store::open(&snapshot).unwrap();
+        assert!(restored.clip(clip.id).unwrap().is_private);
+        assert_eq!(
+            restored.clip(clip.id).unwrap().manual_tags,
+            vec!["备份测试"]
+        );
+        drop(restored);
+        drop(db);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("DROP TABLE clip_privacy; PRAGMA user_version=1;")
+            .unwrap();
+        drop(conn);
+        let upgraded = Store::open(&path).unwrap();
+        assert_eq!(upgraded.schema_version().unwrap(), 2);
+        assert!(upgraded.clip(clip.id).unwrap().is_private);
+        assert_eq!(upgraded.clip(clip.id).unwrap().scan_version, 1);
+        assert_eq!(fs::read_dir(scratch.0.join("recovery")).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn privacy_failure_rolls_back_capture_import_code_and_schema_upgrade() {
+        let mut db = store();
+        let code = db
+            .save_code(None, "安全代码", "const fixture = 7;", "javascript", None)
+            .unwrap();
+        let old = db.export().unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO preferences(key,value) VALUES('privacy_rules_v1','broken')",
+                [],
+            )
+            .unwrap();
+        assert!(db.add("不能半写入的记录", "", None).is_err());
+        assert!(db
+            .save_code(
+                Some(code.id),
+                "新标题",
+                "const fixture = 8;",
+                "javascript",
+                None
+            )
+            .is_err());
+        assert!(db.import(&old).is_err());
+        assert_eq!(db.clips().unwrap().len(), 1);
+        assert_eq!(db.clip(code.id).unwrap().content, "const fixture = 7;");
+        let scratch = Scratch::new();
+        let path = scratch.0.join("rollback.sqlite3");
+        let store = Store::open(&path).unwrap();
+        store.add("升级回滚原创夹具", "", None).unwrap();
+        drop(store);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("DROP TABLE clip_privacy; PRAGMA user_version=1; INSERT INTO preferences(key,value) VALUES('privacy_rules_v1','broken');").unwrap();
+        drop(conn);
+        let before = fs::read(&path).unwrap();
+        assert!(Store::open(&path).err().unwrap().contains("恢复点已保留"));
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        assert_eq!(Store::check_schema_version(&conn).unwrap(), 1);
+        assert!(conn.prepare("SELECT * FROM clip_privacy").is_err());
+    }
+
+    #[test]
+    fn appearance_is_independent_atomic_persistent_and_in_full_snapshots() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("appearance.sqlite3");
+        let db = Store::open(&path).unwrap();
+        assert_eq!(db.appearance().unwrap(), Appearance::default());
+        assert_eq!(
+            db.conn
+                .query_row(
+                    "SELECT count(*) FROM preferences WHERE key='appearance_v1'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        let png = images::prepare_rgba(2, 1, &[80, 120, 200, 0, 160, 80, 220, 255]).unwrap();
+        let base64 = STANDARD.encode(&png.png);
+        db.save_appearance(
+            &serde_json::json!({"accent":"#AABBCC", "background":"gradient", "angle":45}),
+        )
+        .unwrap();
+        let saved = db
+            .import_appearance_sticker(&base64, "原创小星星.png")
+            .unwrap();
+        drop(db);
+        let db = Store::open(&path).unwrap();
+        assert_eq!(db.appearance().unwrap(), saved);
+        let snapshot = scratch.0.join("appearance-snapshot.sqlite3");
+        db.snapshot(&snapshot).unwrap();
+        assert_eq!(Store::open(&snapshot).unwrap().appearance().unwrap(), saved);
+        let ordinary = r#"{"paused":false,"theme":"dark","layout":"horizontal","maxHistory":1,"shortcut":"CommandOrControl+Shift+V","retentionDays":1,"futurePreference":"preserve"}"#;
+        db.conn
+            .execute(
+                "INSERT INTO preferences(key,value) VALUES('settings',?1)",
+                [ordinary],
+            )
+            .unwrap();
+        db.conn.execute("INSERT INTO clips(content,kind,created_at,updated_at) VALUES('外观测试中的原创过期记录','text',0,0)", []).unwrap();
+        db.conn.execute_batch("CREATE TRIGGER forbid_appearance_prune BEFORE DELETE ON clips BEGIN SELECT RAISE(ABORT, 'appearance must not prune'); END;").unwrap();
+        let disabled = db
+            .save_appearance(&serde_json::json!({"stickerEnabled":false, "colorEnd":"#FFFCDC"}))
+            .unwrap();
+        assert!(!disabled.sticker_enabled);
+        assert_eq!(disabled.sticker_data_url, saved.sticker_data_url);
+        assert_eq!(
+            db.conn
+                .query_row(
+                    "SELECT value FROM preferences WHERE key='settings'",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+            ordinary
+        );
+        assert_eq!(db.clips().unwrap().len(), 1);
+        assert_eq!(db.starpet_growth().unwrap(), GrowthState::default());
+        assert!(!db.export().unwrap().contains("appearance_v1"));
+        assert!(db
+            .import_appearance_sticker("invalid", "新贴纸.png")
+            .is_err());
+        assert!(db
+            .save_appearance(&serde_json::json!({"angle":360}))
+            .is_err());
+        assert_eq!(db.appearance().unwrap(), disabled);
+        db.conn.execute_batch("CREATE TRIGGER fail_appearance_write BEFORE UPDATE ON preferences WHEN NEW.key='appearance_v1' BEGIN SELECT RAISE(ABORT, 'fixture disk error'); END;").unwrap();
+        assert!(db.import_appearance_sticker(&base64, "替换图.png").is_err());
+        assert!(db.remove_appearance_sticker().is_err());
+        assert_eq!(db.appearance().unwrap(), disabled);
+        db.conn
+            .execute_batch("DROP TRIGGER fail_appearance_write;")
+            .unwrap();
+        let removed = db.remove_appearance_sticker().unwrap();
+        assert_eq!(removed.accent, disabled.accent);
+        assert!(!removed.sticker_enabled);
+        assert!(removed.sticker_data_url.is_none());
+        assert_eq!(db.clips().unwrap().len(), 1);
+        db.conn
+            .execute(
+                "UPDATE preferences SET value='{}' WHERE key='appearance_v1'",
+                [],
+            )
+            .unwrap();
+        assert!(db.appearance().is_err());
+        assert!(db
+            .save_appearance(&serde_json::json!({"angle":90}))
+            .is_err());
+        assert_eq!(
+            db.conn
+                .query_row(
+                    "SELECT value FROM preferences WHERE key='appearance_v1'",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+            "{}"
+        );
+    }
+
+    #[test]
+    fn starpet_growth_is_atomic_independent_and_revisioned() {
+        use crate::starpet_growth::{encode_save, GrowthChange, GrowthState};
+        let scratch = Scratch::new();
+        let path = scratch.0.join("growth.sqlite3");
+        let db = Store::open(&path).unwrap();
+        let preferences = StarpetPreferences {
+            enabled: true,
+            mood: "reading".into(),
+            color: "#AADDEE".into(),
+            size: 140,
+        };
+        db.save_starpet_preferences(&preferences).unwrap();
+        let settings = db.settings().unwrap();
+        assert!(settings.paused);
+        assert_eq!(db.starpet_growth().unwrap(), GrowthState::default());
+        assert_eq!(
+            db.conn
+                .query_row(
+                    "SELECT count(*) FROM preferences WHERE key='starpet_growth_v1'",
+                    [],
+                    |row| row.get::<_, u32>(0)
+                )
+                .unwrap(),
+            0
+        );
+        db.conn.execute_batch("CREATE TRIGGER growth_must_not_touch_clips BEFORE DELETE ON clips BEGIN SELECT RAISE(ABORT, 'must not prune'); END;").unwrap();
+        let today = "2026-10-26";
+        let enabled = db
+            .change_starpet_growth_on(GrowthChange::Enabled(true), today)
+            .unwrap();
+        assert_eq!(enabled.revision, 1);
+        let first = db
+            .change_starpet_growth_on(GrowthChange::Interaction("greet"), today)
+            .unwrap();
+        assert_eq!(first.revision, 2);
+        for _ in 0..5 {
+            assert_eq!(
+                db.change_starpet_growth_on(GrowthChange::Interaction("greet"), today)
+                    .unwrap(),
+                first
+            );
+        }
+        let second = db
+            .change_starpet_growth_on(GrowthChange::Interaction("highfive"), today)
+            .unwrap();
+        assert_eq!((second.xp, second.revision), (25, 3));
+        assert_eq!(db.starpet_preferences().unwrap(), preferences);
+        assert_eq!(db.settings().unwrap(), settings);
+        drop(db);
+        let db = Store::open(&path).unwrap();
+        assert_eq!(db.starpet_growth().unwrap(), second);
+        assert_eq!(db.starpet_preferences().unwrap(), preferences);
+        let saved = encode_save(second.clone()).unwrap();
+        let grown = db
+            .change_starpet_growth_on(GrowthChange::Interaction("stretch"), today)
+            .unwrap();
+        assert!(db
+            .change_starpet_growth_on(
+                GrowthChange::Import {
+                    data: &saved,
+                    expected_revision: second.revision
+                },
+                today
+            )
+            .is_err());
+        assert_eq!(db.starpet_growth().unwrap(), grown);
+        let restored = db
+            .change_starpet_growth_on(
+                GrowthChange::Import {
+                    data: &saved,
+                    expected_revision: grown.revision,
+                },
+                today,
+            )
+            .unwrap();
+        assert_eq!((restored.xp, restored.revision), (25, grown.revision + 1));
+        db.conn.execute_batch("CREATE TRIGGER fail_growth_write BEFORE UPDATE ON preferences WHEN NEW.key='starpet_growth_v1' BEGIN SELECT RAISE(ABORT, 'fixture disk error'); END;").unwrap();
+        assert!(db
+            .change_starpet_growth_on(GrowthChange::Interaction("stretch"), today)
+            .is_err());
+        assert_eq!(db.starpet_growth().unwrap(), restored);
+        db.conn
+            .execute_batch("DROP TRIGGER fail_growth_write;")
+            .unwrap();
+        let reset = db
+            .change_starpet_growth_on(
+                GrowthChange::Reset {
+                    expected_revision: restored.revision,
+                },
+                today,
+            )
+            .unwrap();
+        assert_eq!(
+            reset,
+            GrowthState {
+                revision: restored.revision + 1,
+                ..GrowthState::default()
+            }
+        );
+        assert_eq!(db.settings().unwrap(), settings);
+        assert_eq!(db.starpet_preferences().unwrap(), preferences);
     }
 
     #[test]
@@ -1794,6 +2803,7 @@ mod tests {
     fn unlimited_history_and_new_protected_records_do_not_consume_capacity() {
         let db = store();
         assert_eq!(db.settings().unwrap().max_history, 0);
+        assert_eq!(db.settings().unwrap().retention_days, 0);
         let mut bytes = 0;
         for index in 0..550 {
             let content = format!("不限历史：{index}");
@@ -1801,6 +2811,15 @@ mod tests {
             db.add(&content, "", None).unwrap();
         }
         assert_eq!(db.clips().unwrap().len(), 550);
+        db.conn
+            .execute("UPDATE clips SET updated_at=0", [])
+            .unwrap();
+        assert_eq!(db.prune_history().unwrap(), 0);
+        assert_eq!(
+            db.clips().unwrap().len(),
+            550,
+            "defaults do not expire old history"
+        );
         let preview = db.preview_cleanup(&all_cleanup()).unwrap().preview;
         assert_eq!(preview.matched_count, 550);
         assert_eq!(preview.content_bytes, bytes);
@@ -2360,7 +3379,7 @@ mod tests {
         assert_eq!(legacy.title, "旧代码");
         assert!(legacy.image.is_none());
         let old_backup: serde_json::Value = serde_json::from_str(&db.export().unwrap()).unwrap();
-        assert_eq!(old_backup["version"], 1);
+        assert_eq!(old_backup["version"], 3);
         assert!(old_backup.get("images").is_none());
 
         let mut budget_clip = legacy.clone();
@@ -2423,7 +3442,7 @@ mod tests {
         source.add(pixels.digest(), "相同标识的文本", None).unwrap();
         let json = source.export().unwrap();
         let backup: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(backup["version"], 2);
+        assert_eq!(backup["version"], 3);
         assert_eq!(
             STANDARD
                 .decode(backup["images"][0]["png"].as_str().unwrap())

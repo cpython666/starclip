@@ -1,0 +1,185 @@
+name: Update Homebrew after release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Published release tag, for example v0.2.0'
+        required: true
+        type: string
+      dry_run:
+        description: 'Verify the package and Cask without pushing to the Tap'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# All versions share one queue. An older rerun must never roll the Tap back.
+concurrency:
+  group: starclip-homebrew-tap
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.repository == 'cpython666/starclip'
+    runs-on: macos-15
+    outputs:
+      skip: ${{ steps.plan.outputs.skip }}
+      tag: ${{ steps.plan.outputs.tag }}
+      version: ${{ steps.plan.outputs.version }}
+      source: ${{ steps.source.outputs.revision }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+      HOMEBREW_NO_ANALYTICS: '1'
+    steps:
+      # Release assets are inputs, never executable workflow code.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - id: source
+        run: echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Read the published release and current stable release
+        uses: actions/github-script@v7
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+        with:
+          script: |
+            const fs = require('fs');
+            const tag = process.env.RELEASE_TAG;
+            if (!/^v\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(tag)) throw new Error('Invalid release tag');
+            const release = (await github.rest.repos.getReleaseByTag({ ...context.repo, tag })).data;
+            let latest = null;
+            try {
+              latest = (await github.rest.repos.getLatestRelease(context.repo)).data;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            fs.writeFileSync('release.json', JSON.stringify(release));
+            fs.writeFileSync('latest.json', JSON.stringify(latest));
+      - name: Require the latest public stable version and complete assets
+        id: plan
+        run: |
+          node scripts/homebrew-release.mjs prepare release.json latest.json plan.json
+          node --input-type=module <<'JS'
+          import { readFileSync, appendFileSync } from 'node:fs';
+          const plan = JSON.parse(readFileSync('plan.json', 'utf8'));
+          for (const key of ['skip', 'tag', 'version', 'dmgName']) {
+            if (plan[key] !== undefined) appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${plan[key]}\n`);
+          }
+          if (plan.skip) appendFileSync(process.env.GITHUB_STEP_SUMMARY, 'Release is a draft, prerelease or no longer latest; the Tap was left unchanged.\n');
+          JS
+      - name: Download the published DMG and checksums
+        if: steps.plan.outputs.skip != 'true'
+        env:
+          RELEASE_TAG: ${{ steps.plan.outputs.tag }}
+          DMG_NAME: ${{ steps.plan.outputs.dmgName }}
+        run: gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$DMG_NAME" --pattern SHA256SUMS --dir downloaded
+      - name: Verify actual bytes against release checksums
+        if: steps.plan.outputs.skip != 'true'
+        env:
+          DMG_NAME: ${{ steps.plan.outputs.dmgName }}
+        run: node scripts/homebrew-release.mjs verify plan.json downloaded/SHA256SUMS "downloaded/$DMG_NAME" evidence.json
+      - name: Inspect the application inside the DMG without launching it
+        if: steps.plan.outputs.skip != 'true'
+        env:
+          DMG_NAME: ${{ steps.plan.outputs.dmgName }}
+          RELEASE_VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          hdiutil verify "downloaded/$DMG_NAME"
+          mountpoint=$(mktemp -d "$RUNNER_TEMP/starclip-dmg.XXXXXX")
+          trap 'hdiutil detach "$mountpoint" || true; rmdir "$mountpoint" || true' EXIT
+          hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mountpoint" "downloaded/$DMG_NAME"
+          app="$mountpoint/Starclip.app"
+          test -d "$app"
+          codesign --verify --deep --strict "$app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = com.starclip.desktop
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$RELEASE_VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")" = starclip
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app/Contents/Info.plist")" = 11.0
+          test "$(lipo -archs "$app/Contents/MacOS/starclip")" = arm64
+      - name: Generate and validate the Cask with Homebrew
+        if: steps.plan.outputs.skip != 'true'
+        run: |
+          brew tap cpython666/tap
+          tap_path=$(brew --repository cpython666/tap)
+          node scripts/homebrew-release.mjs cask evidence.json "$tap_path/Casks/starclip.rb"
+          brew style --cask cpython666/tap/starclip
+          brew audit --cask --strict --online cpython666/tap/starclip
+          brew fetch --cask cpython666/tap/starclip
+          cp "$tap_path/Casks/starclip.rb" starclip.rb
+      - uses: actions/upload-artifact@v4
+        if: steps.plan.outputs.skip != 'true'
+        with:
+          name: verified-homebrew-cask
+          path: |
+            evidence.json
+            starclip.rb
+          if-no-files-found: error
+      - name: Report a successful dry run
+        if: steps.plan.outputs.skip != 'true' && github.event_name == 'workflow_dispatch' && inputs.dry_run
+        run: echo 'DMG bytes, application identity/signature/architecture and Homebrew checks passed. Dry run only; the Tap was not modified.' >> "$GITHUB_STEP_SUMMARY"
+
+  update-tap:
+    needs: verify
+    if: needs.verify.outputs.skip != 'true' && (github.event_name == 'release' || !inputs.dry_run)
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify.outputs.source }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: verified-homebrew-cask
+          path: verified
+      - name: Require the dedicated Tap credential
+        env:
+          TAP_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: test -n "$TAP_KEY" || { echo 'Missing HOMEBREW_TAP_DEPLOY_KEY repository secret.' >&2; exit 1; }
+      - uses: actions/checkout@v4
+        with:
+          repository: cpython666/homebrew-tap
+          ref: main
+          path: tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+      - name: Recheck the public release before changing the Tap
+        uses: actions/github-script@v7
+        env:
+          RELEASE_TAG: ${{ needs.verify.outputs.tag }}
+        with:
+          script: |
+            const fs = require('fs');
+            const release = (await github.rest.repos.getReleaseByTag({ ...context.repo, tag: process.env.RELEASE_TAG })).data;
+            const latest = (await github.rest.repos.getLatestRelease(context.repo)).data;
+            fs.writeFileSync('release.json', JSON.stringify(release));
+            fs.writeFileSync('latest.json', JSON.stringify(latest));
+      - name: Commit only a forward version change
+        env:
+          RELEASE_TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          node scripts/homebrew-release.mjs recheck verified/evidence.json release.json latest.json
+          node scripts/homebrew-release.mjs cask verified/evidence.json tap/Casks/starclip.rb
+          if git -C tap diff --quiet -- Casks/starclip.rb; then
+            echo 'The Tap already contains this version (or a newer one); no change.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          cmp verified/starclip.rb tap/Casks/starclip.rb
+          git -C tap config user.name 'github-actions[bot]'
+          git -C tap config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C tap add -- Casks/starclip.rb
+          git -C tap commit -m "自动更新星笺 Cask 至 $RELEASE_TAG"
+          git -C tap push origin HEAD:main
+          echo "Updated cpython666/homebrew-tap to $RELEASE_TAG after all package and Cask checks passed." >> "$GITHUB_STEP_SUMMARY"

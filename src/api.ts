@@ -1,5 +1,7 @@
 import type { AppState, Clip, CleanupFilter, CleanupPreview, CleanupResult, DataDirectoryMode, DataDirectoryPlan, DataLocation, Group, HandwritingAssets, HandwritingOptions, Settings } from './types';
 import { download, languages } from './snippets';
+import { analyzeDemoClip, protectedClip } from './privacy';
+import type { PrivacyRules, PrivacyScan } from './privacy';
 
 export const isDesktop = '__TAURI_INTERNALS__' in window;
 // Original 320×180 moon-and-hills fixture, drawn programmatically; no clipboard or external assets.
@@ -25,6 +27,9 @@ let demo: AppState = {
 };
 // ponytail: browser preview stays in memory; only the native app persists real history.
 const listeners = new Set<() => void>();
+let demoRules: PrivacyRules = { revision: 1, rules: [] };
+demo.clips = demo.clips.map(clip => analyzeDemoClip(clip, demoRules));
+let demoScan: { result: PrivacyScan; fingerprint: string; clips: Clip[] } | null = null;
 function pruneDemo() {
   const { retentionDays, maxHistory } = demo.settings;
   const cutoff = retentionDays === 0 ? -Infinity : Date.now() - retentionDays * 86400000;
@@ -57,6 +62,35 @@ function handwritingInvoke<T>(command: string, args?: Record<string, unknown>): 
 }
 
 export const api = {
+  async privacyRules(): Promise<PrivacyRules> { return isDesktop ? invoke('get_privacy_rules') : structuredClone(demoRules); },
+  async savePrivacyRules(rules: PrivacyRules): Promise<PrivacyRules> {
+    if (isDesktop) return invoke('save_privacy_rules', { rules });
+    if (rules.revision !== demoRules.revision) throw new Error('规则已变更，请重新读取后保存。');
+    if (rules.rules.length > 100 || rules.rules.some(rule => !rule.name.trim() || !rule.value.trim() || (!rule.tag?.trim() && !rule.markPrivate))) throw new Error('每条规则需要名称、条件，以及至少一种动作。最多 100 条规则。');
+    demoRules = structuredClone({ ...rules, revision: rules.revision + 1 }); demoScan = null; changed(); return structuredClone(demoRules);
+  },
+  async setClipPrivacy(id: number, isPrivate: boolean, reviewed = false): Promise<void> {
+    if (isDesktop) return invoke('set_clip_privacy', { id, isPrivate, reviewed });
+    const clip = requiredClip(id);
+    if (!isPrivate && !reviewed) throw new Error('请先复核隐私原因。');
+    Object.assign(clip, analyzeDemoClip({ ...clip, privacyManual: isPrivate, privacyReasons: isPrivate ? clip.privacyReasons : [] }, demoRules)); changed();
+  },
+  async setClipTags(id: number, tags: string[]): Promise<void> {
+    if (isDesktop) return invoke('set_clip_tags', { id, tags });
+    if (tags.length > 32 || tags.some(tag => !tag.trim() || tag.length > 40)) throw new Error('最多 32 个标签，每个不超过 40 个字。');
+    const clip = requiredClip(id); Object.assign(clip, analyzeDemoClip({ ...clip, manualTags: [...new Set(tags)] }, demoRules)); changed();
+  },
+  async previewPrivacyRescan(): Promise<PrivacyScan> {
+    if (isDesktop) return invoke('preview_privacy_rescan');
+    const clips = demo.clips.map(clip => analyzeDemoClip(clip, demoRules));
+    const result = { token: `demo-scan-${Date.now()}`, total: clips.length, privateCount: clips.filter(protectedClip).length, newlyPrivateCount: clips.filter((clip, index) => protectedClip(clip) && !protectedClip(demo.clips[index]!)).length, changedCount: clips.filter((clip, index) => JSON.stringify(clip) !== JSON.stringify(demo.clips[index])).length };
+    demoScan = { result, fingerprint: JSON.stringify([demoRules, demo.clips]), clips }; return structuredClone(result);
+  },
+  async applyPrivacyRescan(token: string): Promise<PrivacyScan> {
+    if (isDesktop) return invoke('apply_privacy_rescan', { token });
+    if (!demoScan || demoScan.result.token !== token || demoScan.fingerprint !== JSON.stringify([demoRules, demo.clips])) throw new Error('记录或规则已变更，请重新预览。');
+    const scan = demoScan; demoScan = null; demo.clips = scan.clips; changed(); return structuredClone(scan.result);
+  },
   async completeOnboarding(): Promise<void> {
     if (isDesktop) return invoke('complete_onboarding');
     demo.onboardingCompleted = true; changed();
@@ -136,14 +170,14 @@ export const api = {
       existing.keepForever ||= keepForever;
       if (title.trim()) existing.title = title.trim();
       if (groupId !== null) existing.groupId = groupId;
-      pruneDemo(); changed(); return structuredClone(existing);
+      Object.assign(existing, analyzeDemoClip(existing, demoRules)); pruneDemo(); changed(); return structuredClone(existing);
     }
     const clip: Clip = { id: id(), content, title, groupId, kind: classify(content), language: null, pinned: false, keepForever, createdAt: Date.now(), updatedAt: Date.now(), copyCount: 0 };
-    demo.clips.unshift(clip); pruneDemo(); changed(); return structuredClone(clip);
+    const scanned = analyzeDemoClip(clip, demoRules); demo.clips.unshift(scanned); pruneDemo(); changed(); return structuredClone(scanned);
   },
   async updateClip(id: number, title: string, groupId: number | null, pinned: boolean): Promise<void> {
     if (isDesktop) return invoke('update_clip', { id, title, groupId, pinned });
-    Object.assign(requiredClip(id), { title: title.trim(), groupId, pinned }); changed();
+    const clip = requiredClip(id); Object.assign(clip, analyzeDemoClip({ ...clip, title: title.trim(), groupId, pinned }, demoRules)); changed();
   },
   async deleteClip(id: number): Promise<void> { if (isDesktop) return invoke('delete_clip', { id }); if (requiredClip(id).keepForever) throw new Error('请先取消这条记录的永久保留，再删除。'); demo.clips = demo.clips.filter((clip) => clip.id !== id); pendingCleanup = null; changed(); },
   async copyClip(id: number): Promise<void> {
@@ -186,7 +220,7 @@ export const api = {
   async exportBackup(): Promise<string> {
     if (isDesktop) return invoke('export_backup');
     if (demo.clips.some(clip => clip.kind === 'image')) throw new Error('浏览器演示暂不支持包含图片的备份，请在桌面版导出完整备份。没有导出任何记录。');
-    const data = JSON.stringify({ format: 'starclip', version: 1, exportedAt: Date.now(), clips: demo.clips, groups: demo.groups }, null, 2);
+    const data = JSON.stringify({ format: 'starclip', version: 3, exportedAt: Date.now(), clips: demo.clips, groups: demo.groups, privacyRules: demoRules }, null, 2);
     if (new TextEncoder().encode(data).length > 20 * 1024 * 1024 || demo.clips.length > 10000 || demo.groups.length > 1000) throw new Error('数据超过单个备份支持的范围（20 MB / 10000 条 / 1000 组）');
     return data;
   },
@@ -195,9 +229,11 @@ export const api = {
     if (new TextEncoder().encode(data).length > 20 * 1024 * 1024) throw new Error('备份不能超过 20 MB');
     const parsed: unknown = JSON.parse(data);
     if (!parsed || typeof parsed !== 'object') throw new Error('备份格式无效');
-    const backup = parsed as { format?: unknown; version?: unknown; clips?: unknown; groups?: unknown };
+    const backup = parsed as { format?: unknown; version?: unknown; clips?: unknown; groups?: unknown; privacyRules?: PrivacyRules };
     if (backup.version === 2 || (Array.isArray(backup.clips) && backup.clips.some(clip => clip && typeof clip === 'object' && (clip.kind === 'image' || clip.image != null))) || ('images' in backup && backup.images != null)) throw new Error('浏览器演示暂不支持图片备份，请在桌面版导入。现有记录未改动。');
-    if (backup.format !== 'starclip' || backup.version !== 1 || !Array.isArray(backup.clips) || !Array.isArray(backup.groups) || backup.clips.length > 10000 || backup.groups.length > 1000) throw new Error('不支持的备份格式或条目过多');
+    if (backup.format !== 'starclip' || ![1, 3].includes(backup.version as number) || !Array.isArray(backup.clips) || !Array.isArray(backup.groups) || backup.clips.length > 10000 || backup.groups.length > 1000) throw new Error('不支持的备份格式或条目过多');
+    const importedRules = backup.version === 3 ? backup.privacyRules?.rules ?? [] : [];
+    if (!Array.isArray(importedRules) || demoRules.rules.length + importedRules.length > 100 || importedRules.some(rule => !rule || typeof rule.name !== 'string' || !rule.name.trim() || rule.name.length > 60 || typeof rule.value !== 'string' || !rule.value.trim() || rule.value.length > 200 || !['keyword', 'domain'].includes(rule.condition) || typeof rule.markPrivate !== 'boolean' || (rule.tag != null && (typeof rule.tag !== 'string' || rule.tag.length > 40)))) throw new Error('备份规则无效或超过 100 条，现有记录未改动。');
     const next = structuredClone(demo), groupMap = new Map<number, number>();
     for (const group of backup.groups as Group[]) {
       if (!group || !Number.isSafeInteger(group.id) || typeof group.name !== 'string' || !group.name.trim() || group.name.length > 40 || !/^#[\da-f]{6}$/i.test(group.color)) throw new Error('备份分组无效');
@@ -209,11 +245,18 @@ export const api = {
     for (const clip of backup.clips as Clip[]) {
       if (!clip || typeof clip.content !== 'string' || typeof clip.title !== 'string' || clip.title.length > 200 || typeof clip.pinned !== 'boolean' || !Number.isFinite(clip.createdAt) || !Number.isFinite(clip.updatedAt) || !Number.isSafeInteger(clip.copyCount) || clip.copyCount < 0) throw new Error('备份条目无效');
       validateContent(clip.content);
+      for (const tags of [clip.tags, clip.manualTags, clip.privacyReasons]) if (tags !== undefined && (!Array.isArray(tags) || tags.length > 256 || tags.some(tag => typeof tag !== 'string' || tag.length > 200))) throw new Error('备份标签或隐私原因无效');
+      for (const flag of [clip.privacyManual, clip.isPrivate]) if (flag !== undefined && typeof flag !== 'boolean') throw new Error('备份隐私状态无效');
+      const importedTags = backup.version === 3 ? clip.manualTags ?? [] : clip.tags ?? [];
+      const privacy = { privacyManual: !!clip.privacyManual || (!!clip.isPrivate && !clip.privacyReasons?.length), privacyReasons: clip.privacyReasons ?? [], manualTags: importedTags };
       if (clip.keepForever !== undefined && typeof clip.keepForever !== 'boolean') throw new Error('备份保留标记无效');
       if (clip.language != null && !languages.some(([key]) => key === clip.language)) throw new Error('未知的代码语言');
       if (clip.groupId != null && !groupMap.has(clip.groupId)) throw new Error('分组引用无效');
       const existing = next.clips.find(c => c.kind !== 'image' && c.content === clip.content);
       if (existing) {
+        existing.privacyManual ||= privacy.privacyManual;
+        existing.privacyReasons = [...new Set([...(existing.privacyReasons ?? []), ...privacy.privacyReasons])];
+        existing.manualTags = [...new Set([...(existing.manualTags ?? existing.tags ?? []), ...importedTags])];
         existing.keepForever ||= clip.keepForever ?? false;
         existing.pinned ||= clip.pinned;
         existing.groupId ??= clip.groupId == null ? null : groupMap.get(clip.groupId)!;
@@ -222,10 +265,12 @@ export const api = {
         if (existing.language) existing.kind = 'code';
         continue;
       }
-      next.clips.push({ ...clip, keepForever: clip.keepForever ?? false, id: Math.max(0, ...next.clips.map((c) => c.id)) + 1, groupId: clip.groupId == null ? null : groupMap.get(clip.groupId)!, language: clip.language ?? null, kind: clip.language ? 'code' : classify(clip.content) }); added++;
+      next.clips.push({ ...clip, ...privacy, keepForever: clip.keepForever ?? false, id: Math.max(0, ...next.clips.map((c) => c.id)) + 1, groupId: clip.groupId == null ? null : groupMap.get(clip.groupId)!, language: clip.language ?? null, kind: clip.language ? 'code' : classify(clip.content) }); added++;
     }
     // Import preserves the complete backup; only explicit capture/settings changes apply retention.
-    demo = next; pendingCleanup = null; changed(); return added;
+    next.clips = next.clips.map(clip => analyzeDemoClip(clip, demoRules));
+    if (importedRules.length) demoRules = { revision: demoRules.revision + 1, rules: [...demoRules.rules, ...importedRules.map((rule, index) => ({ ...rule, id: `import-${Date.now()}-${index}`, enabled: false, tag: rule.tag?.trim() || null }))] };
+    demo = next; pendingCleanup = null; demoScan = null; changed(); return added;
   },
   async saveBackup(onWriting?: () => void): Promise<string | null> {
     if (isDesktop) {
@@ -250,6 +295,7 @@ export const api = {
       ? { id: Math.max(0, ...demo.clips.map(clip => clip.id)) + 1, content, title: title.trim(), groupId, kind: 'code', language, pinned: true, keepForever: false, createdAt: Date.now(), updatedAt: Date.now(), copyCount: 0 }
       : requiredClip(id);
     Object.assign(actual, { title: title.trim(), content, language, kind: 'code', groupId, pinned: true, updatedAt: Date.now() });
+    Object.assign(actual, analyzeDemoClip(actual, demoRules));
     if (id == null) demo.clips.unshift(actual);
     pruneDemo(); changed(); return structuredClone(actual);
   },
@@ -258,7 +304,13 @@ export const api = {
     const blob = format === 'md' ? new Blob([data], { type: 'text/markdown;charset=utf-8' }) : new Blob([Uint8Array.from(atob(data), (c) => c.charCodeAt(0))], { type: 'image/png' });
     download(blob, filename); return true;
   },
-  async hideWindow(): Promise<void> { if (isDesktop) return invoke('hide_window'); },
+  async hideWindow(release = false, requestId?: number): Promise<void> {
+    if (isDesktop) return invoke('hide_window', { release, requestId });
+  },
+  async onWindowCloseRequested(callback: (requestId: number) => void): Promise<() => void> {
+    if (!isDesktop) return () => {};
+    return (await import('@tauri-apps/api/event')).listen<{ requestId: number }>('main-window-close-requested', event => callback(event.payload.requestId));
+  },
   async onChange(callback: () => void): Promise<() => void> {
     if (isDesktop) return (await import('@tauri-apps/api/event')).listen('clips-changed', callback);
     listeners.add(callback); return () => { listeners.delete(callback); };

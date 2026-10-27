@@ -6,12 +6,17 @@
       "commands": {
         "allow": [
           "get_state", "complete_onboarding", "add_clip", "update_clip", "save_code",
-          "delete_clip", "copy_clip", "get_clip_image", "create_group", "delete_group", "save_settings", "set_theme",
+          "delete_clip", "copy_clip", "copy_product_share_text", "copy_product_share_image", "save_product_share_image", "get_clip_image", "create_group", "delete_group", "save_settings", "set_theme",
+          "get_privacy_rules", "save_privacy_rules", "set_clip_privacy", "set_clip_tags", "preview_privacy_rescan", "apply_privacy_rescan", "get_ai_state", "set_ai_enabled", "create_ai_connection", "revoke_ai_connection", "get_ai_connection_config", "clear_ai_audit",
+          "get_appearance", "save_appearance", "import_appearance_sticker", "remove_appearance_sticker",
           "clear_history", "set_keep_forever", "preview_cleanup", "execute_cleanup",
           "export_backup", "import_backup", "save_backup", "save_export", "hide_window",
           "handwriting_assets", "choose_handwriting_app", "render_handwriting",
           "get_data_location", "choose_data_directory", "apply_data_directory",
-          "open_data_directory", "open_project_link", "restart_app"
+          "open_data_directory", "open_project_link", "restart_app",
+          "export_starpet_growth", "import_starpet_growth", "reset_starpet_growth",
+          "get_update_status", "check_starclip_update", "download_starclip_update", "install_starclip_update",
+          "list_recovery_points", "create_recovery_point", "restore_recovery_point"
         ]
       }
     },
@@ -19,7 +24,7 @@
       "identifier": "starpet-commands",
       "description": "Manage the star companion without access to clipboard or history",
       "commands": {
-        "allow": ["get_starpet_preferences", "set_starpet_preferences", "show_main_window", "starpet_start_dragging"]
+        "allow": ["get_starpet_preferences", "get_starpet_signal", "set_starpet_preferences", "show_main_window", "starpet_start_dragging", "get_starpet_growth", "set_starpet_growth_enabled", "interact_starpet", "equip_starpet_item"]
       }
     }
   ]

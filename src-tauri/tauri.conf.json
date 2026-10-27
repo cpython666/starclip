@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Starclip",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "identifier": "com.starclip.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -11,10 +11,17 @@
   },
   "app": {
     "macOSPrivateApi": true,
-    "windows": [{
-      "label": "main", "title": "星笺 Starclip", "width": 1240, "height": 820,
-      "minWidth": 860, "minHeight": 620, "center": true
-    }],
+    "windows": [
+      {
+        "label": "main",
+        "title": "星笺 Starclip",
+        "width": 1240,
+        "height": 820,
+        "minWidth": 860,
+        "minHeight": 620,
+        "center": true
+      }
+    ],
     "security": {
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src ipc: http://ipc.localhost; object-src 'none'; frame-src 'none'; base-uri 'none'"
     }
@@ -22,9 +29,32 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
     "category": "Productivity",
+    "resources": {
+      "resources/bip39/README.md": "licenses/BIP39.txt"
+    },
     "shortDescription": "星笺 — 为每一次复制留一颗星",
-    "macOS": {"minimumSystemVersion": "11.0"}
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVEQjQ4MUM1NTgxMDBGRjEKUldUeER4Qll4WUcwWFpqaHJOVDZvRGxTcXNZK3FVdGVpTnFxMVNJbmgyRmFNeUVtVFRJcCtVaGEK",
+      "endpoints": [
+        "https://github.com/cpython666/starclip/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      },
+      "requireSignedVersion": true
+    }
   }
 }

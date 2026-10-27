@@ -4,13 +4,19 @@ import { getStarPetMood, starPetPalette } from '../starpet';
 import { blinkOpenness, starOutline, stepSpring } from '../starpet-motion';
 import { createPetBehavior } from '../starpet-behavior';
 import type { PetBehavior, PetContext } from '../starpet-behavior';
+import { actionDuration, actionMood, actionPose } from '../starpet-action';
+import { growthCatalog } from '../starpet-growth';
+import type { ActionId, Equipment } from '../starpet-growth';
 
-const props = withDefaults(defineProps<{ mood?: string; size?: number; animated?: boolean; reaction?: number; color?: string }>(), { mood: 'idle', size: 180, animated: true, reaction: 0, color: '#FFD66E' });
-const desired = computed(() => getStarPetMood(props.mood));
+const props = withDefaults(defineProps<{ mood?: string; size?: number; animated?: boolean; reaction?: number; color?: string; equipment?: Equipment; action?: ActionId; actionNonce?: number }>(), { mood: 'idle', size: 180, animated: true, reaction: 0, color: '#FFD66E', actionNonce: 0 });
+const activeAction = ref<ActionId | null>(null), actionAge = ref(0);
+const desired = computed(() => getStarPetMood(activeAction.value ? actionMood[activeAction.value] : props.mood));
 const shownMood = ref(desired.value.id);
 const expression = computed(() => getStarPetMood(shownMood.value));
 // Most moods have no hands. Two small spheres only appear for a gesture or a held prop.
 const handPositions = computed<Array<[number, number]>>(() => {
+  if (activeAction.value === 'highfive') return [[78, 162], [180, 108 - actionFrame.value.lift]];
+  if (activeAction.value === 'heart') return [[110, 165], [130, 165]];
   switch (expression.value.prop) {
     case 'wave': return [[78, 162], [182, 126]];
     case 'flower': return [[78, 162], [156, 171]];
@@ -19,9 +25,10 @@ const handPositions = computed<Array<[number, number]>>(() => {
     case 'pencil': return [[87, 177], [146, 159]];
     case 'palette': return [[84, 181], [147, 159]];
     case 'mug': return [[99, 177], [146, 177]];
-    default: return [];
+    default: return showToy.value ? [[99, 180], [143, 180]] : [];
   }
 });
+const showToy = computed(() => props.equipment?.hand === 'orbit-ball' && !activeAction.value && !['wave', 'flower', 'magnifier', 'book', 'pencil', 'palette', 'mug'].includes(expression.value.prop));
 const pixels = computed(() => Number.isFinite(props.size) ? Math.max(48, Math.min(640, props.size)) : 180);
 const uid = useId();
 const gradientId = `starpet-body-${uid}`;
@@ -33,6 +40,11 @@ const phase = [...uid].reduce((total, char) => total + char.charCodeAt(0), 0) % 
 const media = typeof window === 'undefined' ? null : window.matchMedia('(prefers-reduced-motion: reduce)');
 const reduced = ref(media?.matches ?? false), visible = ref(true), mounted = ref(false);
 const running = computed(() => mounted.value && props.animated && !reduced.value && visible.value);
+const actionFrame = computed(() => actionPose(activeAction.value, actionAge.value, reduced.value));
+const actionTransform = computed(() => {
+  const pose = actionFrame.value;
+  return `translate(120 ${120 + pose.y}) rotate(${pose.rotation}) scale(${pose.sx} ${pose.sy}) translate(-120 -120)`;
+});
 const context = computed<PetContext>(() => {
   if (desired.value.id === 'sleeping') return 'sleep';
   if (['focused', 'reading', 'writing', 'drawing', 'searching'].includes(desired.value.id)) return 'focus';
@@ -54,12 +66,18 @@ let pointer = { x: 0, y: 0, inside: false };
 let raf = 0, lastStamp = 0, elapsed = 0, transitionAge = Infinity;
 const touchMessage = ref('');
 let touchTimer: ReturnType<typeof setTimeout> | undefined;
+let actionTimer: ReturnType<typeof setTimeout> | undefined;
+function endAction() { clearTimeout(actionTimer); activeAction.value = null; actionAge.value = 0; }
 
 function animate(stamp: number) {
   raf = 0;
   if (!running.value) return;
   const dt = lastStamp ? Math.min(.1, (stamp - lastStamp) / 1000) : 0;
   lastStamp = stamp; elapsed += dt; transitionAge += dt;
+  if (activeAction.value) {
+    actionAge.value += dt;
+    if (actionAge.value >= actionDuration[activeAction.value]) endAction();
+  }
   if (transitionAge >= .1) shownMood.value = desired.value.id;
   const pose = director.step(dt, context.value, pointer), t = elapsed + phase;
   const quiet = context.value === 'sleep' || context.value === 'focus';
@@ -95,6 +113,7 @@ function animate(stamp: number) {
 }
 function stop() {
   cancelAnimationFrame(raf); raf = 0; lastStamp = 0; elapsed = 0; transitionAge = Infinity;
+  endAction();
   clearTimeout(touchTimer); touchMessage.value = '';
   pointer = { x: 0, y: 0, inside: false }; director = createPetBehavior();
   gazeX = spring(); gazeY = spring(); faceX = spring(); faceY = spring(); tilt = spring(desired.value.tilt);
@@ -103,6 +122,7 @@ function stop() {
   shownMood.value = desired.value.id; frame.value = still();
 }
 watch(running, active => { stop(); if (active) raf = requestAnimationFrame(animate); }, { flush: 'sync' });
+watch(() => props.animated && visible.value && mounted.value, active => { if (!active) stop(); }, { flush: 'sync' });
 watch(() => desired.value.id, () => {
   if (running.value) transitionAge = 0;
   else { shownMood.value = desired.value.id; frame.value = still(); }
@@ -114,6 +134,14 @@ watch(() => props.reaction, () => {
   if (running.value) director.touch(context.value, pointer);
   else if (reduced.value) frame.value = { ...still(), smile: .8, squint: .8, wake: context.value === 'sleep' ? .5 : 0 };
   touchTimer = setTimeout(() => { touchMessage.value = ''; if (!running.value) frame.value = still(); }, 1800);
+});
+watch(() => props.actionNonce, () => {
+  if (!mounted.value || !props.animated || !visible.value || !props.action) return;
+  endAction(); clearTimeout(touchTimer);
+  activeAction.value = props.action;
+  touchMessage.value = growthCatalog.actions.find(item => item.id === props.action)?.message ?? '';
+  touchTimer = setTimeout(() => { touchMessage.value = ''; }, actionDuration[props.action] * 1000);
+  if (reduced.value) actionTimer = setTimeout(endAction, 1800);
 });
 function visibility() { visible.value = !document.hidden; }
 function motionPreference() { reduced.value = media?.matches ?? false; }
@@ -128,7 +156,7 @@ function look(event: PointerEvent) {
 </script>
 
 <template>
-  <div class="starpet" :class="{ 'starpet-animated': running }" :data-mood="expression.id" :data-motion="running ? 'active' : 'still'" :data-behavior="frame.behavior" :style="{ width: `${pixels}px`, '--starpet-accent': expression.accent }" role="img" :aria-label="`星芽，${expression.name}`" @pointerenter="look" @pointermove="look" @pointerleave="pointer.inside = false">
+  <div class="starpet" :class="{ 'starpet-animated': running }" :data-mood="expression.id" :data-action="activeAction || undefined" :data-motion="running ? 'active' : 'still'" :data-behavior="frame.behavior" :style="{ width: `${pixels}px`, '--starpet-accent': expression.accent }" role="img" :aria-label="`星芽，${expression.name}`" @pointerenter="look" @pointermove="look" @pointerleave="pointer.inside = false">
     <svg class="starpet-canvas" viewBox="0 0 240 240" fill="none" aria-hidden="true" focusable="false">
       <defs>
         <radialGradient :id="gradientId" cx=".35" cy=".27" r=".8"><stop :stop-color="palette.light" /><stop offset=".52" :stop-color="palette.middle" /><stop offset=".83" :stop-color="palette.base" /><stop offset="1" :stop-color="palette.shade" /></radialGradient>
@@ -142,8 +170,17 @@ function look(event: PointerEvent) {
       <g v-if="expression.prop === 'confetti'" class="starpet-confetti" stroke-linecap="round"><path d="m45 38 4 8m145-15-5 8M23 127l8 3m181 21 7 3" stroke="#d996b1" stroke-width="4" /><path d="m25 75 8-3m173-1 8 4M46 179l-5 7m153 3 7-5" stroke="#91bfb2" stroke-width="4" /><path d="m67 29 2 6m100-13-2 6M29 157l5-2m181-45 5-1" stroke="#b1a1d6" stroke-width="3" /><path d="m180 54 2-5 3 5 5 1-4 4v5l-4-3-5 1 2-5-3-4Z" fill="#e4bd71" /></g>
       <g v-if="expression.prop === 'target'" class="starpet-focus-frame" stroke="var(--starpet-accent)" stroke-width="2" stroke-linecap="round"><path d="M51 75V63h12m114 0h12v12M51 170v12h12m114 0h12v-12" /><circle cx="177" cy="63" r="3" fill="var(--starpet-accent)" stroke="none" /></g>
 
+      <g :transform="actionTransform">
       <g :transform="bodyTransform">
         <g class="starpet-body-motion">
+          <g v-if="equipment?.back === 'night-cape' || equipment?.back === 'starmap-cape'" :data-equipment="equipment.back" stroke-linejoin="round">
+            <path d="M73 108Q120 89 167 108L207 199Q165 190 120 215Q75 190 33 199Z" :fill="equipment.back === 'starmap-cape' ? '#625a9c' : '#405c88'" stroke="#35456d" stroke-width="2" />
+            <path d="M78 119 45 190M162 119l33 71M120 132v73" stroke="#b3bddc" stroke-opacity=".5" stroke-width="1.5" />
+            <path v-if="equipment.back === 'starmap-cape'" d="m45 173 7 17 15 8m111-14 17-9 4 14" stroke="#ecdba4" stroke-width="1.4" />
+            <g v-if="equipment.back === 'starmap-cape'" fill="#ffedb4"><circle cx="45" cy="173" r="2.8" /><circle cx="52" cy="190" r="2.5" /><circle cx="67" cy="198" r="2.8" /><circle cx="178" cy="184" r="2.7" /><circle cx="195" cy="175" r="2.7" /><circle cx="199" cy="189" r="2.5" /></g>
+            <path v-else d="m45 175 3 5 6 1-4 4 1 6-6-3-5 3 1-6-4-4 6-1Z" fill="#e8ce94" />
+          </g>
+          <g v-if="equipment?.back === 'comet-scarf'" data-equipment="comet-scarf" fill="#80b9ae" stroke="#497f82" stroke-width="1.8" stroke-linejoin="round"><path d="M157 142q24 8 27 32l-12-2-4 10q-6-23-25-30Z" /><path d="M159 145q29-2 42 13l-12 2-1 11q-14-14-36-17Z" /><path d="m174 173 5-2m11-13 4 5" stroke="#d4ead4" /></g>
           <path class="starpet-body" :d="outline" :fill="`url(#${gradientId})`" :stroke="palette.base" stroke-width="1.5" stroke-linejoin="round" />
           <g :clip-path="`url(#${clipId})`">
             <ellipse cx="108" cy="113" rx="77" ry="62" :fill="`url(#${glowId})`" opacity=".65" />
@@ -191,6 +228,15 @@ function look(event: PointerEvent) {
             <g v-else-if="expression.mouth === 'tongue'"><path d="M110 139q10 7 20 0" /><path d="M120 143v5q5 7 8-1v-5" fill="#dfa1a2" /><path d="m124 144 1 4" stroke="#b67786" stroke-width="1" /></g>
             <path v-else-if="expression.mouth === 'breath'" d="M116 139q9 3 0 7" />
           </g>
+          <g v-if="equipment?.face === 'moon-glasses'" data-equipment="moon-glasses" stroke="#62617c" stroke-width="2.5" stroke-linecap="round"><circle cx="98" cy="122" r="17" fill="#eff7ff" fill-opacity=".12" /><circle cx="142" cy="122" r="17" fill="#eff7ff" fill-opacity=".12" /><path d="M115 122q5-5 10 0m-44-2-8-4m86 4 8-4" /><path d="m87 114 5-4m39 4 5-4" stroke="#fff8de" stroke-width="2" /></g>
+          </g>
+          <path v-if="equipment?.back === 'comet-scarf'" d="M86 148q32 17 66 0l6 11q-37 20-78 0Z" fill="#8cc4b6" stroke="#497f82" stroke-width="1.7" />
+          <g v-if="equipment?.charm" :data-equipment="equipment.charm" transform="translate(151 158)" stroke-linejoin="round">
+            <path v-if="equipment.charm === 'welcome-star'" d="m0-9 3 6 7 1-5 5 1 7-6-3-6 3 1-7-5-5 7-1Z" fill="#f4da88" stroke="#b99752" stroke-width="1.4" />
+            <path v-else-if="equipment.charm === 'moon-pin'" d="M2-9C-11-10-14 6-3 10q10 3 14-6C0 8-5-3 2-9Z" fill="#d1c5ef" stroke="#8e7fae" stroke-width="1.3" />
+            <path v-else-if="equipment.charm === 'heart-sticker'" d="M0 9C-20-3-6-16 0-6 6-16 20-3 0 9Z" fill="#e6a1b3" stroke="#fff7e5" stroke-width="2.4" />
+            <g v-else-if="equipment.charm === 'play-sticker'" fill="#b7d9ce" stroke="#fff8e7" stroke-width="2"><circle r="10" /><path d="m-4-3 9 3-9 5Z" fill="#58878b" stroke="none" /></g>
+            <g v-else-if="equipment.charm === 'star-ring'" stroke="#ad8e5d" stroke-width="1.4"><ellipse rx="12" ry="5" transform="rotate(-25)" fill="#f0d8a0" /><circle r="5" fill="#b4c1e6" /><circle cx="9" cy="-6" r="2.5" fill="#fff0b7" /></g>
           </g>
           <g :opacity=".2 + frame.reveal * .8">
 
@@ -220,6 +266,9 @@ function look(event: PointerEvent) {
           <g v-if="expression.prop === 'check'" class="starpet-result-badge"><circle cx="178" cy="170" r="19" fill="#97bfa7" stroke="#658c7e" stroke-width="1.8" /><path d="m168 170 7 7 13-15" stroke="#fff7e3" stroke-width="3.8" stroke-linecap="round" stroke-linejoin="round" /></g>
           <g v-if="expression.prop === 'alert'" class="starpet-result-badge"><path d="m178 149 20 34q3 6-4 6h-33q-7 0-4-6l18-34q2-4 3 0Z" fill="#ecc39a" stroke="#b88673" stroke-width="1.7" stroke-linejoin="round" /><path d="M177 162v12m0 8v.1" stroke="#956a68" stroke-width="3.8" stroke-linecap="round" /></g>
           <g v-if="expression.prop === 'mug'" class="starpet-tool"><path d="M137 165h10q12 12-7 18" stroke="#9eac9a" stroke-width="5" /><path d="M102 160h39v22q-1 14-20 14-18 0-19-14Z" fill="#e9edcf" stroke="#91a18b" stroke-width="1.8" /><ellipse cx="121.5" cy="160" rx="19.5" ry="4" fill="#c0a483" stroke="#91a18b" stroke-width="1.5" /><path d="m121 169 2 4 5 .8-3.5 3.5.8 5-4.3-2.3-4.3 2.3.8-5-3.5-3.5 5-.8Z" fill="#d1b575" /><path class="starpet-steam" d="M114 149q-5-5 0-10m14 10q-5-5 0-10" stroke="#a2b9af" stroke-width="1.7" stroke-linecap="round" /></g>
+          <g v-if="showToy" data-equipment="orbit-ball" transform="translate(121 173)"><circle r="22" fill="#a9cbd1" stroke="#597b95" stroke-width="2" /><path d="M-15-9q12-8 24 2M-11 9q8 7 17 4" stroke="#e4edce" stroke-width="4" stroke-linecap="round" /><ellipse rx="31" ry="9" transform="rotate(-23)" stroke="#cfae76" stroke-width="4" /><path d="M-28 12q7 2 16 0" stroke="#fff1c2" stroke-width="1.5" stroke-linecap="round" /></g>
+          <g v-if="activeAction === 'highfive'" :opacity=".4 + actionFrame.energy * .6" stroke="#c7a46b" stroke-width="2.5" stroke-linecap="round"><path d="m180 88 0-7m13 11 5-5m-32 5-5-5" /></g>
+          <path v-if="activeAction === 'heart'" d="M120 171c-22-13-8-27 0-16 8-11 22 3 0 16Z" fill="#e3a0b2" stroke="#b77992" stroke-width="1.4" />
           <g v-for="([x, y], index) in handPositions" :key="index" class="starpet-hand" :class="{ 'starpet-wave-hand': expression.prop === 'wave' && index === 1 }">
             <g :transform="`translate(${x} ${y + frame.hand * (index ? .12 : -.12)})`">
               <circle class="starpet-hand-ball" r="9" :fill="`url(#${gradientId})`" :stroke="palette.base" stroke-width="1" />
@@ -228,6 +277,7 @@ function look(event: PointerEvent) {
           </g>
           </g>
         </g>
+      </g>
       </g>
       <g v-if="frame.burst > 0" class="starpet-touch-burst" :opacity="frame.burst" stroke-linejoin="round">
         <g v-for="(color, index) in ['#f0c778', '#b7a5d9', '#9acbbb', '#e9b2bd', '#9dc6dc', '#efdaa1']" :key="index" :transform="`translate(120 120) rotate(${index * 60 + 12}) translate(0 ${-frame.burstRadius}) rotate(${-index * 60 - 12}) scale(${.6 + frame.burst * .5})`"><path d="M0-6 2-2 6 0 2 2 0 6-2 2-6 0-2-2Z" :fill="color" stroke="#fff4db" stroke-width=".7" /></g>

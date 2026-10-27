@@ -1,0 +1,36 @@
+{
+  "maxLevel": 20,
+  "tasks": [
+    { "id": "greet", "name": "来打个招呼", "description": "摸摸星芽，或向它问好", "xp": 10 },
+    { "id": "play", "name": "陪我玩一会", "description": "和星芽击掌，或做一个新动作", "xp": 15 },
+    { "id": "create", "name": "留下一点小美好", "description": "一起伸懒腰，或保存代码、导出卡片", "xp": 20 }
+  ],
+  "actions": [
+    { "id": "greet", "name": "问个好", "level": 1, "task": "greet", "message": "星芽向你挥了挥小星角" },
+    { "id": "highfive", "name": "击个掌", "level": 1, "task": "play", "message": "啪！和星芽击掌成功" },
+    { "id": "stretch", "name": "一起伸懒腰", "level": 1, "task": "create", "message": "把小星角舒展开，放松一下" },
+    { "id": "twirl", "name": "转个圈", "level": 3, "task": "play", "message": "星芽轻快地转了个圈" },
+    { "id": "heart", "name": "偷偷比心", "level": 12, "task": "play", "message": "一颗小小的爱心送给你" },
+    { "id": "celebrate", "name": "星光庆祝", "level": 20, "task": "play", "message": "把星光洒向每一个平凡的日子" }
+  ],
+  "items": [
+    { "id": "welcome-star", "name": "初见小星徽", "slot": "charm", "level": 1, "achievement": "first-meeting", "description": "记住第一次问好的小小星光" },
+    { "id": "moon-glasses", "name": "月牙圆框眼镜", "slot": "face", "level": 2, "description": "透过圆圆镜片看看世界" },
+    { "id": "night-cape", "name": "夜航小披风", "slot": "back", "level": 5, "description": "带着一片深蓝夜空出发" },
+    { "id": "orbit-ball", "name": "小星球玩具", "slot": "hand", "level": 8, "description": "捧在小圆手里的环形星球" },
+    { "id": "heart-sticker", "name": "比心小贴纸", "slot": "charm", "level": 12, "description": "把喜欢贴在心口" },
+    { "id": "comet-scarf", "name": "流星围巾", "slot": "back", "level": 16, "description": "薄荷色围巾拖着两条小尾巴" },
+    { "id": "starmap-cape", "name": "星图披风", "slot": "back", "level": 20, "description": "将一起走过的路连成星座" },
+    { "id": "moon-pin", "name": "小月牙胸针", "slot": "charm", "level": 1, "achievement": "seven-days", "description": "纪念七个见面的日子" },
+    { "id": "play-sticker", "name": "小玩伴贴纸", "slot": "charm", "level": 1, "achievement": "play-five", "description": "五个一起玩耍的日子" },
+    { "id": "star-ring", "name": "星环点缀", "slot": "charm", "level": 1, "achievement": "level-ten", "description": "为慢慢长大的星芽戴上星环" }
+  ],
+  "achievements": [
+    { "id": "first-meeting", "name": "初次相遇", "description": "完成第一次问好", "reward": "初见小星徽" },
+    { "id": "seven-days", "name": "今天也见面了", "description": "累计互动七天，无需连续", "reward": "小月牙胸针" },
+    { "id": "first-outfit", "name": "好会穿搭", "description": "首次穿戴已获得的装饰", "reward": "穿搭纪念徽章" },
+    { "id": "play-five", "name": "小小玩伴", "description": "累计五天完成玩耍", "reward": "小玩伴贴纸" },
+    { "id": "level-five", "name": "星光同行", "description": "达到 Lv.5", "reward": "旅伴纪念徽章" },
+    { "id": "level-ten", "name": "慢慢长大", "description": "达到 Lv.10", "reward": "星环点缀" }
+  ]
+}

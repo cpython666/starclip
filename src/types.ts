@@ -11,6 +11,14 @@ export interface Clip {
   createdAt: number;
   updatedAt: number;
   copyCount: number;
+  privacyManual?: boolean;
+  isPrivate?: boolean;
+  privacyReasons?: string[];
+  scanVersion?: number;
+  tags?: string[];
+  manualTags?: string[];
+  linkSources?: string[];
+  linkHosts?: string[];
 }
 export interface Group { id: number; name: string; color: string }
 export interface Settings {

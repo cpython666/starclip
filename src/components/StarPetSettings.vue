@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import StarPet from './StarPet.vue';
+import StarPetGrowth from './StarPetGrowth.vue';
+import { emptyGrowth } from '../starpet-growth';
+import type { ActionId } from '../starpet-growth';
 import Icon from './Icon.vue';
 import UiSelect from './UiSelect.vue';
 import UiColor from './UiColor.vue';
@@ -18,9 +21,14 @@ const group = ref('all');
 const playing = ref(false);
 const loading = ref(true);
 const busy = ref(false);
+const growthBusy = ref(false);
+const growth = ref(emptyGrowth());
+const growthPanel = ref<InstanceType<typeof StarPetGrowth>>();
+const activeAction = ref<ActionId>('greet');
+const actionNonce = ref(0);
 const sizeDraft = ref(100);
 const sizing = ref(false);
-const sizeBlocked = computed(() => props.disabled || loading.value || busy.value);
+const sizeBlocked = computed(() => props.disabled || loading.value || busy.value || growthBusy.value);
 const blocked = computed(() => sizeBlocked.value || sizing.value);
 const sizeWriter = createStarPetSizeWriter(async size => {
   const revision = preferenceRevision;
@@ -39,6 +47,7 @@ const shown = computed(() => starPetMoods.filter(item => group.value === 'all' |
 let timer: ReturnType<typeof setInterval> | undefined;
 let unsubscribe: (() => void) | undefined;
 let disposed = false, preferenceRevision = 0;
+watch([busy, sizing, growthBusy], () => emit('busy', busy.value || sizing.value || growthBusy.value), { flush: 'sync' });
 watch(playing, value => {
   clearInterval(timer);
   if (value) timer = setInterval(() => {
@@ -65,7 +74,7 @@ onBeforeUnmount(() => { disposed = true; unsubscribe?.(); clearInterval(timer); 
 function select(id: StarPetMoodId) { playing.value = false; selected.value = id; notice.value = ''; }
 async function save(enabled: boolean) {
   if (blocked.value || !starPetDesktopAvailable) return;
-  busy.value = true; emit('busy', true); error.value = ''; notice.value = ''; playing.value = false;
+  busy.value = true; error.value = ''; notice.value = ''; playing.value = false;
   try {
     const revision = preferenceRevision;
     const value = await setStarPetPreferences(enabled ? { enabled, mood: selected.value } : { enabled });
@@ -73,13 +82,13 @@ async function save(enabled: boolean) {
     if (revision === preferenceRevision) preferences.value = value;
     notice.value = preferences.value.enabled ? '星芽已在桌面等你。按住星芽就可以搬家。' : '星芽回去休息了，随时可以再叫出来。';
   } catch (reason) { error.value = String(reason); }
-  finally { busy.value = false; emit('busy', false); }
+  finally { busy.value = false; }
 }
 async function changeColor(color: string) {
   if (blocked.value || color.toUpperCase() === preferences.value.color) return;
   const previous = preferences.value.color, revision = preferenceRevision;
   preferences.value = { ...preferences.value, color: color.toUpperCase() };
-  busy.value = true; emit('busy', true); error.value = ''; notice.value = '';
+  busy.value = true; error.value = ''; notice.value = '';
   try {
     const value = await setStarPetPreferences({ color });
     if (!disposed && revision === preferenceRevision) preferences.value = value;
@@ -89,12 +98,12 @@ async function changeColor(color: string) {
       if (revision === preferenceRevision) preferences.value = { ...preferences.value, color: previous };
       error.value = `颜色未能保存：${String(reason)}`;
     }
-  } finally { busy.value = false; emit('busy', false); }
+  } finally { busy.value = false; }
 }
 async function changeSize(size: number) {
   if (sizeBlocked.value || !Number.isInteger(size) || size < 70 || size > 160 || size === sizeDraft.value) return;
   const revision = ++sizeRevision, eventRevision = preferenceRevision;
-  sizeDraft.value = size; sizing.value = true; emit('busy', true);
+  sizeDraft.value = size; sizing.value = true;
   error.value = ''; notice.value = '';
   try {
     const saved = await sizeWriter.save(size);
@@ -106,22 +115,25 @@ async function changeSize(size: number) {
       error.value = `大小未能保存：${String(reason)}`;
     }
   } finally {
-    if (!disposed && revision === sizeRevision) { sizing.value = false; emit('busy', false); }
+    if (!disposed && revision === sizeRevision) sizing.value = false;
   }
 }
 function sizeInput(event: Event) { void changeSize(Number((event.target as HTMLInputElement).value)); }
+function playAction(id: ActionId) { playing.value = false; activeAction.value = id; actionNonce.value++; }
+function touch() { if (!blocked.value) { reaction.value++; void growthPanel.value?.greet(); } }
 </script>
 
 <template>
   <div class="starpet-settings">
     <div class="starpet-intro">
-      <div class="starpet-stage"><span class="starpet-orbit" aria-hidden="true" /><button type="button" class="starpet-touch" :disabled="blocked" aria-label="摸摸预览里的星芽" @click="reaction++"><StarPet :mood="selected" :color="preferences.color" :size="Math.round(144 * sizeDraft / 100)" :reaction="reaction" /></button><span class="starpet-stage-caption">轻轻摸一下，或连摸逗逗它</span></div>
+      <div class="starpet-stage"><span class="starpet-orbit" aria-hidden="true" /><button type="button" class="starpet-touch" :disabled="blocked" aria-label="摸摸预览里的星芽" @click="touch"><StarPet :mood="selected" :color="preferences.color" :size="Math.round(144 * sizeDraft / 100)" :reaction="reaction" :equipment="growth.equipment" :action="activeAction" :action-nonce="actionNonce" /></button><span class="starpet-stage-caption">轻轻摸一下，或连摸逗逗它</span></div>
       <div class="starpet-intro-copy"><span class="starpet-eyebrow">MEET YOUR LITTLE STAR</span><h3>星伴 <span>· 星芽</span></h3><p>会张望、伸懒腰，也会回应你的摸摸。</p><strong>{{ mood.name }}</strong><p class="starpet-description">{{ mood.description }}</p>
         <button type="button" class="button primary" :disabled="blocked || !starPetDesktopAvailable" @click="save(!preferences.enabled)"><Icon :name="preferences.enabled ? 'moon' : 'star'" :size="15" />{{ busy ? '正在设置…' : preferences.enabled ? '收起桌面星伴' : '让星芽住在桌面' }}</button>
         <button v-if="preferences.enabled && selected !== preferences.mood" type="button" class="starpet-apply" :disabled="blocked" @click="save(true)">用这个表情陪我 <span aria-hidden="true">↗</span></button>
       </div>
     </div>
     <p class="starpet-status" role="status">{{ error || (sizing ? '正在同步大小…' : notice) || (starPetDesktopAvailable ? '这里的开关会立即保存。按住桌面星芽就能拖动，轻点会回应你；上方小把手也能拖动。' : '此处可以预览全部表情；桌面悬浮需要在星笺桌面版开启。') }}</p>
+    <StarPetGrowth ref="growthPanel" :disabled="props.disabled || loading || busy || sizing" :color="preferences.color" :mood="selected" @change="growth = $event" @action="playAction" @busy="growthBusy = $event" />
     <section class="starpet-size" aria-label="星伴大小设置">
       <div class="starpet-size-heading"><div><label for="starpet-size">星芽的大小</label><p>小小一颗，或多一点陪伴 · 实时生效，自动保存</p></div><output for="starpet-size">{{ sizeDraft }}<span>%</span></output></div>
       <input id="starpet-size" type="range" min="70" max="160" step="5" :value="sizeDraft" :aria-valuetext="`${sizeDraft}%`" aria-label="星伴大小" :disabled="sizeBlocked" @input="sizeInput" />
@@ -136,7 +148,7 @@ function sizeInput(event: Event) { void changeSize(Number((event.target as HTMLI
     <div class="starpet-moods" role="group" aria-label="星芽表情">
       <button v-for="item in shown" :key="item.id" type="button" :disabled="blocked" :class="{ chosen: selected === item.id }" :aria-pressed="selected === item.id" :aria-label="`预览${item.name}`" @click="select(item.id)" @mouseenter="focusedTile = item.id" @mouseleave="focusedTile = null" @focus="focusedTile = item.id" @blur="focusedTile = null"><StarPet :mood="item.id" :color="preferences.color" :size="77" :animated="focusedTile === item.id" /><span>{{ item.name }}</span><Icon v-if="selected === item.id" name="check" :size="11" /></button>
     </div>
-    <p class="starpet-footnote">原创矢量角色 · 全部本地运行 · 支持系统减少动态效果<br />星芽目前表达表情和轻互动，不会读取你的剪贴内容，也不需要 AI 服务。</p>
+    <p class="starpet-footnote">原创矢量角色 · 全部本地运行 · 支持系统减少动态效果<br />星芽的成长只记录必要计数，不会读取你的剪贴内容，也不需要 AI 服务。</p>
   </div>
 </template>
 
