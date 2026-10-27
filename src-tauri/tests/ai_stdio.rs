@@ -11,6 +11,9 @@ use std::{
 // ephemeral loopback broker. This never launches Tauri or accesses user storage.
 #[test]
 fn distributed_binary_runs_mcp_and_cli_without_opening_the_desktop() {
+    // CI repeats this test against the release binary after packaging.
+    let binary = std::env::var_os("STARCLIP_TEST_BINARY")
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_starclip").into());
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     let token = "c".repeat(64);
@@ -42,7 +45,7 @@ fn distributed_binary_runs_mcp_and_cli_without_opening_the_desktop() {
             writeln!(stream, "{}", json!({"result":response})).unwrap();
         }
     });
-    let mut child = Command::new(env!("CARGO_BIN_EXE_starclip"))
+    let mut child = Command::new(&binary)
         .args(["mcp", "--port", &port.to_string()])
         .env("STARCLIP_AI_TOKEN", &token)
         .stdin(Stdio::piped())
@@ -83,7 +86,7 @@ fn distributed_binary_runs_mcp_and_cli_without_opening_the_desktop() {
     assert_eq!(response["result"]["structuredContent"]["accepted"], true);
     drop(input);
     assert!(child.wait().unwrap().success());
-    let cli = Command::new(env!("CARGO_BIN_EXE_starclip"))
+    let cli = Command::new(&binary)
         .args(["ai", "--port", &port.to_string(), "status"])
         .env("STARCLIP_AI_TOKEN", &token)
         .output()
@@ -94,7 +97,7 @@ fn distributed_binary_runs_mcp_and_cli_without_opening_the_desktop() {
         true
     );
     assert!(cli.stderr.is_empty());
-    let clear = Command::new(env!("CARGO_BIN_EXE_starclip"))
+    let clear = Command::new(&binary)
         .args(["ai", "--port", &port.to_string(), "pet_clear"])
         .env("STARCLIP_AI_TOKEN", &token)
         .output()

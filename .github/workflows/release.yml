@@ -98,6 +98,13 @@ jobs:
             if [ -z "${!name:-}" ]; then unset "$name"; fi
           done
           npm run tauri build -- --target '${{ matrix.target }}' --bundles '${{ matrix.bundles }}' --config '{"bundle":{"createUpdaterArtifacts":true}}'
+      - name: Test the packaged release CLI and MCP transport
+        timeout-minutes: 5
+        run: |
+          binary="$PWD/src-tauri/target/${{ matrix.target }}/release/starclip"
+          if [ "$RUNNER_OS" = Windows ]; then binary="$binary.exe"; fi
+          if [ "$RUNNER_OS" = macOS ]; then binary="$PWD/src-tauri/target/${{ matrix.target }}/release/bundle/macos/Starclip.app/Contents/MacOS/starclip"; fi
+          STARCLIP_TEST_BINARY="$binary" cargo test --locked --manifest-path src-tauri/Cargo.toml --test ai_stdio
       - name: Verify macOS application signature
         if: runner.os == 'macOS'
         run: codesign --verify --deep --strict 'src-tauri/target/${{ matrix.target }}/release/bundle/macos/Starclip.app'
@@ -108,8 +115,19 @@ jobs:
           name: release-${{ matrix.platform }}
           path: release-assets/*
           if-no-files-found: error
-  draft:
+  installers:
     needs: [validate, desktop]
+    uses: ./.github/workflows/installer-smoke.yml
+    permissions:
+      contents: read
+      actions: read
+    with:
+      revision: ${{ needs.validate.outputs.revision }}
+      version: ${{ needs.validate.outputs.version }}
+      windows-artifact: release-windows-x86_64
+      macos-artifact: release-darwin-aarch64
+  draft:
+    needs: [validate, desktop, installers]
     runs-on: ubuntu-latest
     permissions:
       contents: write

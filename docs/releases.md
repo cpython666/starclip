@@ -40,7 +40,7 @@ npm run version:check -- v0.2.1
 
 递增脚本先验证原版本一致，再同步这些文件；不修改依赖版本。不要只手改 Tauri 配置，或直接使用只更新 npm 文件的 `npm version`。每次发版同时在 [CHANGELOG.md](../CHANGELOG.md) 增加对应的 `## [0.2.1]` 条目。发布脚本从该条目生成客户端说明和 Release 正文。
 
-`.github/workflows/verify.yml` 在分支提交、PR 和手动触发时运行版本校验、Node 测试、Web 构建、Rust core 测试与两个桌面平台构建；普通验证不生成签名更新包、不需要发布私钥。
+`.github/workflows/verify.yml` 在分支提交、PR 和手动触发时运行版本校验、Node 测试、Web 构建、Rust core 测试与两个桌面平台构建；构建后复用 `installer-smoke.yml` 检查 fresh / 0.1.0 覆盖升级及固定数据保留。Windows 历史基线是固定成功 Actions artifact，若过期须更新为可核实的旧版安装包，不能静默跳过。普通验证不生成签名更新包、不需要发布私钥。
 
 ## 一次性配置
 
@@ -64,7 +64,7 @@ npm run tauri -- signer generate -w /private/path/starclip-updater.key
 ## 每次发布
 
 1. 更新版本和 CHANGELOG，完成检查并审核代码。在已确认的提交上创建并推送匹配 tag，例如 `v0.2.1`；也可以在 Actions 的 **Build signed release draft** 手动运行，输入已经存在的 tag。发布脚本不会创建或移动 tag。
-2. 等待完整流水线成功：版本/tag/说明检查 → Node 与 Rust core 测试 → macOS app/DMG、Windows NSIS → 两平台 updater 签名核验 → 草稿附件上传。
+2. 等待完整流水线成功：版本/tag/说明检查 → Node 与 Rust core 测试 → macOS app/DMG、Windows NSIS → 两平台原生安装 / 固定数据覆盖升级 → updater 签名核验 → 草稿附件上传。
 3. 汇总阶段使用 `minisign` 验证产物的真实签名，并检查其密钥与应用公钥、签名绑定版本与发布版本一致；要求两个平台和 macOS DMG 齐全。签名文件缺失、产物重复、版本不一致或验签失败均停止，不更新公开的 `latest.json`。
 4. 下载草稿产物，在隔离测试数据上验收安装与升级。至少检查：旧版数据和偏好保留、图片及星伴存档、恢复点失败会阻止安装、正常恢复和不兼容 schema 拒绝写入、签名损坏拒绝安装，以及每个平台安装后能重启。不要读取真实剪贴板来做测试。
 5. 全部 job 成功且实机验收通过后，在 GitHub Release 页面人工审核并 **Publish release**，选择设为最新正式版本；不要标记为 prerelease。发布会让客户端的稳定地址指向这一版。不要在工作流仍上传附件时提前发布。
@@ -96,4 +96,4 @@ npm run tauri -- signer generate -w /private/path/starclip-updater.key
 
 ## 当前验证边界
 
-本次实现包含 11 项发布和版本脚本夹具测试，覆盖版本不一致、错误 tag、递增、缺失/重复产物、错误签名结构、密钥与绑定版本、不完整平台、验签失败和更新说明提取。已另用临时原创文件通过官方 Tauri signer → minisign 0.12 → 清单汇总的真实签名验证，并确认篡改文件被拒绝；两个 workflow 通过 actionlint 1.7.12 静态检查。正式的两个平台签名构建、GitHub secrets 配置、草稿上传及公开更新地址，需要实际工作流运行验证；未执行前不得写成已经发布或客户端已完成线上自动升级。完整记录维护在 [验证记录](verification.md)。
+本次实现包含 11 项发布和版本脚本夹具测试，覆盖版本不一致、错误 tag、递增、缺失/重复产物、错误签名结构、密钥与绑定版本、不完整平台、验签失败和更新说明提取。已另用临时原创文件通过官方 Tauri signer → minisign 0.12 → 清单汇总的真实签名验证，并确认篡改文件被拒绝；两个 workflow 通过 actionlint 1.7.12 静态检查。原签名密钥已配置到 GitHub 加密 secret；两平台签名构建、草稿上传及公开更新地址仍须实际工作流通过，未完成前不得写成已经发布或客户端已完成线上自动升级。原生安装冒烟只检查临时 runner 的启动和固定数据升级，不能替代完整应用内下载 / 弹窗 / 自替换链路验收。完整记录维护在 [验证记录](verification.md)。

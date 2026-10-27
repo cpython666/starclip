@@ -516,7 +516,9 @@ pub(crate) fn create_recovery_snapshot(
         let database = temporary.join(DATABASE);
         drop(private_file(&database)?);
         snapshot(&database)?;
-        File::open(&database)
+        OpenOptions::new()
+            .write(true)
+            .open(&database)
             .and_then(|file| file.sync_all())
             .map_err(io_error)?;
         let mut warnings = vec![];
@@ -796,7 +798,9 @@ impl Storage {
                     let db = target.join(DATABASE);
                     drop(private_file(&db)?);
                     store.snapshot(&db)?;
-                    File::open(&db)
+                    OpenOptions::new()
+                        .write(true)
+                        .open(&db)
                         .and_then(|file| file.sync_all())
                         .map_err(io_error)?;
                     let renderers = self.current.join("renderers");
