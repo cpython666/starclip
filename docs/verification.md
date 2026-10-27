@@ -1,8 +1,16 @@
-# 星笺验证记录（当前源码 0.2.1，更新至 2026-10-27）
+# 星笺验证记录（当前源码 0.2.2，更新至 2026-10-27）
+
+## 0.2.2 发布修复（2026-10-27）
+
+- `v0.2.1` 签名流水线的 macOS 桌面测试拦住了合法 Agent 请求偶发被拒绝的问题，未生成公开 Release；保留原 tag，后续使用 0.2.2。此前分支两平台安装 CI 通过的证据仍保留，不能替代签名发布门禁。
+- 已确认 macOS 接收连接会继承监听器的非阻塞文件描述符状态；请求分段到达时，原 broker 会把短暂 `WouldBlock` 当作授权失败。生产端接收连接后显式恢复阻塞读取，保留原 2 秒超时和完整授权检查。新增真实回环分帧回归：旧实现收到半条合法 JSON 便提前返回错误（0.06 秒失败），修复后等待换行且返回正确结果；原隐私 / 撤销 / 冻结 / 并发及星伴断言同时通过。未使用真实剪贴板。
+
+- 修复后本机 Node 97、Rust core 80、desktop lib 90、真实 CLI / MCP 1 项通过（Rust 两组各 1 项外部手写集成忽略）；Web 构建、版本一致性、格式和差异检查通过。两平台签名发布仍须通过新 tag 的 CI。
 
 ## 0.2.1 发布准备（2026-10-27）
 
-- 通过统一脚本将 npm、Cargo、Tauri 六处版本递增到 0.2.1，并补充 CHANGELOG；这样已有 0.2.0 开发版才能检测到更高版本。尚未创建或推送发布 tag，未公开正式更新清单。
+- 通过统一脚本将 npm、Cargo、Tauri 六处版本递增到 0.2.1，并补充 CHANGELOG；这样已有 0.2.0 开发版才能检测到更高版本。
+- [PR #2](https://github.com/cpython666/starclip/pull/2) 已合并到 `main`（`e0795e0505f98e474495e4b30da28b56586588f0`），`v0.2.1` tag 已创建并推送。[签名发布流水线 40460247031](https://github.com/cpython666/starclip/actions/runs/40460247031) 因 macOS Agent 回环测试失败而停止，未生成公开正式 Release 或更新清单。
 - 发布、常规验证和 Homebrew 工作流由已进入退役期的 `macos-14` 切换到 `macos-15`，Apple Silicon / Windows x64 目标不变；发布和常规验证增加 desktop lib 与真实二进制 CLI / MCP 测试。YAML、actionlint 1.7.12 与差异检查通过；随后首次线上 CI 的 macOS 15 job 已通过。
 - 本轮 Node 97 项、Rust core 78 项、desktop lib 88 项及真实二进制 CLI / MCP 1 项通过；两组 Rust 单元各忽略 1 项需外部手写程序的测试。Web 类型与生产构建、Rust 格式及 macOS debug 编译通过，测试均使用固定数据而未读取真实剪贴板。
 - 使用原更新私钥签署临时原创文件，以 Node 标准加密库独立核验 Ed25519 内容签名和带 `version:0.2.1` 的 trusted comment，验证篡改拒绝；与应用内置公钥匹配。此项不是安装包验收，线上汇总仍使用 minisign。未打印私钥或更换公钥；随后已通过 GitHub 加密 secret 配置原签名私钥。
@@ -16,6 +24,7 @@
 ## GitHub 检查更新失败提示（2026-10-27）
 
 - 随后按用户请求实测公开更新源：通过本机 Clash HTTP 代理访问更新端点返回404，公开 GitHub Releases 列表API返回200，`/releases/latest` 返回404。列表只有 `v0.1.0-alpha.1` 与 `v0.1.0-alpha.2` 两个预发布，附件均无 `latest.json`；确认当前缺少正式 Latest Release 与更新清单，不能通过调整分流规则补齐。未修改系统代理、Clash配置或发布内容。
+- 后续只读核对已安装 0.2.0 的依赖链：`tauri-plugin-updater 2.14.0` 默认启用 `system-proxy`，经 `reqwest 0.13.5` / `hyper-util 0.1.21` 调用 macOS `SCDynamicStoreCopyProxies` 读取系统代理。检查时系统 HTTP / HTTPS 代理均已开启，地址为 `127.0.0.1:7890`，未修改任何设置。因此「GUI 没继承 shell 代理环境」不足以解释更新失败；此前更新清单 404 是已确认的发布端问题。依赖与设置核对不等于已完成应用内更新网络全链路验收。
 - 依据本机依赖 tauri-plugin-updater 2.14.0 的错误枚举分类，更新检查失败明确提示 GitHub 来源，区分请求超时、请求失败、响应格式与平台包；`ReleaseNotFound` 不能判断具体 HTTP 状态，因此保留「访问失败或文件尚未发布」两种可能，不再附加英文原始异常。修改提示时尚未请求线上地址；上条后续实测补充了当前发布端状态。
 - Node 97 项、Rust 无 desktop 78 项与 desktop 88 项通过（两组 Rust 各另忽略 1 项外部手写集成），Web 生产构建及 macOS 本机编译通过。新增固定错误测试验证分类与不泄漏原始错误，未读取真实剪贴板、未替换安装版、未进行线上升级验收。
 

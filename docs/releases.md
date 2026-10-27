@@ -4,7 +4,7 @@
 
 ## 用户升级
 
-- **已有 0.1.0**：该版本没有更新器。第一次升级到 0.2.1 时，退出星笺；macOS 将新的 `Starclip.app` 覆盖到原安装位置，Windows 运行新版安装包。保留数据目录和应用标识 `com.starclip.desktop`。
+- **已有 0.1.0**：该版本没有更新器。第一次升级到 0.2.2 时，退出星笺；macOS 将新的 `Starclip.app` 覆盖到原安装位置，Windows 运行新版安装包。保留数据目录和应用标识 `com.starclip.desktop`。
 - **0.2.0 及以后**：在设置中检查更新、阅读发布说明，再选择「下载更新」。HTTPS 下载并通过应用内置公钥及签名版本校验后，弹出「安装并重启」；可选「稍后再说」继续使用，已下载包保留到本次应用退出或重新检查更新。只有确认安装才保存当前数据恢复点和旧应用副本；macOS 安装完成后自动重启，Windows 由安装器退出、替换并重新打开应用。自动重启失败时保留手动重试入口，不把失败显示为完成。
 - 更新服务不可达、尚无公开版本、签名不符或恢复点创建失败都会报告错误；不会把失败显示成已完成。GitHub 上的草稿对普通客户端不可见。
 - 浏览器预览不能安装桌面更新。当前更新平台为 Apple Silicon macOS 和 Windows x64；Intel Mac、Linux、其他 CPU 架构没有发布产物。
@@ -26,7 +26,7 @@ brew upgrade --cask cpython666/tap/starclip
 
 已有手动安装或较新本地开发版时，不用 `--force` 覆盖或降级。此 Cask 没有 `zap` 或删除数据脚本，普通升级 / 卸载只管理程序文件；程序内部的数据迁移边界仍由相应版本决定。自有 Tap 不代表 Homebrew 官方主仓收录；WinGet 尚未接入。
 
-正式 Release 发布后的 Tap 同步由 `.github/workflows/homebrew.yml` 承担：只处理公开、非预发布且为 latest 的 `vX.Y.Z`，重新下载 DMG 核对摘要、签名、应用身份 / 版本 / 架构并完成 Homebrew 检查后，才更新 Cask 的版本与 SHA-256。失败保留原 Cask；旧任务不得降级，同版本换摘要会被拒绝。当前 alpha.2 预览不会被这条稳定通道改写；也不把 alpha 改标为稳定版来消除检查。配置、重试与预演见 [Homebrew 发布自动化](homebrew-release.md)。待发布的 0.2.1 仍遵循下方双平台签名、快照及升级验收流程；版本号递增不代表已经上线。
+正式 Release 发布后的 Tap 同步由 `.github/workflows/homebrew.yml` 承担：只处理公开、非预发布且为 latest 的 `vX.Y.Z`，重新下载 DMG 核对摘要、签名、应用身份 / 版本 / 架构并完成 Homebrew 检查后，才更新 Cask 的版本与 SHA-256。失败保留原 Cask；旧任务不得降级，同版本换摘要会被拒绝。当前 alpha.2 预览不会被这条稳定通道改写；也不把 alpha 改标为稳定版来消除检查。配置、重试与预演见 [Homebrew 发布自动化](homebrew-release.md)。待发布的 0.2.2 仍遵循下方双平台签名、快照及升级验收流程；版本号递增不代表已经上线。
 
 ## 版本与发布说明
 
@@ -34,11 +34,11 @@ brew upgrade --cask cpython666/tap/starclip
 
 ```sh
 npm run version:check
-npm run version:bump -- 0.2.1
-npm run version:check -- v0.2.1
+npm run version:bump -- 0.2.2
+npm run version:check -- v0.2.2
 ```
 
-递增脚本先验证原版本一致，再同步这些文件；不修改依赖版本。不要只手改 Tauri 配置，或直接使用只更新 npm 文件的 `npm version`。每次发版同时在 [CHANGELOG.md](../CHANGELOG.md) 增加对应的 `## [0.2.1]` 条目。发布脚本从该条目生成客户端说明和 Release 正文。
+递增脚本先验证原版本一致，再同步这些文件；不修改依赖版本。不要只手改 Tauri 配置，或直接使用只更新 npm 文件的 `npm version`。每次发版同时在 [CHANGELOG.md](../CHANGELOG.md) 增加对应的 `## [0.2.2]` 条目。发布脚本从该条目生成客户端说明和 Release 正文。
 
 `.github/workflows/verify.yml` 在分支提交、PR 和手动触发时运行版本校验、Node 测试、Web 构建、Rust core 测试与两个桌面平台构建；构建后复用 `installer-smoke.yml` 检查 fresh / 0.1.0 覆盖升级及固定数据保留。Windows 历史基线是固定成功 Actions artifact，若过期须更新为可核实的旧版安装包，不能静默跳过。普通验证不生成签名更新包、不需要发布私钥。
 
@@ -63,7 +63,7 @@ npm run tauri -- signer generate -w /private/path/starclip-updater.key
 
 ## 每次发布
 
-1. 更新版本和 CHANGELOG，完成检查并审核代码。在已确认的提交上创建并推送匹配 tag，例如 `v0.2.1`；也可以在 Actions 的 **Build signed release draft** 手动运行，输入已经存在的 tag。发布脚本不会创建或移动 tag。
+1. 更新版本和 CHANGELOG，完成检查并审核代码。在已确认的提交上创建并推送匹配 tag，例如 `v0.2.2`；也可以在 Actions 的 **Build signed release draft** 手动运行，输入已经存在的 tag。发布脚本不会创建或移动 tag。
 2. 等待完整流水线成功：版本/tag/说明检查 → Node 与 Rust core 测试 → macOS app/DMG、Windows NSIS → 两平台原生安装 / 固定数据覆盖升级 → updater 签名核验 → 草稿附件上传。
 3. 汇总阶段使用 `minisign` 验证产物的真实签名，并检查其密钥与应用公钥、签名绑定版本与发布版本一致；要求两个平台和 macOS DMG 齐全。签名文件缺失、产物重复、版本不一致或验签失败均停止，不更新公开的 `latest.json`。
 4. 下载草稿产物，在隔离测试数据上验收安装与升级。至少检查：旧版数据和偏好保留、图片及星伴存档、恢复点失败会阻止安装、正常恢复和不兼容 schema 拒绝写入、签名损坏拒绝安装，以及每个平台安装后能重启。不要读取真实剪贴板来做测试。
