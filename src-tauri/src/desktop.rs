@@ -867,6 +867,11 @@ fn start_ai_broker(
                     if !address.ip().is_loopback() {
                         continue;
                     }
+                    // macOS inherits the listener's nonblocking flag. Frames
+                    // need bounded blocking reads while later packets arrive.
+                    if stream.set_nonblocking(false).is_err() {
+                        continue;
+                    }
                     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
                     let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
                     let request = ai_access::read_frame(
@@ -2300,6 +2305,41 @@ mod tests {
         let id = config["connectionId"].as_str().unwrap().to_owned();
         drop(ai);
         drop(store);
+        // TCP frames can arrive in separate packets. A partial authorized
+        // request must wait for its newline, not be treated as a denial.
+        let mut fragmented = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        fragmented.set_nodelay(true).unwrap();
+        fragmented
+            .set_read_timeout(Some(Duration::from_millis(150)))
+            .unwrap();
+        let frame = serde_json::to_vec(&json!({
+            "token": token,
+            "action": "search",
+            "arguments": {}
+        }))
+        .unwrap();
+        let split = frame.len() / 2;
+        fragmented.write_all(&frame[..split]).unwrap();
+        let early = fragmented.peek(&mut [0u8; 1]).unwrap_err();
+        assert!(matches!(
+            early.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ));
+        fragmented
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        fragmented.write_all(&frame[split..]).unwrap();
+        fragmented.write_all(b"\n").unwrap();
+        let reply = ai_access::read_frame(
+            &mut std::io::BufReader::new(fragmented),
+            ai_access::MAX_RESPONSE,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&reply).unwrap()["result"]["total"],
+            1
+        );
         assert_eq!(
             ai_access::client(port, &token, "search", json!({})).unwrap()["total"],
             1
