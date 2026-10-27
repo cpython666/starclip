@@ -107,9 +107,11 @@ Tauri 资产解析器在正式包中读取嵌入资产，在带 `devUrl` 的开�
 - 本轮 Node 53 / Rust core 52 / desktop lib 55 项通过（Rust 各 1 项忽略）；macOS 独立标识实测 legacy 迁移、手动快照、修改后恢复到新目录和重启，原目录保留，暂停偏好保持。正式用户数据未用于测试。发布脚本另有真实临时文件签名 / 篡改拒绝核验，两 workflow 的 actionlint 通过。细节以验证记录为准。
 - 最终 Apple Silicon 0.2.0 app / DMG / 签名 updater 归档已构建，app 与 DMG 内 app 的本地 strict/deep 验签及真实更新包 minisign 公钥 / 签名版本 0.2.0 核验通过；产物在忽略的 `artifacts/upgrade-0.2.0/`。本轮未安装到用户正式应用。
 - Tauri 原更新私钥保留在仓库外私有目录；2026-10-27已另配置 GitHub 的 `TAURI_SIGNING_PRIVATE_KEY` 加密 secret，无密码、不变更内置公钥。Homebrew 使用独立 Tap deploy key，两个凭据不混用。源码与本地验签不能替代公开更新源及 Windows/macOS 完整升级验收。
-- 0.2.1 准备阶段已用临时原创文件及标准 Ed25519 校验确认原密钥匹配内置公钥、签名绑定版本且拒绝篡改。Node 97、Rust core 78、desktop 88、CLI / MCP 1 项及 Web / Mac 编译通过；本地 release app、只读挂载 DMG 内应用和 updater 的签名 / 版本已核验，候选保存在忽略的 `artifacts/release-0.2.1-macos/`，未安装或启动，不替代原生升级验收。GitHub 恢复连接后源码与签名 secret 已上传；首次线上 core/macOS通过，但Windows测试程序启动报入口点缺失，正式 Release与首次稳定Cask同步仍未完成。新增共享原生安装fixture CI与实际release CLI测试，未绕过失败，也未修改用户代理。见验证记录当日条目。
-- Windows updater 在启动安装器之前执行退出清理；安装器若被系统拒绝，必须保持数据冻结并进入 `restart-required`，不可当普通下载失败解冻。安装器路径尚未在 Windows 实机验证。源码依据：`desktop.rs` 的 `on_before_exit` 标记和失败分支。
+- 0.2.1 准备阶段已用临时原创文件及标准 Ed25519 校验确认原密钥匹配内置公钥、签名绑定版本且拒绝篡改。Node 97、Rust core 78、desktop 88、CLI / MCP 1 项及 Web / Mac 编译通过；本地 release app、只读挂载 DMG 内应用和 updater 的签名 / 版本已核验，候选保存在忽略的 `artifacts/release-0.2.1-macos/`，未安装或启动这些本地产物。GitHub 恢复连接后源码与签名 secret 已上传，正式 Release 与首次稳定 Cask 同步仍未完成；未修改用户代理。
+- `10851cd` 的 [CI](https://github.com/cpython666/starclip/actions/runs/40457517656) 已通过 core、双平台 desktop 构建及实际 release 二进制 CLI / MCP 测试；Windows manifest 入口点、快照句柄和受管路径分隔符修复均已通过 Windows 验证。共享 `installer-smoke.yml` 使用全新 hosted runner 和原创固定数据，Windows 全新安装、真实 0.1.0 覆盖升级及 macOS 全新安装通过；这不是应用内下载、安装并重启按钮链路，也不是 SmartScreen / Gatekeeper 验收。
+- 同轮 macOS 升级曾卡在夹具 seed：公开旧 macOS 0.1.0 没有 `keep_forever` 列。`335d142` 改为只写旧版共有列，让候选应用真实迁移并增加默认值 `0`，不在测试脚本中预先升级旧库。[CI 40459029199](https://github.com/cpython666/starclip/actions/runs/40459029199)（head `335d1425ccb36146cb1c2332926ae08ca3daf019`）全部 7 个 job 通过：core、双平台 desktop（含实际 release CLI / MCP）、Windows 与 macOS 各自的全新安装和真实 0.1.0 覆盖升级。默认暂停、固定数据保留及迁移前恢复点已在这些全新 runner 场景通过；不扩大为应用内更新 GUI 全链路或公证通过。完整过程见 [验证记录](../../../../docs/verification.md)。
+- Windows updater 在启动安装器之前执行退出清理；安装器若被系统拒绝，必须保持数据冻结并进入 `restart-required`，不可当普通下载失败解冻。独立 NSIS 安装 / 覆盖升级已通过上述 CI，应用内 updater 拉起安装器及异常冻结路径仍待原生验收。源码依据：`desktop.rs` 的 `on_before_exit` 标记和失败分支。
 
-仍待验收：Windows 安装与原生剪贴板/托盘/迁移/手写流程；星伴精确拖动、真实透显、多屏及跨全屏；托盘菜单实际点击；快捷键冲突、休眠恢复、长期资源占用和大量历史性能。各项以 [星伴说明](../../../../docs/starpet.md) 和验证记录中的具体证据为准。
+仍待验收：两平台应用内更新 GUI 全链路；Windows 原生剪贴板/托盘/完整目录迁移/手写流程；星伴精确拖动、真实透显、多屏及跨全屏；托盘菜单实际点击；快捷键冲突、休眠恢复、长期资源占用和大量历史性能。各项以 [星伴说明](../../../../docs/starpet.md) 和验证记录中的具体证据为准。
 
 已知未实现/后续方向：文件历史、GIF 动画、富文本、OCR、备注、多片段集合、自动粘贴、云同步/账号/剪贴内容公开链接、代码执行与内置 AI 分析（已有只读外部 AI 接口不等于模型分析）、密码管理器标记识别/来源应用排除、手写组件随包分发。它们不代表排期或已承诺实现；新讨论中的方案标「待定」。分发仍为开发预览版，无 Apple Developer 公证或 Windows 代码签名，本地 ad-hoc 校验不等于正式签名。
