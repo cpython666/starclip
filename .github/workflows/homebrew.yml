@@ -108,6 +108,9 @@ jobs:
       - name: Generate and validate the Cask with Homebrew
         if: steps.plan.outputs.skip != 'true'
         run: |
+          # Runner images can lag behind Homebrew's matching style/audit rules.
+          brew update
+          brew --version
           brew tap cpython666/tap
           tap_path=$(brew --repository cpython666/tap)
           node scripts/homebrew-release.mjs cask evidence.json "$tap_path/Casks/starclip.rb"
