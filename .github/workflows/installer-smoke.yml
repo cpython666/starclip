@@ -103,6 +103,7 @@ jobs:
           RELEASE_VERSION: ${{ inputs.version }}
           SMOKE_SCENARIO: ${{ matrix.scenario }}
         run: |
-          args=(--installer "$RUNNER_TEMP/candidate/Starclip_${RELEASE_VERSION}_aarch64.dmg" --version "$RELEASE_VERSION" --scenario "$SMOKE_SCENARIO")
+          installer=$(python3 -c 'import os,pathlib; files=list((pathlib.Path(os.environ["RUNNER_TEMP"])/"candidate").rglob("Starclip_"+os.environ["RELEASE_VERSION"]+"_aarch64.dmg")); assert len(files)==1, "Expected exactly one candidate DMG"; print(files[0])')
+          args=(--installer "$installer" --version "$RELEASE_VERSION" --scenario "$SMOKE_SCENARIO")
           if [ "$SMOKE_SCENARIO" = upgrade ]; then args+=(--baseline "$RUNNER_TEMP/baseline.dmg"); fi
           python3 scripts/macos-smoke.py "${args[@]}"
