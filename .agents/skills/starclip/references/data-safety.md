@@ -65,9 +65,11 @@
 - 完整快照中受管文件禁止符号链接；清单上限 2 MiB、托管文件上限 10000。恢复前和复制后均验证摘要；损坏恢复点列表保留错误项，不影响其它点。恢复点不能直接选作可写数据目录。目录外 renderer 不复制，保留告警。
 - 下载与安装分离：官方插件 `download()` 验证包签名和绑定版本后，已验证 bytes 仅存在本次会话并进入 `ready`；此时不安装 / 不冻结，可以稍后。确认安装只能取同版本 ready 包一次，重新检查 / 失败清缓存；退出后需重新下载。确认后生成 `before-update` 恢复点并备份旧应用，任何备份失败阻止安装；插件 `install()` 再次验签。安装冻结期间采集与所有写操作被后端拦截，保留原暂停偏好；正常退出也受安装阶段保护。`restart_app` 先释放目录锁再由 Tauri 拉起新进程，避免新进程与旧进程交接时自锁。
 - 检查更新的失败提示由 `updater.rs::check_error_message` 按插件错误枚举生成中文并标识 GitHub，不拼接英文原始错误。当前插件2.14.0的 `ReleaseNotFound` 丢失具体非成功HTTP状态，不能推断为断网或404；提示链接访问失败或更新文件未发布的可能。见2026-10-27验证记录和固定错误分类测试。
-- 2026-10-27后续公开端点实测：通过Clash可访问GitHub Releases列表（200），但正式latest API及应用配置的latest.json地址均404；仅两个alpha预发布、无latest.json附件。当前持续检查失败有已确认的发布端原因，勿以改用户代理替代完成正式更新源发布；此结论只适用于该次检测时间。
+- 2026-10-27 正式发布前公开端点实测：通过 Clash 可访问 GitHub Releases 列表（200），但正式 latest API 及应用配置的 latest.json 地址均 404；仅两个 alpha 预发布、无 latest.json 附件。当时持续检查失败有已确认的发布端原因，不能靠修改用户代理补齐；此结论只适用于该次检测时间，0.2.2 公开后的成功证据见下文。
 - 同日只读核对已安装 0.2.0 的网络依赖：`tauri-plugin-updater 2.14.0` 默认启用 `system-proxy`，经 `reqwest 0.13.5` / `hyper-util 0.1.21` 使用 macOS `SCDynamicStoreCopyProxies`。检查时系统 HTTP / HTTPS 代理均已开启，指向 `127.0.0.1:7890`；没有修改任何设置。不能仅以 GUI 未继承 shell 环境推断它未使用系统代理；清单 404 证据与依赖 / 设置核对分别记录，不将其扩大为应用内更新成功。
-- 0.2.1 当前发布状态：两平台固定数据安装 / 0.1.0 覆盖升级门禁已通过；[PR #2](https://github.com/cpython666/starclip/pull/2) 合并到 `main`（`e0795e0505f98e474495e4b30da28b56586588f0`），`v0.2.1` tag 已创建推送。[签名发布流水线 40460247031](https://github.com/cpython666/starclip/actions/runs/40460247031) 进行中，尚未公开正式 Release / 更新清单，不宣称应用内更新全链路完成。
+- 0.2.1 的[签名门禁](https://github.com/cpython666/starclip/actions/runs/40460247031) 因 macOS Agent 分段请求测试失败停止，未公开 Release，保留原 tag。根因是接收 socket 继承非阻塞状态，把短暂 `WouldBlock` 当作失败；0.2.2 显式恢复阻塞读取，保持原 2 秒超时、帧上限和授权过滤，真实分帧回归验证旧实现失败、修复后通过。
+- [0.2.2](https://github.com/cpython666/starclip/releases/tag/v0.2.2) 已正式公开；[更新清单](https://github.com/cpython666/starclip/releases/latest/download/latest.json) 及两平台公开更新包均经既有 Clash 匿名下载返回 HTTP 200，与发布前已核验摘要、Ed25519 签名及绑定版本的草稿内容一致。此前清单 404 已解决，未修改代理或用户数据；不等于用户 GUI 已完成下载、安装与重启。
+- [Homebrew 同步 40466604899](https://github.com/cpython666/starclip/actions/runs/40466604899) 已成功，远端 API 核实 Cask 为 0.2.2、摘要与已验签 DMG 一致。完整发布证据与 CI 修复见 [验证记录](../../../../docs/verification.md)。
 - 恢复点存储在默认应用数据目录，而不是任意自定义当前数据目录；恢复目标为该默认目录下新建 `recovered/` 子目录。快照和旧应用副本均为明文且不自动清理；它们不替代异盘备份。恢复后启动照常执行旧偏好中的保留规则。
 - 数据恢复与旧程序重装不同，本版没有自动二进制回滚。尤其 0.1.0 缺少结构版本拒绝逻辑，不得直接让它打开已升级的数据；程序回退要匹配兼容的数据副本。发布/密钥操作不由本知识库授权。
 

@@ -15,7 +15,7 @@
 
 只读验证 job 从公开 Release 下载文件，重新计算 DMG 的 SHA-256，核对 `SHA256SUMS`、附件大小和可用时的 GitHub digest；随后 `hdiutil verify`、只读挂载、`codesign --verify --deep --strict`、核对应用版本 / 标识 / arm64。应用不会被启动。ad-hoc 签名通过不等于 Apple Developer 公证或 Gatekeeper 首启验收。
 
-生成的 Cask 使用固定仓库和带版本的 URL，写入实际下载字节的 SHA-256；运行 `brew style --cask`、`brew audit --cask --strict --online` 和 `brew fetch --cask`。没有 `zap`、删除用户数据脚本或绕过系统隔离的步骤；不设置 `auto_updates`，保留普通 `brew upgrade --cask cpython666/tap/starclip` 的升级入口。
+生成的 Cask 使用固定仓库和带版本的 URL，写入实际下载字节的 SHA-256；临时 runner 先更新 Homebrew 并输出版本，避免旧镜像的格式与安装包审计规则不一致。生成固定 Cask 且 `brew style --cask` 通过后，只对 `cpython666/tap/starclip` 执行 `brew trust --cask`，再运行 `brew audit --cask --strict --online` 和 `brew fetch --cask`。该名称信任仅存在于本次 runner，不信任整个 Tap、不安装或启动应用；生成后不再修改被审计文件。没有 `zap`、删除用户数据脚本或绕过系统隔离的步骤；不设置 `auto_updates`，保留普通 `brew upgrade --cask cpython666/tap/starclip` 的升级入口。
 
 全部检查通过后，独立写入 job 才取得 Tap 凭据，重新查询 Release 是否仍公开、仍为 latest、附件身份是否未改变，再生成 Cask 并提交。所有版本共用串行队列，同时按数字版本检查，避免旧任务覆盖新版本。同版本同摘要无操作，同版本换摘要拒绝；Git push 不使用 force，Tap 同时被别人修改时宁可失败重跑。
 
@@ -31,6 +31,12 @@
 - 停用或轮换时同时处理 Tap deploy key 与 Actions secret。默认 PR 验证不会执行写入 job。
 
 `actions/checkout` 使用严格 SSH 主机校验并在 job 结束时清理凭据。其他工作流若拿到同一 secret，也拥有该 Tap 的写权限，因此仍应保护主仓库的工作流修改权限。
+
+## 已完成的线上验证
+
+2026-10-27，[0.2.2 同步](https://github.com/cpython666/starclip/actions/runs/40466604899) 的验证和写入 job 全部通过。Tap 的 [机器人提交](https://github.com/cpython666/homebrew-tap/commit/5e3ed7db8d459a6f3961b0461816406516add923) 将版本更新为 0.2.2；远端 Cask 的 SHA-256 与公开 DMG 的 `600784a9fc48ffab2702cdbef66628dc71a34061c7566242ffd9bf075a428cb4` 一致。
+
+Homebrew 审计使用步骤范围的 `HOMEBREW_GITHUB_API_TOKEN`，值来自已有只读 `github.token`，避免公共 runner 共用 IP 的匿名 API 限流。没有新建个人令牌、跳过在线审计或修改已公开安装包。
 
 ## 重试与预演
 

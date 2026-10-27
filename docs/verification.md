@@ -1,11 +1,14 @@
 # 星笺验证记录（当前源码 0.2.2，更新至 2026-10-27）
 
-## 0.2.2 发布修复（2026-10-27）
+## 0.2.2 正式发布与修复（2026-10-27）
+
+- [v0.2.2](https://github.com/cpython666/starclip/releases/tag/v0.2.2) 已于 `2026-10-27T06:53:00Z`（北京时间 14:53）正式公开，Release ID 为 `425114917`，`draft=false`、`prerelease=false`；发布时 `main` 与发布 tag 对应 `8998209aefa812e24e4f47b83d89bf371558e69b`。
 
 - `v0.2.1` 签名流水线的 macOS 桌面测试拦住了合法 Agent 请求偶发被拒绝的问题，未生成公开 Release；保留原 tag，后续使用 0.2.2。此前分支两平台安装 CI 通过的证据仍保留，不能替代签名发布门禁。
 - 已确认 macOS 接收连接会继承监听器的非阻塞文件描述符状态；请求分段到达时，原 broker 会把短暂 `WouldBlock` 当作授权失败。生产端接收连接后显式恢复阻塞读取，保留原 2 秒超时和完整授权检查。新增真实回环分帧回归：旧实现收到半条合法 JSON 便提前返回错误（0.06 秒失败），修复后等待换行且返回正确结果；原隐私 / 撤销 / 冻结 / 并发及星伴断言同时通过。未使用真实剪贴板。
-
-- 修复后本机 Node 97、Rust core 80、desktop lib 90、真实 CLI / MCP 1 项通过（Rust 两组各 1 项外部手写集成忽略）；Web 构建、版本一致性、格式和差异检查通过。两平台签名发布仍须通过新 tag 的 CI。
+- 修复后本机 Node 97、Rust core 80、desktop lib 90、真实 CLI / MCP 1 项通过（Rust 两组各 1 项外部手写集成忽略）；Web 构建、版本一致性、格式和差异检查通过。[PR #3 CI](https://github.com/cpython666/starclip/actions/runs/40462136115) 成功；[签名发布流水线 40462252460](https://github.com/cpython666/starclip/actions/runs/40462252460) 全部 8 个 job 成功：validate、两平台 desktop、四个原生安装场景及 draft。原生场景包括 macOS / Windows 全新安装和真实 0.1.0 覆盖升级，验证默认暂停、固定数据保留及迁移前恢复点。
+- 公开前下载全部草稿附件，独立在本机核验 `SHA256SUMS` 中的 7 项文件摘要，以及两平台更新包 Ed25519 签名和绑定版本 `0.2.2`，全部通过。公开后通过现有 Clash 请求 [latest.json](https://github.com/cpython666/starclip/releases/latest/download/latest.json) 返回 HTTP 200，完整响应字节与此前已核验草稿清单一致，版本为 `0.2.2`，包含 `darwin-aarch64` / `windows-x86_64`；GitHub `/releases/latest` API 也返回非草稿、非预发布的 0.2.2。此前更新源 404 已解决，没有修改代理设置；没有操作用户 GUI 完成应用内更新全链路。
+- 两平台公开更新包均通过本机现有 Clash 进行匿名下载，HTTP 200，`cmp` 确认与此前已验签草稿文件逐字节一致；没有修改代理或发布包。[Homebrew 同步 40466604899](https://github.com/cpython666/starclip/actions/runs/40466604899) 的 `verify` / `update-tap` 均成功，远端 Cask 已实际更新为 0.2.2，摘要与已验签 DMG 一致。上述验收不代表用户 GUI 更新全链路、Apple 公证、Windows 代码签名或 SmartScreen / Gatekeeper 放行。
 
 ## 0.2.1 发布准备（2026-10-27）
 
@@ -18,12 +21,12 @@
 - 准备阶段曾遇代理出站 TLS 断连，与此前更新地址 404 是独立问题；未修改 Clash 或系统代理。连接恢复后已推送发布分支、创建 [PR #2](https://github.com/cpython666/starclip/pull/2)，并配置 `TAURI_SIGNING_PRIVATE_KEY` 加密 secret（原密钥、无密码；未输出内容），既有 Tap 专用 secret 保留。
 - 首轮 [CI](https://github.com/cpython666/starclip/actions/runs/40447026897) 的 core 与 macOS 通过，Windows 在测试程序启动时以 `STATUS_ENTRYPOINT_NOT_FOUND` 退出，尚未运行测试。依照 Tauri 官方已知问题 #13419，为所有 Windows MSVC 可链接目标嵌入同一 Common Controls v6 manifest（原 tauri-build 只嵌入 bins），[下一轮 CI](https://github.com/cpython666/starclip/actions/runs/40452985673) 已进入 Windows 测试，确认入口点问题解决；75 项通过，余下 11 项定位为恢复点目录重命名时仍持有子文件句柄及受管路径分隔符。随后关闭清单文件后再提交恢复点目录，补充阶段错误上下文，并将受管路径统一保存为 `/`、兼容旧 Windows 反斜杠记录；此前快照 / 迁移刷盘句柄也已改用写权限。这些修复已在 `10851cd` 的 [CI](https://github.com/cpython666/starclip/actions/runs/40457517656) 通过 Windows 验证。
 - 新增共享 `installer-smoke.yml`，在分支验证及签名发布中分别用全新 hosted runner 检查 Windows / macOS fresh 与 0.1.0 升级；只写原创 canary，并用固定记录、分组和偏好核对 schema 与迁移前恢复点。Windows 基线固定到已核实的成功 Actions artifact，过期须显式更新基线，不能跳过；Mac 基线为 alpha.2 固定摘要。`10851cd` 的 [CI](https://github.com/cpython666/starclip/actions/runs/40457517656) 中，core、双平台 desktop 构建和实际 release 二进制 CLI / MCP 测试全部通过；Windows 全新安装、真实 0.1.0 覆盖升级及 macOS 全新安装也通过。此检查不等于应用内更新按钮链路、SmartScreen 或 Gatekeeper 验收。
-- 同轮 macOS 升级场景在写入测试数据时失败：旧公开 macOS 0.1.0 数据表没有 `keep_forever`，夹具误用了较新的列。`335d142` 已将夹具改为只写旧版共有列，由候选应用真实迁移并补上默认值 `0`；没有预先修改旧版 schema。修复后的 [CI 40459029199](https://github.com/cpython666/starclip/actions/runs/40459029199)（head `335d1425ccb36146cb1c2332926ae08ca3daf019`）全部 7 个 job 通过：core、双平台 desktop（含实际 release CLI / MCP）、macOS 与 Windows 各自的全新安装和真实 0.1.0 覆盖升级。两平台原生安装启动、默认暂停与固定数据升级保留已在这些 runner 场景验证；尚未公开正式 Release，也未完成应用内更新 GUI 全链路或公证验收。
+- 同轮 macOS 升级场景在写入测试数据时失败：旧公开 macOS 0.1.0 数据表没有 `keep_forever`，夹具误用了较新的列。`335d142` 已将夹具改为只写旧版共有列，由候选应用真实迁移并补上默认值 `0`；没有预先修改旧版 schema。修复后的 [CI 40459029199](https://github.com/cpython666/starclip/actions/runs/40459029199)（head `335d1425ccb36146cb1c2332926ae08ca3daf019`）全部 7 个 job 通过：core、双平台 desktop（含实际 release CLI / MCP）、macOS 与 Windows 各自的全新安装和真实 0.1.0 覆盖升级。两平台原生安装启动、默认暂停与固定数据升级保留已在这些 runner 场景验证；当时尚未公开正式 Release，也未完成应用内更新 GUI 全链路或公证验收。
 - `ai_stdio` 可在测试环境指定打包后的实际可执行文件，流水线编译后再测 release CLI / MCP，避免仅验证 debug subsystem；本机 Mac app 内实际二进制测试通过且未启动桌面。
 
 ## GitHub 检查更新失败提示（2026-10-27）
 
-- 随后按用户请求实测公开更新源：通过本机 Clash HTTP 代理访问更新端点返回404，公开 GitHub Releases 列表API返回200，`/releases/latest` 返回404。列表只有 `v0.1.0-alpha.1` 与 `v0.1.0-alpha.2` 两个预发布，附件均无 `latest.json`；确认当前缺少正式 Latest Release 与更新清单，不能通过调整分流规则补齐。未修改系统代理、Clash配置或发布内容。
+- 正式发布前按用户请求实测公开更新源：通过本机 Clash HTTP 代理访问更新端点返回404，公开 GitHub Releases 列表API返回200，`/releases/latest` 返回404。列表只有 `v0.1.0-alpha.1` 与 `v0.1.0-alpha.2` 两个预发布，附件均无 `latest.json`；确认当时缺少正式 Latest Release 与更新清单，不能通过调整分流规则补齐。此次检查未修改系统代理、Clash配置或发布内容；后续 0.2.2 公开后的 HTTP 200 证据见顶部发布记录。
 - 后续只读核对已安装 0.2.0 的依赖链：`tauri-plugin-updater 2.14.0` 默认启用 `system-proxy`，经 `reqwest 0.13.5` / `hyper-util 0.1.21` 调用 macOS `SCDynamicStoreCopyProxies` 读取系统代理。检查时系统 HTTP / HTTPS 代理均已开启，地址为 `127.0.0.1:7890`，未修改任何设置。因此「GUI 没继承 shell 代理环境」不足以解释更新失败；此前更新清单 404 是已确认的发布端问题。依赖与设置核对不等于已完成应用内更新网络全链路验收。
 - 依据本机依赖 tauri-plugin-updater 2.14.0 的错误枚举分类，更新检查失败明确提示 GitHub 来源，区分请求超时、请求失败、响应格式与平台包；`ReleaseNotFound` 不能判断具体 HTTP 状态，因此保留「访问失败或文件尚未发布」两种可能，不再附加英文原始异常。修改提示时尚未请求线上地址；上条后续实测补充了当前发布端状态。
 - Node 97 项、Rust 无 desktop 78 项与 desktop 88 项通过（两组 Rust 各另忽略 1 项外部手写集成），Web 生产构建及 macOS 本机编译通过。新增固定错误测试验证分类与不泄漏原始错误，未读取真实剪贴板、未替换安装版、未进行线上升级验收。
@@ -44,8 +47,9 @@
 - 在临时独立 Homebrew Tap 上下文中实际运行候选 Cask 的 `brew style --cask` 通过。Homebrew 7.0.9 要求该模板使用 `depends_on :macos`，而非冗余 Big Sur 约束；直接以普通 Ruby 文件检查会使用不同规则。临时 Tap 已移除，自动开启的 developer 模式已恢复关闭；没有实际安装或启动应用。
 - PR 最终提交 `22181c0046b1265908334bc2efd31c0bcaa57110` 的 [GitHub Actions](https://github.com/cpython666/starclip/actions/runs/40356060862) core、macOS app / DMG、Windows NSIS 全部通过；另一次同提交 CI 也通过。这里构建的是 PR 所基于的远端应用代码，不代表未提交的 0.2.0 完整工作区已由远端构建或公开。
 - 专用 Ed25519 deploy key 只授权 `cpython666/homebrew-tap` 写入，私钥通过标准输入交给 GitHub CLI 加密写入主仓 `HOMEBREW_TAP_DEPLOY_KEY` secret，未打印 / 提交或加入附件；本地临时密钥已清理。使用该凭据对 Tap 做不更新 ref 的 SSH push dry run 成功。未复制本机登录令牌，没有上传或更改 Tauri 更新签名私钥。
-- 合并后在线运行 [预发布跳过预演](https://github.com/cpython666/starclip/actions/runs/40357536518)，输入 `v0.1.0-alpha.2` / `dry_run=true`：`verify` 成功、输出 `skip:true`，`update-tap` 被跳过。Tap main 前后仍为 `e11f8f06a43e4754855a8f101a39bc712aebdf08`，当前 Cask 与发布附件未改动。此项仅证明线上触发、API 读取与预发布隔离路径，不代表稳定 DMG 下载 / 挂载 / audit / 写入链路已实测。
-- 同步流水线不创建或公开 Release，不替代发布前代码检查和安装 / 升级验收。当前仍只有 alpha 预发布，没有可用于完整同步验收的公开稳定包；实际 DMG 在线检查并写入新 Cask 的完整链路仍待下一次合格正式发版验证。详见 [使用说明](homebrew-release.md)。
+- 合并后在线运行 [预发布跳过预演](https://github.com/cpython666/starclip/actions/runs/40357536518)，输入 `v0.1.0-alpha.2` / `dry_run=true`：`verify` 成功、输出 `skip:true`，`update-tap` 被跳过。Tap main 前后仍为 `e11f8f06a43e4754855a8f101a39bc712aebdf08`，当时 Cask 与发布附件未改动。此项仅证明线上触发、API 读取与预发布隔离路径，不代表稳定 DMG 下载 / 挂载 / audit / 写入链路已实测。
+- 0.2.2 首次正式同步依次被三项 CI 环境问题阻断：Homebrew 旧版的最低 macOS 约束 style / audit 规则不一致、自建 Cask 未获 CI 信任、共享出口的匿名 GitHub API 限流。最终在 CI 更新到 Homebrew 7.0.11 统一检查规则，style 通过后只 `brew trust --cask cpython666/tap/starclip`，并将现有只读 `github.token` 传给 `HOMEBREW_GITHUB_API_TOKEN`。没有新增 PAT、改动本机代理 / 信任或修改发布包，失败时 Tap 未写入。
+- [最终同步 40466604899](https://github.com/cpython666/starclip/actions/runs/40466604899) 的 `verify` / `update-tap` 均成功，完成公开 DMG 下载、摘要、只读挂载、应用签名 / 身份 / 架构、Homebrew style / audit / fetch 及推送。远端 Cask API 实际读到版本 `0.2.2`、SHA-256 `600784a9fc48ffab2702cdbef66628dc71a34061c7566242ffd9bf075a428cb4`，与本机已验签 DMG 一致；对应 [bot 提交 5e3ed7d](https://github.com/cpython666/homebrew-tap/commit/5e3ed7db8d459a6f3961b0461816406516add923)。首次稳定版完整同步链路已通过；流水线仍不创建或公开 Release。详见 [使用说明](homebrew-release.md)。
 
 ## 关闭窗口释放资源与运行内存（2026-10-26）
 
@@ -73,7 +77,7 @@
 - 自动检查：`npm test` 80 项通过，前端生产构建通过；Rust core 73 项、desktop lib 81 项通过（各 1 项既有手写集成测试忽略），格式和 `git diff --check` 通过。新增检查覆盖两阶段状态、缓存仅一次消费、版本绑定、失败 / 检查清缓存、IPC 事件顺序与实际生成的主窗 ACL，以及弹窗稍后 / 失效确认 / 恢复点失败 / 自动重启失败。
 - 浏览器运行真实 Vue 更新组件、模拟 IPC 和原创固定版本 0.3.0：50% 进度前无安装 / 重启调用；ready 自动弹窗；ESC / X / 遮罩关闭且父设置保持打开；稍后再刷新不重弹；未保存偏好禁用安装；模拟备份失败不重启并可重新下载；模拟安装成功后立即调用重启，重启失败仍冻结并显示重试。测试未访问剪贴板、数据库或执行真实安装；截图 `artifacts/update-dialog-ready.png` 中版本仅是测试夹具。
 - Apple Silicon release 构建成功，产物为 `src-tauri/target/release/bundle/macos/Starclip Update Verify.app`，标识 `com.starclip.update-verify`、版本 0.2.0，本地 ad-hoc strict / deep 验签通过；未启动或安装该验证包。本次未生成 DMG / updater 签名附件，也没有 Apple Developer 公证。
-- 线上稳定更新清单尚未发布，因此没有完成通过 GitHub 下载签名更新、替换自身并重启的端到端验收；也未替换当前正式安装或公开 0.2.0。之前发布的 Homebrew 0.1.0-alpha.2 仍是早期预览包，不含此流程。
+- 当时线上稳定更新清单尚未发布，因此没有完成通过 GitHub 下载签名更新、替换自身并重启的端到端验收；也未替换当前正式安装或公开 0.2.0。之前发布的 Homebrew 0.1.0-alpha.2 仍是早期预览包，不含此流程。
 
 ## Homebrew 自有 Tap 与早期预览包（2026-10-26）
 

@@ -22,11 +22,13 @@ brew update
 brew upgrade --cask cpython666/tap/starclip
 ```
 
-当前仅提供 Apple Silicon macOS 的 `v0.1.0-alpha.2` 预览包，应用内部版本号仍为 `0.1.0`。它沿用 alpha.1 的源代码提交 `1fd865372ac66c66f007a30845dc18a740ac5c2d`，仅重新完成本地 ad-hoc 整包签名并封装 DMG，修复原公开包签名资源不完整的问题；未将本地 0.2.0 源码或功能公开发布。新预览版不设为最新稳定版、不上传稳定 `latest.json`，也不覆盖 alpha.1 附件。没有 Apple Developer 签名 / 公证，不能将本地验签等同于 Gatekeeper 首启通过。
+当前 Cask 为 **0.2.2**，指向同版本正式 Release 的 Apple Silicon DMG。公开下载、应用签名 / 版本 / 架构及 Homebrew 在线审计通过后，流水线自动提交 Cask；远端版本与摘要已复核。历史 alpha.1 / alpha.2 预发布保留原附件；0.2.1 因发布门禁失败未公开。没有 Apple Developer 签名 / 公证，不能将本地验签等同于 Gatekeeper 首启通过。
+
+如果较新 Homebrew 提示该 Cask 尚未受信任，执行 `brew trust --cask cpython666/tap/starclip` 后重试；这只信任星笺这一项，不需要信任整个 Tap。
 
 已有手动安装或较新本地开发版时，不用 `--force` 覆盖或降级。此 Cask 没有 `zap` 或删除数据脚本，普通升级 / 卸载只管理程序文件；程序内部的数据迁移边界仍由相应版本决定。自有 Tap 不代表 Homebrew 官方主仓收录；WinGet 尚未接入。
 
-正式 Release 发布后的 Tap 同步由 `.github/workflows/homebrew.yml` 承担：只处理公开、非预发布且为 latest 的 `vX.Y.Z`，重新下载 DMG 核对摘要、签名、应用身份 / 版本 / 架构并完成 Homebrew 检查后，才更新 Cask 的版本与 SHA-256。失败保留原 Cask；旧任务不得降级，同版本换摘要会被拒绝。当前 alpha.2 预览不会被这条稳定通道改写；也不把 alpha 改标为稳定版来消除检查。配置、重试与预演见 [Homebrew 发布自动化](homebrew-release.md)。待发布的 0.2.2 仍遵循下方双平台签名、快照及升级验收流程；版本号递增不代表已经上线。
+正式 Release 发布后的 Tap 同步由 `.github/workflows/homebrew.yml` 承担：只处理公开、非预发布且为 latest 的 `vX.Y.Z`，重新下载 DMG 核对摘要、签名、应用身份 / 版本 / 架构并完成 Homebrew 检查后，才更新 Cask 的版本与 SHA-256。失败保留原 Cask；旧任务不得降级，同版本换摘要会被拒绝。0.2.2 已完成首次完整自动同步；没有把历史 alpha 改标为稳定版或覆盖其附件。配置、重试与预演见 [Homebrew 发布自动化](homebrew-release.md)。0.2.2 已完成下方双平台签名和固定数据安装 / 覆盖升级流程并公开为 latest；公开清单及两平台更新包均已核验，应用内更新 GUI 全链路仍待验收。
 
 ## 版本与发布说明
 
@@ -96,4 +98,4 @@ npm run tauri -- signer generate -w /private/path/starclip-updater.key
 
 ## 当前验证边界
 
-本次实现包含 11 项发布和版本脚本夹具测试，覆盖版本不一致、错误 tag、递增、缺失/重复产物、错误签名结构、密钥与绑定版本、不完整平台、验签失败和更新说明提取。已另用临时原创文件通过官方 Tauri signer → minisign 0.12 → 清单汇总的真实签名验证，并确认篡改文件被拒绝；两个 workflow 通过 actionlint 1.7.12 静态检查。原签名密钥已配置到 GitHub 加密 secret；两平台签名构建、草稿上传及公开更新地址仍须实际工作流通过，未完成前不得写成已经发布或客户端已完成线上自动升级。原生安装冒烟只检查临时 runner 的启动和固定数据升级，不能替代完整应用内下载 / 弹窗 / 自替换链路验收。完整记录维护在 [验证记录](verification.md)。
+本次实现包含 11 项发布和版本脚本夹具测试，覆盖版本不一致、错误 tag、递增、缺失/重复产物、错误签名结构、密钥与绑定版本、不完整平台、验签失败和更新说明提取。已另用临时原创文件通过官方 Tauri signer → minisign 0.12 → 清单汇总的真实签名验证，并确认篡改文件被拒绝；两个 workflow 通过 actionlint 1.7.12 静态检查。原签名密钥已配置到 GitHub 加密 secret；0.2.2 的两平台签名构建、草稿上传、原生安装与覆盖升级已通过实际工作流，公开更新清单和下载包也已核验；这仍不代表客户端 GUI 已完成线上自动升级。原生安装冒烟只检查临时 runner 的启动和固定数据升级，不能替代完整应用内下载 / 弹窗 / 自替换链路验收。完整记录维护在 [验证记录](verification.md)。

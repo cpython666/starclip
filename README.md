@@ -22,7 +22,7 @@
 
 文中界面截图均使用合成样例，不含真实剪贴记录。
 
-## Homebrew 安装预览版
+## 安装与升级
 
 Apple Silicon Mac（M 系列芯片，macOS 11+）可通过星笺维护的 [Homebrew Tap](https://github.com/cpython666/homebrew-tap) 安装：
 
@@ -30,7 +30,9 @@ Apple Silicon Mac（M 系列芯片，macOS 11+）可通过星笺维护的 [Homeb
 brew install --cask cpython666/tap/starclip
 ```
 
-该入口提供 **0.1.0-alpha.2 早期开发预览版**，仅修复 alpha.1 的应用签名结构，不包含本文当前 0.2.2 源码的新增功能。已有较新本地开发版请勿降级覆盖。自有 Tap 不等于 Homebrew 官方主仓收录；安装包经过本地 ad-hoc 签名完整性校验，尚无 Apple Developer 签名 / 公证，macOS 仍可能阻止首次启动。安装、升级和分发边界见 [发布说明](docs/releases.md#homebrew-安装源)。
+该入口已自动更新为 **0.2.2**。Apple Silicon macOS 和 Windows x64 也可从 [GitHub Release](https://github.com/cpython666/starclip/releases/tag/v0.2.2) 下载；已有 0.2.0 开发版可在「偏好设置 → 帮助」检查更新。Homebrew 用户先退出应用，再运行 `brew update` 和 `brew upgrade --cask cpython666/tap/starclip`，无需先卸载。
+
+如果 Homebrew 提示 Cask 未受信任，执行 `brew trust --cask cpython666/tap/starclip` 后重试，只授权星笺这一项。自有 Tap 不等于 Homebrew 官方主仓收录；更新包具备 Tauri 签名校验，但尚无 Apple Developer 公证或 Windows 发行者证书。安装、升级和分发边界见 [发布说明](docs/releases.md)。
 
 ## 已实现
 
@@ -196,7 +198,7 @@ macOS 更新时先从应用菜单或托盘退出星笺，再把新版 `Starclip.
 - **备份与恢复**：完整恢复点包含历史、图片、分组、已保存偏好、星伴成长与受管组件，附文件摘要；恢复前再备份当前数据，复制到新目录后重启，保留原目录。它与合并记录的 JSON 导入不同。
 - **版本发布管理**：统一版本号、更新记录、两平台构建和签名清单，GitHub Actions 只生成完整发布草稿，人工审核后公开。
 
-已有 0.1.0 没有更新器，第一次仍须手动覆盖安装。待发布版本为 0.2.2，线上检查仍需完成平台验收并公开正式更新清单；Homebrew 的早期预览包不提供该更新清单。Windows 安装升级尚待实机验收。恢复点和旧应用副本不自动删除，也不提供自动程序降级；数据仍为本机明文。详见 [软件升级与发布](docs/releases.md) 和 [验证记录](docs/verification.md)。
+[0.2.2 已正式发布](https://github.com/cpython666/starclip/releases/tag/v0.2.2)，提供 Apple Silicon macOS 和 Windows x64 安装包及签名更新清单。已有 0.2.0 开发版可在帮助页检查更新；0.1.0 没有更新器，第一次仍须退出后手动覆盖安装。两平台全新安装与固定数据的 0.1.0 覆盖升级已通过 GitHub hosted runner 原生验收，应用内更新 GUI 完整链路仍待验收。恢复点和旧应用副本不自动删除，也不提供自动程序降级；数据仍为本机明文。详见 [软件升级与发布](docs/releases.md) 和 [验证记录](docs/verification.md)。
 
 ## 使用与数据
 
