@@ -2,6 +2,7 @@
 
 ## 0.2.3 候选整理与分享素材
 
+- **最终校准候选：** `841431d151fb968eb4934361d1ff2abdb541a9bf` 的 [Verify 40873603974](https://github.com/cpython666/starclip/actions/runs/40873603974) 7 个 job 全部成功，覆盖 core、双平台 desktop / 字体 / 成品 CLI，以及两平台全新安装 / 真实 0.1.0 覆盖升级。该包已包含「macOS 安装包不到 8 MB」的中英文文案与总览图。最终 DMG 为 **7,618,896 B（7.62 MB）**，SHA-256 `dfdf444c3946140bbc9f15b29f9a962c733419079a2709ebcf6bc4167e21a528`；Windows NSIS 为 **6,350,661 B（6.35 MB）**，SHA-256 `c1c894061cb520c0f42e181262083d7806af8c7cc10875cc28aab3e285b3d494`。下载时核对 artifact 所属 run / head、归档字节数及 GitHub digest；两包与元数据留在忽略的 `artifacts/release-candidate-0.2.3.noindex/final-841431d/`，未启动、挂载或安装。后续文档收尾不改变此构建源码；旧候选包保留作测量出处，不能与最终包混用。
 - 版本候选 `8c95044` 的 [Verify 40865566431](https://github.com/cpython666/starclip/actions/runs/40865566431) 7 个 job 全部成功：Node / Web / core、双平台 desktop / 字体 / 成品 CLI、两平台 fresh / upgrade。下载并验证的 macOS DMG 为 7,601,109 B（7.60 MB），Windows NSIS 为 6,352,448 B（6.35 MB）；两平台 artifact 压缩包摘要与 GitHub digest 相符。随后据此将四段文案、两张总览图的「约 7 MB」校准为「macOS 安装包不到 8 MB」，具体大小仍随版本变化。候选安装包与摘要留在忽略的 `artifacts/release-candidate-0.2.3.noindex/`，未替换正式应用。
 - `8c95044` 源码以独立 `com.starclip.acceptance20261029` 打包 0.2.3，保持生产前端与窗口配置，始终空库 / 暂停。原生进入独立分享页、切换英文、选择 AI 图并经系统保存对话框保存，实际路径回执正确；保存文件 SHA-256 与 `public/share/ai-en.png` 相同。切回中文保留 AI 主题、默认文件名同步为中文；取消保存提示未写入，目标文件确实不存在。此代表 PNG 与分享逻辑未受随后体积文案校准影响；未测试系统图片剪贴板或跨应用粘贴，不扩大到 Windows。测试 app 已退出、注销并移入废纸篓，正式数据未动。
 - 当前源码版本统一为 0.2.3；公开 Release、Homebrew 与本机正式安装仍为 0.2.2。没有创建发布 tag、上传新 Release 或推送 Tap；后续签名目标产物需单独核验。
