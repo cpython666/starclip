@@ -1,21 +1,62 @@
-name: One-off macOS updater acceptance
+name: macOS signed release updater acceptance
 on:
-  push:
-    branches: [codex/acceptance-20261029]
-    paths:
-      - '.github/workflows/macos-updater-acceptance.yml'
-      - 'scripts/macos-updater-acceptance.*'
-      - 'src-tauri/src/desktop.rs'
   workflow_dispatch:
+    inputs:
+      release_run_id:
+        description: 'Successful release.yml run containing complete-release artifacts'
+        required: true
+        type: string
+      source_ref:
+        description: 'Existing release tag, for example v0.2.3'
+        required: true
+        default: 'v0.2.3'
+        type: string
+      baseline:
+        description: 'Actual public 0.2.2, or tag source with comparison metadata 0.2.2'
+        required: true
+        default: public-0.2.2
+        type: choice
+        options: [public-0.2.2, source-comparison]
 permissions:
   contents: read
+  actions: read
 jobs:
   updater:
     runs-on: macos-15
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
-      - name: Check runner isolation and native UI authorization before building
+      - name: Bind artifacts to the successful tagged release build
+        id: target
+        uses: actions/github-script@v7
+        env:
+          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+        with:
+          script: |
+            if (context.repo.owner !== 'cpython666' || context.repo.repo !== 'starclip') throw new Error('Unexpected repository');
+            const tag = process.env.SOURCE_REF, runText = process.env.RELEASE_RUN_ID;
+            if (!/^v\d+\.\d+\.\d+$/.test(tag) || !/^\d+$/.test(runText)) throw new Error('Invalid release tag/run input');
+            const runId = Number(runText), version = tag.slice(1);
+            const commit = (await github.rest.repos.getCommit({...context.repo, ref: tag})).data.sha;
+            const run = (await github.rest.actions.getWorkflowRun({...context.repo, run_id: runId})).data;
+            if (run.path !== '.github/workflows/release.yml' || run.status !== 'completed' || run.conclusion !== 'success' || run.head_sha !== commit || run.head_repository?.full_name !== 'cpython666/starclip') throw new Error('Release run is not the successful immutable tag build');
+            const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {...context.repo, run_id: runId});
+            const matches = artifacts.filter(a => a.name === `complete-release-${version}` && !a.expired && a.workflow_run?.head_sha === commit);
+            if (matches.length !== 1) throw new Error('Expected one complete release artifact');
+            core.setOutput('revision', commit); core.setOutput('version', version); core.setOutput('artifact', matches[0].id);
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.target.outputs.revision }}
+          path: release-source
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ steps.target.outputs.artifact }}
+          run-id: ${{ inputs.release_run_id }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/starclip-release-assets
+      - name: Check runner isolation and native UI authorization
         run: |
           python3 scripts/macos-updater-acceptance.py --preflight
           xcrun swiftc scripts/macos-updater-acceptance.swift -o "$RUNNER_TEMP/starclip-updater-ui"
@@ -23,24 +64,82 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Verify genuine signatures and rejection of changed package bytes
+        env:
+          TARGET_VERSION: ${{ steps.target.outputs.version }}
+        run: |
+          brew install minisign
+          node --input-type=module <<'JS'
+          import { readFile, writeFile, mkdtemp, mkdir, rm } from 'node:fs/promises';
+          import { join } from 'node:path';
+          import { signatureEnvelope, verifyMinisign } from './release-source/scripts/release-manifest.mjs';
+          const directory = join(process.env.RUNNER_TEMP, 'starclip-release-assets');
+          const config = JSON.parse(await readFile('release-source/src-tauri/tauri.conf.json', 'utf8'));
+          const version = process.env.TARGET_VERSION, pubkey = config.plugins.updater.pubkey;
+          const scratch = await mkdtemp(join(process.env.RUNNER_TEMP, 'starclip-signature-negative-'));
+          const results = [];
+          try {
+            for (const suffix of ['aarch64.app.tar.gz', 'x64-setup.exe']) {
+              const name = `Starclip_${version}_${suffix}`, original = join(directory, name);
+              const signature = (await readFile(original + '.sig', 'utf8')).trim();
+              signatureEnvelope(signature, pubkey, version);
+              await verifyMinisign(original, signature, pubkey);
+              const changed = await readFile(original); changed[Math.floor(changed.length / 2)] ^= 1;
+              const altered = join(scratch, name); await writeFile(altered, changed);
+              let rejected = false;
+              try { await verifyMinisign(altered, signature, pubkey); } catch { rejected = true; }
+              if (!rejected) throw new Error(`Changed ${name} was accepted`);
+              results.push({name, originalSignatureVerified: true, changedBytesRejected: true});
+            }
+          } finally { await rm(scratch, {recursive: true, force: true}); }
+          const evidence = join(process.env.RUNNER_TEMP, 'starclip-macos-updater-evidence');
+          await mkdir(evidence, {recursive: true});
+          await writeFile(join(evidence, 'signature-positive-negative.json'), JSON.stringify({version, results}, null, 2) + '\n');
+          JS
+      - name: Download and pin the actual public macOS 0.2.2 baseline
+        if: inputs.baseline == 'public-0.2.2'
+        run: |
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/starclip-baseline.tar.gz" https://github.com/cpython666/starclip/releases/download/v0.2.2/Starclip_0.2.2_aarch64.app.tar.gz
+          printf '%s  %s\n' '83113a8c37739335cbc11d905c5b3bc089bba4aa0ad9b380a5d39199b63d224e' "$RUNNER_TEMP/starclip-baseline.tar.gz" | shasum --algorithm 256 --check
+          mkdir "$RUNNER_TEMP/starclip-public-baseline"
+          tar -xzf "$RUNNER_TEMP/starclip-baseline.tar.gz" -C "$RUNNER_TEMP/starclip-public-baseline"
       - uses: dtolnay/rust-toolchain@1.90.0
+        if: inputs.baseline == 'source-comparison'
         with:
           targets: aarch64-apple-darwin
       - uses: Swatinem/rust-cache@v2
+        if: inputs.baseline == 'source-comparison'
         with:
-          workspaces: src-tauri
+          workspaces: release-source/src-tauri
           cache-on-failure: true
-      - run: npm ci --no-audit --no-fund
-      - run: npm run version:check
-      - run: npm run tauri icon public/starclip.svg
-      - name: Build current source with only an older Tauri comparison version
+      - name: Build the exact tag source with comparison metadata 0.2.2
+        if: inputs.baseline == 'source-comparison'
+        working-directory: release-source
         env:
           APPLE_SIGNING_IDENTITY: '-'
         run: |
-          npm run tauri build -- --target aarch64-apple-darwin --bundles app --config '{"version":"0.2.1","bundle":{"createUpdaterArtifacts":false}}'
-      - name: Exercise native UI, genuine signed download, bundle replacement and restart
+          npm ci --no-audit --no-fund
+          npm run tauri icon public/starclip.svg
+          npm run tauri build -- --target aarch64-apple-darwin --bundles app --config '{"version":"0.2.2","bundle":{"createUpdaterArtifacts":false}}'
+      - name: Prepare fixed assets and temporary TLS certificates after all downloads
+        env:
+          TARGET_VERSION: ${{ steps.target.outputs.version }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          SOURCE_SHA: ${{ steps.target.outputs.revision }}
+          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
         run: |
-          python3 scripts/macos-updater-acceptance.py --app src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Starclip.app --inspector "$RUNNER_TEMP/starclip-updater-ui"
+          python3 scripts/release-updater-fixture.py prepare --assets "$RUNNER_TEMP/starclip-release-assets" --output "$RUNNER_TEMP/starclip-private-updater-fixture" --version "$TARGET_VERSION" --source-ref "$SOURCE_REF" --source-head-sha "$SOURCE_SHA" --release-run-id "$RELEASE_RUN_ID" --platform darwin-aarch64
+      - name: Exercise authentic target upgrade over runner-local trusted HTTPS
+        env:
+          BASELINE: ${{ inputs.baseline }}
+        run: |
+          baseline="$RUNNER_TEMP/starclip-public-baseline/Starclip.app"
+          flags=(--allow-manual-recovery)
+          if [ "$BASELINE" = source-comparison ]; then
+            baseline="$PWD/release-source/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Starclip.app"
+            flags=()
+          fi
+          python3 scripts/macos-updater-acceptance.py --app "$baseline" --inspector "$RUNNER_TEMP/starclip-updater-ui" --fixture "$RUNNER_TEMP/starclip-private-updater-fixture" --baseline-origin "$BASELINE" "${flags[@]}"
       - name: Retain only synthetic acceptance evidence
         if: always()
         uses: actions/upload-artifact@v4

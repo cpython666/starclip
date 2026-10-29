@@ -1,0 +1,99 @@
+name: Windows signed updater acceptance
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing signed target tag (the release may remain a draft)'
+        required: true
+        default: v0.2.3
+        type: string
+      release-run-id:
+        description: 'Successful Build signed release draft run for that exact tag/head'
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  updater:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Bind the signed artifacts to the successful release run and tag
+        id: target
+        uses: actions/github-script@v7
+        env:
+          TARGET_TAG: ${{ inputs.tag }}
+          RELEASE_RUN_ID: ${{ inputs.release-run-id }}
+        with:
+          script: |
+            const tag = process.env.TARGET_TAG;
+            const runIdText = process.env.RELEASE_RUN_ID;
+            if (!/^v\d+\.\d+\.\d+$/.test(tag) || !/^[1-9]\d*$/.test(runIdText)) throw new Error('Invalid tag or release run.');
+            const run_id = Number(runIdText);
+            if (!Number.isSafeInteger(run_id)) throw new Error('Invalid release run ID.');
+            const version = tag.slice(1);
+            const { data: run } = await github.rest.actions.getWorkflowRun({ ...context.repo, run_id });
+            const { data: commit } = await github.rest.repos.getCommit({ ...context.repo, ref: tag });
+            if (run.path !== '.github/workflows/release.yml' || run.status !== 'completed' || run.conclusion !== 'success' || run.head_sha !== commit.sha) {
+              throw new Error('The signed release run must have succeeded at the exact target tag commit.');
+            }
+            const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, { ...context.repo, run_id, per_page: 100 });
+            const matches = artifacts.filter(a => a.name === `complete-release-${version}` && !a.expired);
+            if (matches.length !== 1 || matches[0].workflow_run.head_sha !== commit.sha) throw new Error('Missing or ambiguous complete signed release artifact.');
+            core.setOutput('artifact-id', matches[0].id);
+            core.setOutput('version', version);
+            core.setOutput('head-sha', commit.sha);
+            core.setOutput('run-id', run_id);
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ steps.target.outputs.artifact-id }}
+          merge-multiple: true
+          run-id: ${{ steps.target.outputs.run-id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/starclip-signed-target
+      - name: Download the genuine public 0.2.2 baseline before isolating HTTPS
+        shell: pwsh
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP 'Starclip_0.2.2_x64-setup.exe'
+          Invoke-WebRequest -Uri 'https://github.com/cpython666/starclip/releases/download/v0.2.2/Starclip_0.2.2_x64-setup.exe' -OutFile $path -TimeoutSec 180
+          if ((Get-Item -LiteralPath $path).Length -ne 5139609 -or (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne '5974a9d4584045c571f51e08657cfd228fd38bee87a9a7169392d924f1309bdd') {
+            throw 'The public 0.2.2 baseline differs from the reviewed release asset.'
+          }
+      - name: Prepare the private HTTPS fixture without changing signed package bytes
+        shell: pwsh
+        env:
+          TARGET_TAG: ${{ inputs.tag }}
+          TARGET_VERSION: ${{ steps.target.outputs.version }}
+          TARGET_HEAD: ${{ steps.target.outputs.head-sha }}
+          RELEASE_RUN_ID: ${{ steps.target.outputs.run-id }}
+        run: |
+          $tokens = $null; $errors = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $env:GITHUB_WORKSPACE 'scripts/windows-updater-acceptance.ps1'), [ref]$tokens, [ref]$errors)
+          if ($errors.Count) { throw ($errors | Out-String) }
+          if (!(Get-Command openssl -ErrorAction SilentlyContinue)) {
+            $opensslDir = 'C:\Program Files\Git\usr\bin'
+            if (!(Test-Path -LiteralPath (Join-Path $opensslDir 'openssl.exe'))) { throw 'OpenSSL is unavailable.' }
+            $env:PATH = "$opensslDir;$env:PATH"
+          }
+          python scripts/release-updater-fixture.py prepare --assets "$env:RUNNER_TEMP/starclip-signed-target" --output "$env:RUNNER_TEMP/starclip-updater-private" --version $env:TARGET_VERSION --source-ref $env:TARGET_TAG --release-run-id $env:RELEASE_RUN_ID --source-head-sha $env:TARGET_HEAD --platform windows-x86_64
+          if ($LASTEXITCODE -ne 0) { throw 'Signed update fixture preparation failed.' }
+      - name: Exercise real 0.2.2 to signed target through native UI and trusted HTTPS
+        shell: pwsh
+        env:
+          TARGET_HEAD: ${{ steps.target.outputs.head-sha }}
+          RELEASE_RUN_ID: ${{ steps.target.outputs.run-id }}
+        run: |
+          ./scripts/windows-updater-acceptance.ps1 -BaselineInstaller "$env:RUNNER_TEMP/Starclip_0.2.2_x64-setup.exe" -FixtureDirectory "$env:RUNNER_TEMP/starclip-updater-private" -RepositoryRoot $env:GITHUB_WORKSPACE -SourceHeadSha $env:TARGET_HEAD -ReleaseRunId $env:RELEASE_RUN_ID
+      - name: Retain only synthetic acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-updater-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/starclip-windows-updater-evidence/*
+          if-no-files-found: warn
+          retention-days: 7

@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Real updater UI on a disposable GitHub macOS ARM runner, never a user Mac.
 
-Current source is packaged with only Tauri comparison metadata set to 0.2.1.
-The genuine, immutable public 0.2.2 is the target. This is not an upgrade from
-historical 0.2.1 source, nor a release or acceptance of a future target build.
+Release mode upgrades the actual public 0.2.2, or tag source with comparison
+metadata 0.2.2, to authentic signed draft artifacts over a runner-local trusted
+HTTPS fixture. Historical 0.2.2 may require explicitly recorded manual recovery;
+that never counts as an automatic restart pass or public GitHub delivery test.
+Without --fixture, retain the legacy comparison-0.2.1 to public-0.2.2 experiment.
 """
 import argparse
+import contextlib
 import hashlib
 import io
 import json
@@ -13,9 +16,11 @@ import os
 from pathlib import Path
 import platform
 import plistlib
+import re
 import signal
 import sqlite3
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -101,11 +106,94 @@ def verify_app(app, version):
     return digest(binary)
 
 
+@contextlib.contextmanager
+def fixture_transport(directory, temporary):
+    """Temporarily trust and route only this disposable runner's update traffic."""
+    assert directory.resolve(strict=True).is_relative_to(temporary)
+    helper = Path(__file__).with_name("release-updater-fixture.py")
+    hosts = Path("/etc/hosts")
+    before = hosts.read_bytes()
+    saved = directory / "hosts.original"
+    saved.write_bytes(before)
+    saved.chmod(0o600)
+    mapped = directory / "hosts.fixture"
+    mapped.write_bytes(before + b"\n127.0.0.1 github.com # starclip-disposable-release-fixture\n")
+    certificate = directory / "ca.crt"
+    fingerprint = command("openssl", "x509", "-in", str(certificate), "-noout", "-fingerprint", "-sha1", capture_output=True, text=True).stdout.strip().split("=")[-1].replace(":", "")
+    assert re.fullmatch(r"[A-Fa-f0-9]{40}", fingerprint)
+    server = None
+    changed_hosts = False
+    try:
+        command("sudo", "security", "add-trusted-cert", "-d", "-r", "trustRoot", "-p", "ssl",
+                "-k", "/Library/Keychains/System.keychain", str(certificate))
+        server = subprocess.Popen(["sudo", "-E", sys.executable, str(helper), "serve", "--directory", str(directory)],
+                                  start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        command("sudo", "cp", str(mapped), str(hosts))
+        changed_hosts = True
+        command("sudo", "dscacheutil", "-flushcache")
+        subprocess.run(["sudo", "killall", "-HUP", "mDNSResponder"], check=False, capture_output=True)
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            if server.poll() is not None:
+                raise RuntimeError("Runner-local HTTPS fixture exited during startup")
+            probe = subprocess.run(["/usr/bin/curl", "--fail", "--silent", "--max-time", "2", ENDPOINT], capture_output=True)
+            if probe.returncode == 0 and hashlib.sha256(probe.stdout).hexdigest() == MANIFEST_HASH:
+                break
+            time.sleep(0.5)
+        else:
+            raise RuntimeError("Trusted HTTPS fixture was not reachable with normal certificate validation")
+        yield
+    finally:
+        errors = []
+        try:
+            if changed_hosts:
+                command("sudo", "cp", str(saved), str(hosts))
+                command("sudo", "dscacheutil", "-flushcache")
+                subprocess.run(["sudo", "killall", "-HUP", "mDNSResponder"], check=False, capture_output=True)
+            assert hosts.read_bytes() == before, "Temporary hosts mapping was not restored"
+        except Exception as error:
+            errors.append(str(error))
+        try:
+            if server is not None:
+                subprocess.run(["sudo", "/bin/kill", "-TERM", "-" + str(server.pid)], check=False, capture_output=True)
+                try:
+                    server.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    subprocess.run(["sudo", "/bin/kill", "-KILL", "-" + str(server.pid)], check=False, capture_output=True)
+                    server.wait(timeout=10)
+        except Exception as error:
+            errors.append(str(error))
+        # Both cleanup operations run even if restoring hosts or stopping the
+        # owned server fails. Remove only this freshly generated certificate.
+        removed = subprocess.run(["sudo", "security", "remove-trusted-cert", "-d", str(certificate)], check=False, capture_output=True)
+        deleted = subprocess.run(["sudo", "security", "delete-certificate", "-Z", fingerprint, "/Library/Keychains/System.keychain"], check=False, capture_output=True)
+        remaining = subprocess.run(["security", "find-certificate", "-a", "-Z", "/Library/Keychains/System.keychain"], check=True, capture_output=True, text=True)
+        certificate_absent = fingerprint.upper() not in remaining.stdout.upper()
+        for name in ("ca.key", "server.key"):
+            try:
+                (directory / name).unlink(missing_ok=True)
+            except OSError as error:
+                errors.append(str(error))
+        evidence = temporary / "starclip-macos-updater-evidence" / "transport-cleanup.json"
+        evidence.write_text(json.dumps(dict(hostsRestored=hosts.read_bytes() == before,
+                                           serverStopped=server is None or server.poll() is not None,
+                                           certificateAbsent=certificate_absent,
+                                           trustRemovalStatus=removed.returncode,
+                                           certificateRemovalStatus=deleted.returncode,
+                                           errors=errors), indent=2) + "\n")
+        if errors or not certificate_absent or removed.returncode != 0 or deleted.returncode != 0:
+            raise RuntimeError("Disposable HTTPS fixture cleanup did not fully succeed; inspect transport-cleanup.json")
+
+
 def main():
+    global COMPARISON, TARGET, MANIFEST_HASH, TARGET_URL, TARGET_HASH
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--preflight", action="store_true")
     parser.add_argument("--app", type=Path)
     parser.add_argument("--inspector", type=Path)
+    parser.add_argument("--fixture", type=Path)
+    parser.add_argument("--baseline-origin", choices=("source-comparison", "public-0.2.2"), default="source-comparison")
+    parser.add_argument("--allow-manual-recovery", action="store_true")
     args = parser.parse_args()
     runner_temp, data = fresh_runner()
     if args.preflight:
@@ -113,11 +201,23 @@ def main():
         return
     if not args.app or not args.inspector:
         parser.error("--app and --inspector are required outside preflight")
+    release_fixture = None
+    if args.fixture:
+        args.fixture = args.fixture.resolve(strict=True)
+        assert args.fixture.is_relative_to(runner_temp)
+        release_fixture = json.loads((args.fixture / "fixture.json").read_text())
+        assert release_fixture["platform"] == "darwin-aarch64" and release_fixture["publicKey"] == PUBLIC_KEY
+        assert release_fixture["endpoint"] == ENDPOINT
+        COMPARISON, TARGET = "0.2.2", release_fixture["targetVersion"]
+        MANIFEST_HASH = release_fixture["latestManifestSha256"]
+        TARGET_URL, TARGET_HASH = release_fixture["targetUrl"], release_fixture["targetSha256"]
+    assert not args.allow_manual_recovery or (release_fixture and args.baseline_origin == "public-0.2.2")
     inspector = args.inspector.resolve(strict=True)
     assert inspector.is_relative_to(runner_temp), "UI helper must be runner-owned"
     command(str(inspector), "preflight")
     evidence = runner_temp / "starclip-macos-updater-evidence"
-    evidence.mkdir(exist_ok=False)
+    evidence.mkdir(exist_ok=True)
+    assert not (evidence / "result.json").exists(), "Acceptance evidence from an earlier run exists"
     scratch = Path(tempfile.mkdtemp(prefix="starclip-macos-updater-", suffix=".noindex", dir=runner_temp))
     installation = scratch / "Starclip.app"
     database = data / "starclip.sqlite3"
@@ -125,14 +225,16 @@ def main():
     process, active_pid = None, None
     stage = "preflight"
     baseline_hash = ""
+    restart_mode = "automatic"
+    transport = contextlib.ExitStack()
     app_error_log = (evidence / "synthetic-app-stderr.log").open("ab", buffering=0)
 
     def write(name, result):
         (evidence / name).write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
 
     def pinned_manifest():
-        raw = command("curl", "--fail", "--silent", "--show-error", "--location", "--retry", "3", "--max-time", "60", ENDPOINT, capture_output=True).stdout
-        assert hashlib.sha256(raw).hexdigest() == MANIFEST_HASH, "Public latest changed; experiment is pinned to 0.2.2"
+        raw = command("/usr/bin/curl", "--fail", "--silent", "--show-error", "--location", "--retry", "3", "--max-time", "60", ENDPOINT, capture_output=True).stdout
+        assert hashlib.sha256(raw).hexdigest() == MANIFEST_HASH, "Update manifest differs from the pinned acceptance target"
         manifest = json.loads(raw)
         assert manifest["version"] == TARGET
         assert manifest["platforms"]["darwin-aarch64"]["url"] == TARGET_URL
@@ -196,7 +298,12 @@ def main():
         active_pid = None
 
     def fixture(mode):
-        verify_database(database)
+        def verify(path):
+            if release_fixture:
+                return json.loads(command(sys.executable, str(Path(__file__).with_name("release-updater-fixture.py")), "verify-data", "--database", str(path), capture_output=True, text=True).stdout)
+            verify_database(path)
+            return dict(schema=2, paused=True, fixedRecords=1, fixedGroups=1)
+        details = verify(database)
         points = [(p, json.loads(p.read_text())) for p in (data / "recovery").glob("*/snapshot.json")]
         points = [(p, m) for p, m in points if m["reason"] == "before-update"]
         if mode == "after-install":
@@ -205,21 +312,24 @@ def main():
             assert manifest["schemaVersion"] == 2
             snapshot = path.parent / "starclip.sqlite3"
             assert digest(snapshot) == manifest["files"]["starclip.sqlite3"]["sha256"]
-            verify_database(snapshot)
+            verify(snapshot)
             backup = data / "application-backups" / manifest["id"] / "Starclip.app"
             assert verify_app(backup, COMPARISON) == baseline_hash, "Original application backup changed"
         else:
             assert not points, "Recovery point created before user confirmation"
             assert not (data / "application-backups").exists(), "Application backup created before confirmation"
-        result = dict(stage=mode, schema=2, paused=True, fixedRecords=1, fixedGroups=1, recoveryPoints=len(points))
+        result = dict(stage=mode, **details, recoveryPoints=len(points))
         write(mode + ".json", result)
         print(json.dumps(result), flush=True)
 
     try:
+        if release_fixture:
+            transport.enter_context(fixture_transport(args.fixture, runner_temp))
+            write("release-target.json", release_fixture)
         pinned_manifest()
         # Independently pin the expected installed executable. This does not
         # replace the updater's real HTTPS download or its signature checks.
-        archive = command("curl", "--fail", "--silent", "--show-error", "--location", "--retry", "3", "--max-time", "60", TARGET_URL, capture_output=True).stdout
+        archive = command("/usr/bin/curl", "--fail", "--silent", "--show-error", "--location", "--retry", "3", "--max-time", "60", TARGET_URL, capture_output=True).stdout
         assert hashlib.sha256(archive).hexdigest() == TARGET_HASH
         with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as bundle:
             members = [m for m in bundle if m.name.endswith("/Contents/MacOS/starclip") and m.isfile()]
@@ -229,11 +339,16 @@ def main():
         verify_app(args.app.resolve(strict=True), COMPARISON)
         command("ditto", str(args.app), str(installation))
         baseline_hash = verify_app(installation, COMPARISON)
+        if args.baseline_origin == "public-0.2.2":
+            assert baseline_hash == "ec6d08edf90f2d51b1cb75cf9271103b82f3e68763f1d94931a8e66ae94fe40f", "Baseline is not the actual public macOS 0.2.2 executable"
         start()
         time.sleep(2)
         command("python3", str(Path(__file__).with_name("installer-fixture.py")), str(database), "fresh", "2")
         stop()
-        seed_database(database)
+        if release_fixture:
+            command(sys.executable, str(Path(__file__).with_name("release-updater-fixture.py")), "seed-data", "--database", str(database))
+        else:
+            seed_database(database)
         start()
         original_pid = active_pid
         wait_ui(r"^(?:开启剪贴记录|Start recording)$")
@@ -242,7 +357,7 @@ def main():
         wait_ui(r"^(?:偏好设置|Preferences)(?:\s|$)", press=True)
         wait_ui(r"^(?:帮助|Help)$", press=True)
         wait_ui(r"^(?:检查更新|Check for updates)$", press=True)
-        wait_ui(r"^(?:新版本|Version)\s*0\.2\.2(?:\s|$)", text=True)
+        wait_ui(r"^(?:新版本|Version)\s*" + re.escape(TARGET) + r"(?:\s|$)", text=True)
         pinned_manifest()
         stage = "download-and-verify"
         wait_ui(r"^(?:下载更新|Download update)$", press=True)
@@ -270,8 +385,17 @@ def main():
             if process.poll() is not None and len(new_pids) == 1:
                 break
             time.sleep(0.5)
-        assert process.poll() is not None and len(new_pids) == 1, "No unique automatic restart at original install path"
-        active_pid = new_pids[0]
+        if process.poll() is None or len(new_pids) != 1:
+            assert args.allow_manual_recovery and process.poll() is not None and not new_pids, "No unique automatic restart at original install path"
+            # Historical public 0.2.2 skips normal Exit cleanup. Explicitly
+            # distinguish opening the already-installed target from auto restart.
+            assert verify_app(installation, TARGET) == target_executable_hash
+            fixture("after-install")
+            write("manual-recovery.json", dict(reason="Public 0.2.2 installed the target but did not keep a restarted process", oldProcessReturnCode=process.poll(), automaticRestart=False))
+            restart_mode = "manual-recovery"
+            start()
+        else:
+            active_pid = new_pids[0]
         installed_hash = verify_app(installation, TARGET)
         assert installed_hash == target_executable_hash and installed_hash != baseline_hash
         stage = "restarted-paused-with-fixed-data"
@@ -285,13 +409,18 @@ def main():
         restarted_pid = active_pid
         stop()
         fixture("after-install")
-        write("result.json", dict(result="passed", sourceCommit=os.environ["GITHUB_SHA"], comparisonVersion=COMPARISON,
+        write("result.json", dict(result="passed" if restart_mode == "automatic" else "passed-with-manual-recovery",
+                                  restartMode=restart_mode, baselineOrigin=args.baseline_origin,
+                                  sourceCommit=release_fixture["sourceHeadSha"] if release_fixture else os.environ["GITHUB_SHA"], comparisonVersion=COMPARISON,
                                   targetVersion=TARGET, manifestSha256=MANIFEST_HASH, targetArchiveSha256=TARGET_HASH,
                                   originalPid=original_pid, restartedPid=restarted_pid,
                                   originalExecutableSha256=baseline_hash, installedExecutableSha256=installed_hash))
         with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as file:
-            file.write("- macOS native updater passed: check → signed download → Later → confirmation → data/application recovery copies → bundle replacement → automatic restart → paused UI and fixed data.\n")
-            file.write("- Only Tauri comparison/package metadata was 0.2.1. The source is this run's commit; target is pinned public 0.2.2. This is neither historical 0.2.1-source migration nor acceptance/publication of a future target.\n")
+            file.write(f"- macOS native updater: signed download, confirmation, data/application recovery copies, replacement and preserved fixed data passed. Restart mode: **{restart_mode}**. Baseline: {args.baseline_origin} ({COMPARISON}); target: {TARGET}.\n")
+            if release_fixture:
+                file.write("- Authentic signed release artifacts were served over a runner-local trusted HTTPS fixture at the original URLs. Public GitHub delivery is not covered. Manual recovery, if recorded, does not count as an automatic restart pass.\n")
+            else:
+                file.write("- The source only overrides comparison metadata; target is pinned public 0.2.2, not a future target release.\n")
     except Exception as error:
         write("result.json", dict(result="failed", stage=stage, message=str(error)))
         diagnostic = dict(oldProcessReturnCode=process.poll() if process else None)
@@ -324,8 +453,13 @@ def main():
                 pass
         raise
     finally:
-        stop()
-        app_error_log.close()
+        try:
+            stop()
+        finally:
+            try:
+                transport.close()
+            finally:
+                app_error_log.close()
         # VM disposal removes the test app and profile. Evidence deliberately
         # excludes databases, application backups, clipboard and credentials.
 
