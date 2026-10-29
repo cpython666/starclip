@@ -83,6 +83,7 @@ jobs:
           python scripts/release-updater-fixture.py prepare --assets "$env:RUNNER_TEMP/starclip-signed-target" --output "$env:RUNNER_TEMP/starclip-updater-private" --version $env:TARGET_VERSION --source-ref $env:TARGET_TAG --release-run-id $env:RELEASE_RUN_ID --source-head-sha $env:TARGET_HEAD --platform windows-x86_64
           if ($LASTEXITCODE -ne 0) { throw 'Signed update fixture preparation failed.' }
       - name: Exercise real 0.2.2 to signed target through native UI and trusted HTTPS
+        timeout-minutes: 12
         shell: pwsh
         env:
           TARGET_HEAD: ${{ steps.target.outputs.head-sha }}

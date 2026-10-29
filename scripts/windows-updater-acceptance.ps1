@@ -61,6 +61,13 @@ $hostsOriginal = $null
 $hostsPath = Join-Path $env:SystemRoot 'System32/drivers/etc/hosts'
 $proxyVariables = @{}
 $stage = 'preflight'
+function Set-AcceptanceStage([string]$Name) {
+  $script:stage = $Name
+  $progress = @{ stage=$Name; at=[DateTime]::UtcNow.ToString('o') }
+  Write-Host (ConvertTo-Json $progress -Compress)
+  $progress | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidence 'progress.json') -Encoding utf8
+}
+Set-AcceptanceStage 'preflight'
 $baselineHash = ''
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -77,6 +84,16 @@ function Stop-OwnedApplication {
 }
 
 function Set-FixedClipboard { Set-Clipboard -Value 'Starclip CI original clipboard canary: an untouched orbit.' }
+
+function Invoke-CertificateTool([string[]]$Arguments, [string]$DiagnosticName) {
+  $process = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32/certutil.exe') -ArgumentList $Arguments -PassThru -WindowStyle Hidden `
+    -RedirectStandardOutput (Join-Path $FixtureDirectory "$DiagnosticName.stdout") -RedirectStandardError (Join-Path $FixtureDirectory "$DiagnosticName.stderr")
+  if (!$process.WaitForExit(30000)) {
+    Stop-Process -Id $process.Id -Force
+    throw "The temporary certificate operation timed out: $DiagnosticName"
+  }
+  if ($process.ExitCode -ne 0) { throw "The temporary certificate operation failed: $DiagnosticName ($($process.ExitCode))" }
+}
 
 function Wait-ForPausedWindow {
   $deadline = [DateTime]::UtcNow.AddSeconds(60)
@@ -190,7 +207,7 @@ function Check-UpdaterFixture([string]$Mode) {
 }
 
 try {
-  $stage = 'inspect-signed-target'
+  Set-AcceptanceStage 'inspect-signed-target'
   $targetInstaller = Join-Path $fixture.assetDirectory $fixture.targetFilename
   if ((Get-FileHash -LiteralPath $targetInstaller -Algorithm SHA256).Hash.ToLowerInvariant() -ne $fixture.targetSha256 -or
       [Diagnostics.FileVersionInfo]::GetVersionInfo($targetInstaller).ProductVersion -ne $targetVersion) { throw 'The signed target package changed.' }
@@ -200,7 +217,7 @@ try {
   $targetExecutables = @(Get-ChildItem -LiteralPath $unpacked -Filter starclip.exe -File -Recurse)
   if ($targetExecutables.Count -ne 1) { throw 'The signed installer does not contain exactly one main executable.' }
   $expectedInstalledHash = (Get-FileHash -LiteralPath $targetExecutables[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-  $stage = 'install-genuine-baseline'
+  Set-AcceptanceStage 'install-genuine-baseline'
   Set-FixedClipboard
   $installation = Start-Process -FilePath $BaselineInstaller -ArgumentList "/S /NS /D=$installDir" -PassThru
   if (!$installation.WaitForExit(180000) -or $installation.ExitCode -ne 0) { throw 'The genuine baseline installation failed.' }
@@ -213,14 +230,23 @@ try {
   Stop-OwnedApplication
   Check-UpdaterFixture 'seed'
 
-  $stage = 'isolate-trusted-https'
+  Set-AcceptanceStage 'isolate-trusted-https'
   # All tools and artifacts have already been downloaded. No credential is
   # passed to the fixture. Trust is scoped to a fresh runner and removed below.
-  if ((Get-NetTCPConnection -LocalPort 443 -State Listen -ErrorAction SilentlyContinue)) { throw 'Port 443 is already in use.' }
+  # Avoid unbounded CIM queries in the test harness. Claim/release only the
+  # loopback port the fixture will use; no external connection is made.
+  $probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 443)
+  try { $probe.Start() } finally { $probe.Stop() }
   $caPath = Join-Path $FixtureDirectory 'ca.crt'
   $ca = [Security.Cryptography.X509Certificates.X509Certificate2]::new($caPath)
   if (Test-Path -LiteralPath "Cert:\CurrentUser\Root\$($ca.Thumbprint)") { throw 'The temporary CA is unexpectedly already trusted.' }
-  $trustedCertificate = Import-Certificate -FilePath $caPath -CertStoreLocation Cert:\CurrentUser\Root
+  Set-AcceptanceStage 'trust-temporary-ca'
+  # certutil -f is deliberately noninteractive, and the owned process has a
+  # deadline. Trust only this ephemeral CA; TLS/hostname checks stay enabled.
+  $trustedCertificate = $ca
+  Invoke-CertificateTool @('-user', '-f', '-addstore', 'Root', ('"' + $caPath + '"')) 'ca-import'
+  if (!(Test-Path -LiteralPath "Cert:\CurrentUser\Root\$($ca.Thumbprint)")) { throw 'The temporary CA did not enter the current-user root store.' }
+  Set-AcceptanceStage 'map-update-host'
   $hostsOriginal = [IO.File]::ReadAllBytes($hostsPath)
   if ([Text.Encoding]::UTF8.GetString($hostsOriginal) -match '(?im)^\s*[^#\r\n]+\s+github\.com(?:\s|$)') { throw 'An existing github.com hosts mapping would make isolation ambiguous.' }
   [IO.File]::AppendAllText($hostsPath, "`r`n127.0.0.1 github.com # Starclip disposable updater acceptance`r`n", [Text.UTF8Encoding]::new($false))
@@ -230,17 +256,24 @@ try {
     [Environment]::SetEnvironmentVariable($name, $null, 'Process')
   }
   $serverArgs = @(('"' + $helper + '"'), 'serve', '--directory', ('"' + $FixtureDirectory + '"'))
+  Set-AcceptanceStage 'launch-https-server'
   $server = Start-Process -FilePath (Get-Command python).Source -ArgumentList $serverArgs -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $FixtureDirectory 'server.stdout') -RedirectStandardError (Join-Path $FixtureDirectory 'server.stderr')
   $deadline = [DateTime]::UtcNow.AddSeconds(15)
   do {
     if ($server.HasExited) { throw 'The private HTTPS fixture server exited.' }
-    if (Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort 443 -State Listen -ErrorAction SilentlyContinue) { break }
+    $connected = $false
+    $client = [Net.Sockets.TcpClient]::new()
+    try { $connected = $client.ConnectAsync('127.0.0.1', 443).Wait(500) -and $client.Connected }
+    catch [AggregateException] { }
+    finally { $client.Dispose() }
+    if ($connected) { break }
     Start-Sleep -Milliseconds 250
   } while ([DateTime]::UtcNow -lt $deadline)
+  Set-AcceptanceStage 'probe-trusted-https'
   Assert-PinnedManifest
   Copy-Item -LiteralPath (Join-Path $FixtureDirectory 'fixture.json') -Destination (Join-Path $evidence 'fixture.json')
 
-  $stage = 'check'
+  Set-AcceptanceStage 'check'
   Start-And-AssertPaused
   $originalPid = $script:appProcess.Id
   Invoke-Ui (Wait-Ui '^(?:偏好设置|Preferences)(?:\s|$)')
@@ -248,19 +281,19 @@ try {
   Invoke-Ui (Wait-Ui '^(?:检查更新|Check for updates)$')
   $null = Wait-Ui ('^(?:新版本|Version)\s*' + [regex]::Escape($targetVersion) + '(?:\s|$)') $false
   Assert-PinnedManifest
-  $stage = 'download-and-verify'
+  Set-AcceptanceStage 'download-and-verify'
   Invoke-Ui (Wait-Ui '^(?:下载更新|Download update)$')
   $later = Wait-Ui '^(?:稍后再说|Later)$' $true 180
   # The real updater reaches this dialog only after official-key/signature and
   # signed-version checks. No IPC, modified package or injected download data.
-  $stage = 'later-keeps-current-app'
+  Set-AcceptanceStage 'later-keeps-current-app'
   Invoke-Ui $later
   Start-Sleep -Seconds 3
   if (Find-Ui '^(?:稍后再说|Later)$') { throw 'Later did not dismiss the dialog.' }
   if ((Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant() -ne $baselineHash -or
       $script:appProcess.Id -ne $originalPid -or $script:appProcess.HasExited) { throw 'Later changed or restarted the baseline.' }
   Check-UpdaterFixture 'before-install'
-  $stage = 'confirm-install'
+  Set-AcceptanceStage 'confirm-install'
   Assert-PinnedManifest
   Invoke-Ui (Wait-Ui '^(?:安装并重启|Install and restart)$')
   $later = Wait-Ui '^(?:稍后再说|Later)$'
@@ -268,7 +301,7 @@ try {
   $confirm = Find-Ui '^(?:安装并重启|Install and restart)$' $true $row
   if ($null -eq $confirm) { throw 'The explicit confirmation action could not be identified.' }
   Invoke-Ui $confirm
-  $stage = 'automatic-restart'
+  Set-AcceptanceStage 'automatic-restart'
   $deadline = [DateTime]::UtcNow.AddSeconds(180)
   do {
     $script:appProcess.Refresh()
@@ -283,7 +316,7 @@ try {
       [Diagnostics.FileVersionInfo]::GetVersionInfo($exe).ProductVersion -ne $targetVersion) { throw 'The restarted executable differs from the exact signed target.' }
   $entries = @($uninstallKeys | Where-Object { Test-Path -LiteralPath $_ } | ForEach-Object { Get-ItemProperty -LiteralPath $_ })
   if ($entries.Count -ne 1 -or $entries[0].DisplayVersion -ne $targetVersion) { throw 'Updated application registration has an unexpected version.' }
-  $stage = 'restarted-paused-with-fixed-data'
+  Set-AcceptanceStage 'restarted-paused-with-fixed-data'
   Wait-ForPausedWindow
   Set-FixedClipboard
   for ($i = 0; $i -lt 3; $i++) { Start-Sleep -Seconds 1; Check-UpdaterFixture 'after-install' }
@@ -309,6 +342,13 @@ try {
   # Remove interception first so Actions uploads use real GitHub. Private CA
   # keys, auth tokens, profile/database and application backups are never uploaded.
   $cleanupErrors = @()
+  foreach ($name in @('server.stdout', 'server.stderr', 'ca-import.stdout', 'ca-import.stderr')) {
+    $diagnostic = Join-Path $FixtureDirectory $name
+    if (Test-Path -LiteralPath $diagnostic -PathType Leaf) {
+      Get-Content -LiteralPath $diagnostic -Tail 100 -ErrorAction SilentlyContinue |
+        Set-Content -LiteralPath (Join-Path $evidence $name) -Encoding utf8
+    }
+  }
   try {
     if ($null -ne $hostsOriginal) {
       [IO.File]::WriteAllBytes($hostsPath, $hostsOriginal)
@@ -319,7 +359,9 @@ try {
   try {
     if ($null -ne $trustedCertificate) {
       $certificatePath = "Cert:\CurrentUser\Root\$($trustedCertificate.Thumbprint)"
-      Remove-Item -LiteralPath $certificatePath
+      if (Test-Path -LiteralPath $certificatePath) {
+        Invoke-CertificateTool @('-user', '-delstore', 'Root', $trustedCertificate.Thumbprint) 'ca-remove'
+      }
       if (Test-Path -LiteralPath $certificatePath) { throw 'Temporary CA removal failed.' }
     }
   } catch { $cleanupErrors += 'temporary CA removal failed' }
