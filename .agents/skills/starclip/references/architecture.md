@@ -89,7 +89,7 @@ SQLite 主要表为 `clips`、`clip_images`、`clip_privacy`、`groups`、`prefe
 
 Homebrew 同步独立使用 `.github/workflows/homebrew.yml`、`scripts/homebrew-release.mjs` 与 `tests/homebrew-release.test.ts`。读取公开 latest 稳定 Release，校验实际 DMG 与清单及应用身份后生成 Cask；仅末尾 Tap job 使用单仓 deploy key，推送前重查 Release，拒绝降级 / 同版换摘要。详见 [Homebrew 自动化](../../../../docs/homebrew-release.md)，不能把同步验包称为完整安装升级验收。
 
-产品宣传素材源为 `scripts/share-posters.html`，直接渲染既有星芽组件与原创界面 / 代码示意；中文主题 ID 为 `overview` / `workflow` / `companion` / `creation` / `ai`，英文对应加 `-en`，均为 1080 × 1440。`scripts/compress-share-images.py` 按 `product-share-catalog.json` 的十个图片条目制作 256 色索引 PNG 并回填字节数，Pillow 仅为素材制作依赖；文案 ID 为 `short` / `detailed` 及其 `-en` 版本。素材语言由面板临时选择，不写应用偏好、不自动发布；原生新素材复制 / 保存仍需单独验收。见 [分享说明](../../../../docs/product-share.md)。
+产品宣传素材源为 `scripts/share-posters.html`，直接渲染既有星芽组件与原创界面 / 代码示意；中文主题 ID 为 `overview` / `workflow` / `companion` / `creation` / `ai`，英文对应加 `-en`，均为 1080 × 1440。`scripts/compress-share-images.py` 按 `product-share-catalog.json` 的十个图片条目制作 256 色索引 PNG 并回填字节数，Pillow 仅为素材制作依赖；文案 ID 为 `short` / `detailed` 及其 `-en` 版本。素材语言由面板临时选择，不写应用偏好、不自动发布；macOS 英文 AI 图原生保存 / 取消已验收，复制 / 跨应用粘贴与 Windows 原生分享仍需单独验收。见 [分享说明](../../../../docs/product-share.md)。
 
 可选统计：`telemetry.rs` 只接收 9 种固定事件并聚合计数，主窗只申报星绘坊打开，其余由原生操作路径计数。缺失偏好默认开启，已保存的关闭选择保留，读取 / 解析失败关闭；无有效接收端时不采集。复用 monitor 约每分钟 checkpoint / 调度发送，发送前后和正常 `RunEvent::Exit` 也 checkpoint；下载验签完成和进入安装阶段后另调度异步发送，不等待网络、不持有存储锁。固定缓存位于默认应用目录 `usage-counts.json`，读取上限 2 KiB，9 类各最多 100 次、TTL 72 小时，只存格式 / 应用版本、创建时间和计数；同版本恢复，换版本丢弃，不含设备 / sessionId，不加入剪贴备份或目录迁移。异常终止可能丢最后一分钟新增计数；安装只计尝试，补报按收到时间计，可能丢失或重复。
 
