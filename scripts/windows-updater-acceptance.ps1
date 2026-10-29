@@ -13,6 +13,11 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 if (!$IsWindows -or $env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or
     $env:GITHUB_REPOSITORY -ne 'cpython666/starclip') { throw 'A fresh GitHub-hosted Windows runner is required.' }
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = [Security.Principal.WindowsPrincipal]::new($identity)
+if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+  throw 'The disposable runner must already be elevated; this script never requests UAC elevation.'
+}
 $RepositoryRoot = (Resolve-Path -LiteralPath $RepositoryRoot).Path
 $FixtureDirectory = (Resolve-Path -LiteralPath $FixtureDirectory).Path
 $BaselineInstaller = (Resolve-Path -LiteralPath $BaselineInstaller).Path
@@ -239,13 +244,14 @@ try {
   try { $probe.Start() } finally { $probe.Stop() }
   $caPath = Join-Path $FixtureDirectory 'ca.crt'
   $ca = [Security.Cryptography.X509Certificates.X509Certificate2]::new($caPath)
-  if (Test-Path -LiteralPath "Cert:\CurrentUser\Root\$($ca.Thumbprint)") { throw 'The temporary CA is unexpectedly already trusted.' }
+  if (Test-Path -LiteralPath "Cert:\LocalMachine\Root\$($ca.Thumbprint)") { throw 'The temporary CA is unexpectedly already trusted.' }
   Set-AcceptanceStage 'trust-temporary-ca'
-  # certutil -f is deliberately noninteractive, and the owned process has a
-  # deadline. Trust only this ephemeral CA; TLS/hostname checks stay enabled.
+  # The current-user protected Root store can still show a confirmation UI even
+  # with certutil -f. Use the already-elevated disposable VM's machine store;
+  # no UAC prompt or user trust settings are touched, and delete this exact CA.
   $trustedCertificate = $ca
-  Invoke-CertificateTool @('-user', '-f', '-addstore', 'Root', ('"' + $caPath + '"')) 'ca-import'
-  if (!(Test-Path -LiteralPath "Cert:\CurrentUser\Root\$($ca.Thumbprint)")) { throw 'The temporary CA did not enter the current-user root store.' }
+  Invoke-CertificateTool @('-f', '-addstore', 'Root', ('"' + $caPath + '"')) 'ca-import'
+  if (!(Test-Path -LiteralPath "Cert:\LocalMachine\Root\$($ca.Thumbprint)")) { throw 'The temporary CA did not enter the disposable machine root store.' }
   Set-AcceptanceStage 'map-update-host'
   $hostsOriginal = [IO.File]::ReadAllBytes($hostsPath)
   if ([Text.Encoding]::UTF8.GetString($hostsOriginal) -match '(?im)^\s*[^#\r\n]+\s+github\.com(?:\s|$)') { throw 'An existing github.com hosts mapping would make isolation ambiguous.' }
@@ -358,9 +364,9 @@ try {
   } catch { $cleanupErrors += 'hosts restoration failed' }
   try {
     if ($null -ne $trustedCertificate) {
-      $certificatePath = "Cert:\CurrentUser\Root\$($trustedCertificate.Thumbprint)"
+      $certificatePath = "Cert:\LocalMachine\Root\$($trustedCertificate.Thumbprint)"
       if (Test-Path -LiteralPath $certificatePath) {
-        Invoke-CertificateTool @('-user', '-delstore', 'Root', $trustedCertificate.Thumbprint) 'ca-remove'
+        Invoke-CertificateTool @('-delstore', 'Root', $trustedCertificate.Thumbprint) 'ca-remove'
       }
       if (Test-Path -LiteralPath $certificatePath) { throw 'Temporary CA removal failed.' }
     }
