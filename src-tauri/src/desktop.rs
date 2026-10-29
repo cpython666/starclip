@@ -1828,7 +1828,11 @@ fn restart_app(app: AppHandle, context: AppContext<'_>) -> Result<()> {
         return Err("正在备份或安装更新，请等待完成后再重启。".into());
     }
     lock(&context.storage)?.release_for_restart()?;
-    app.restart();
+    // A synchronous command runs on the event loop. `restart()` skips Exit
+    // there, so the single-instance socket can intercept the replacement.
+    // Request the normal Exit sequence to clean it up before spawning again.
+    app.request_restart();
+    Ok(())
 }
 
 #[derive(Serialize)]

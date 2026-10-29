@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/macos-updater-acceptance.yml'
       - 'scripts/macos-updater-acceptance.*'
+      - 'src-tauri/src/desktop.rs'
   workflow_dispatch:
 permissions:
   contents: read
