@@ -1,11 +1,35 @@
-# 星笺验证记录（当前源码 0.2.3 候选，更新至 2026-10-29）
+# 星笺验证记录（当前公开版 0.2.3，更新至 2026-10-29）
+
+## 0.2.3 正式发布与原生升级验收
+
+- **发布状态：** 已按用户明确授权，将 [v0.2.3](https://github.com/cpython666/starclip/releases/tag/v0.2.3) 于 **2026-10-29 14:55:38 UTC（北京时间 22:55:38）** 正式公开为 latest；Release ID `427924020`，`draft=false`、`prerelease=false`。tag 固定指向 `45ffe2532de3da87a844b25eff6f64ca173f5ca1`，相对下方 `841431d` 候选仅有文档整理。签名 [Release run 40882819215](https://github.com/cpython666/starclip/actions/runs/40882819215) 的 8 个 job 全部成功：validate、两平台 desktop、两平台各 fresh / upgrade、draft，8 项附件齐全。Homebrew 同步和公开下载核对也已完成，详情见下方；本机正式安装仍为 0.2.2。
+- **精确产物：** 下表为该签名 run 生成、发布前从草稿核验的原始附件；本地重新计算大小 / SHA-256，逐项匹配 GitHub asset digest，并核对 `SHA256SUMS` 的 7 项内容。发布汇总已通过双平台 Tauri 更新签名及绑定版本校验；macOS 验收另以真实两平台包确认原签名通过、翻转包字节被拒绝。macOS DMG 为 7.60 MB（十进制），继续满足「安装包不到 8 MB」；不等于内存或安装后含用户数据占用。原包和元数据保留在忽略的 `artifacts/release-0.2.3.noindex/signed-assets/` 与 `draft-metadata.json`，与下方普通 Verify 候选包分开。
+
+| 签名附件 | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| `Starclip_0.2.3_aarch64.dmg` | 7,603,121 | `18457b1b5f5878dbdcc51ebcc9db90ecf9cc14263537a4d72525c24d7045a072` |
+| `Starclip_0.2.3_aarch64.app.tar.gz` | 7,796,156 | `23f2458d5b4d55dd7a81022d28c524593b715946029c7e309a11b763233bb087` |
+| `Starclip_0.2.3_aarch64.app.tar.gz.sig` | 424 | `51184599bcea1ef31cf5519d945b552dbce3ac7a74ff09208542aad57beba9c7` |
+| `Starclip_0.2.3_x64-setup.exe` | 6,354,060 | `9e1339852e0eebfb90d14f383aee95d8795deac08147e426f4a74268f51f0055` |
+| `Starclip_0.2.3_x64-setup.exe.sig` | 436 | `fe2fe6adb0fbfb12f1651c7b85915ca1e6f7f00f0d19e0863530c58fc5a0bc1d` |
+| `latest.json` | 4,576 | `7e44220f0d387bb01863c1fb761d105895cc96ad536e3619b6594b78774f29db` |
+| `SHA256SUMS` | 652 | `e73b07c29870f0ea0349ee6b10e04cab22a7fa83907034814b3c969a5845343e` |
+| `release-notes.md` | 3,267 | `c3fd8faf8af982dcfad2928250fa1d2ee1a7b0628015ec03c380516e992c9e45` |
+
+- **公网交付与 Homebrew 已核验：** 发布后使用不携带认证的 curl 实际下载全部 8 项公开附件，逐项大小 / SHA-256 与发布前验收的签名草稿及上表一致；稳定 [latest.json](https://github.com/cpython666/starclip/releases/latest/download/latest.json) 的完整字节也与已验收清单相同，版本为 0.2.3。Windows 安装包下载曾遇到一次网络超时，curl 重试后完整下载并核对通过，未替换或重签产物。Homebrew [40896366521](https://github.com/cpython666/starclip/actions/runs/40896366521) 的 verify / update-tap 两个 job 全部成功；[Tap 提交 79d2e48](https://github.com/cpython666/homebrew-tap/commit/79d2e48ca567086a5e1b15863787a8810490b6bd) 已将 Cask 更新为 0.2.3，远端读回的 SHA-256 为 `18457b1b5f5878dbdcc51ebcc9db90ecf9cc14263537a4d72525c24d7045a072`，与公开 DMG 一致。证据为忽略目录 `artifacts/release-0.2.3.noindex/public-download-verification.json` 与 `published-metadata.json`；该公网字节核对与下方隔离原生 UI 验收分别记录。
+
+- **Windows 已通过：** [run 40891766297](https://github.com/cpython666/starclip/actions/runs/40891766297)（验收脚本 head `e6c0ae28db4bd4cb7f2a8906d73f556e2be8c9e6`）使用真实公开 0.2.2 安装器，未改比较版本或产品源码。原生 UI 完成检查、签名下载、「稍后再说」、再次明确确认安装、原路径替换及不同 PID 自动重启到精确签名 0.2.3。选择稍后时旧 EXE / 固定数据不变，恢复点为 0；确认后恰好生成 1 个 `before-update`，快照受管文件摘要、快照数据库及旧 EXE 备份均核验。安装后 EXE SHA-256 为 `d7c27e8f73b7d37a87111516a080585115b6f45336b24d55d6c29533f1dbaada`，与目标 NSIS 只读解出的主程序一致；注册版本也为 0.2.3。
+- **Windows 数据与清理：** schema 2、暂停、2 条原创记录（其中 1 张原创 2×2 PNG 及缩略图）、1 个分组、固定偏好和星伴成长 / 装备均保留，统计保持关闭；运行中连续核对 3 次，退出后再核对，恢复点内亦通过相同检查。`result.json` 为 `passed` / `restartMode=automatic`，`cleanup.json` 为 `restored=true`、空错误列表，确认 hosts 字节恢复、仅本轮 CA 被移除、夹具服务及自有 app 已停止。证据在 `artifacts/release-0.2.3.noindex/windows-updater-run40891766297/`。
+- **macOS 最终验收通过，保留手动重开边界：** [最终 run 40895064653](https://github.com/cpython666/starclip/actions/runs/40895064653)（验收 head `e9f94ef7891151e7ef0d2da7b4bc5e52e0fd1e5d`）的 job 已成功。真实公开 0.2.2 经原生 UI 检查、签名下载、稍后、明确确认安装后，app 已替换为精确签名 0.2.3，目标主程序 SHA-256 为 `72c26106f7210e2e4570ec8bde928c9474be3b7db56084c1dbb487e0f5afe38f`。旧 0.2.2 没有保持自动重开的进程，脚本显式手动补开，PID 从 `2245` 变为 `5682`；结果为 `passed-with-manual-recovery`，**不算自动重启通过**。手动重开后 schema 2、暂停、2 条原创记录 / 1 张 PNG 及缩略图、1 个分组、成长 / 装备和固定偏好均保留，统计关闭；恰好 1 个 before-update 恢复点，快照与旧 app 副本也通过核对。
+- **macOS 清理已核验：** `transport-cleanup.json` 中 `trustRevoked`、`certificateAbsent`、`privateKeysRemoved`、`hostsRestored`、`serverStopped` 全部为 true，错误列表为空；撤销信任后正常 TLS 探测返回 curl 60，证明夹具证书不再被信任。针对本轮临时 CA 的 deny 信任记录保留到一次性 VM 销毁，不能宣称信任库逐字节恢复；临时证书与私钥已删除。第二轮 [40889704576](https://github.com/cpython666/starclip/actions/runs/40889704576) 曾完成相同核心升级 / 手动补开，但 job 因 `security remove-trusted-cert -d` 清理超时失败；该故障和旧证据保留，不覆盖成成功。最终证据在 `artifacts/release-0.2.3.noindex/macos-updater-run40895064653/`。
+- **范围与测试工具故障：** 两平台仅在一次性 GitHub runner 的空白正式应用命名空间使用原创固定数据，不读真实剪贴板、不替换本机正式应用。草稿包通过 runner 内临时受信任 CA / hosts 夹具提供，保留正式 HTTPS URL、完整签名和原包字节，不关闭 TLS / 主机名或签名验证；**原生 UI 验收使用的是本地 HTTPS 夹具，并未在公网 CDN 上重跑**；发布后匿名实下载的字节一致性已单独核对，见上方「公网交付」。Windows 首轮 `40885539810` 是测试 helper 默认 cp1252 读取中文清单失败，显式 UTF-8 后解决；第二轮 `40886450483` 在 HTTPS 初始化区间阻塞后取消，第三轮 `40890522177` 明确定位当前用户 Root CA 导入超时且清理成功，第四轮改为已提升权限的一次性 runner 机器根存储、限时导入 / 精确删除后通过。以上均未修改签名目标；不得将准备 / 信任工具故障写成更新器验签失败。
 
 ## 0.2.3 候选整理与分享素材
 
-- **最终校准候选：** `841431d151fb968eb4934361d1ff2abdb541a9bf` 的 [Verify 40873603974](https://github.com/cpython666/starclip/actions/runs/40873603974) 7 个 job 全部成功，覆盖 core、双平台 desktop / 字体 / 成品 CLI，以及两平台全新安装 / 真实 0.1.0 覆盖升级。该包已包含「macOS 安装包不到 8 MB」的中英文文案与总览图。最终 DMG 为 **7,618,896 B（7.62 MB）**，SHA-256 `dfdf444c3946140bbc9f15b29f9a962c733419079a2709ebcf6bc4167e21a528`；Windows NSIS 为 **6,350,661 B（6.35 MB）**，SHA-256 `c1c894061cb520c0f42e181262083d7806af8c7cc10875cc28aab3e285b3d494`。下载时核对 artifact 所属 run / head、归档字节数及 GitHub digest；两包与元数据留在忽略的 `artifacts/release-candidate-0.2.3.noindex/final-841431d/`，未启动、挂载或安装。后续文档收尾不改变此构建源码；旧候选包保留作测量出处，不能与最终包混用。
+- **最终校准候选（签名前）：** `841431d151fb968eb4934361d1ff2abdb541a9bf` 的 [Verify 40873603974](https://github.com/cpython666/starclip/actions/runs/40873603974) 7 个 job 全部成功，覆盖 core、双平台 desktop / 字体 / 成品 CLI，以及两平台全新安装 / 真实 0.1.0 覆盖升级。该包已包含「macOS 安装包不到 8 MB」的中英文文案与总览图。最终 DMG 为 **7,618,896 B（7.62 MB）**，SHA-256 `dfdf444c3946140bbc9f15b29f9a962c733419079a2709ebcf6bc4167e21a528`；Windows NSIS 为 **6,350,661 B（6.35 MB）**，SHA-256 `c1c894061cb520c0f42e181262083d7806af8c7cc10875cc28aab3e285b3d494`。下载时核对 artifact 所属 run / head、归档字节数及 GitHub digest；两包与元数据留在忽略的 `artifacts/release-candidate-0.2.3.noindex/final-841431d/`，未启动、挂载或安装。后续文档收尾不改变此构建源码；旧候选包保留作测量出处，不能与最终包混用。
 - 版本候选 `8c95044` 的 [Verify 40865566431](https://github.com/cpython666/starclip/actions/runs/40865566431) 7 个 job 全部成功：Node / Web / core、双平台 desktop / 字体 / 成品 CLI、两平台 fresh / upgrade。下载并验证的 macOS DMG 为 7,601,109 B（7.60 MB），Windows NSIS 为 6,352,448 B（6.35 MB）；两平台 artifact 压缩包摘要与 GitHub digest 相符。随后据此将四段文案、两张总览图的「约 7 MB」校准为「macOS 安装包不到 8 MB」，具体大小仍随版本变化。候选安装包与摘要留在忽略的 `artifacts/release-candidate-0.2.3.noindex/`，未替换正式应用。
 - `8c95044` 源码以独立 `com.starclip.acceptance20261029` 打包 0.2.3，保持生产前端与窗口配置，始终空库 / 暂停。原生进入独立分享页、切换英文、选择 AI 图并经系统保存对话框保存，实际路径回执正确；保存文件 SHA-256 与 `public/share/ai-en.png` 相同。切回中文保留 AI 主题、默认文件名同步为中文；取消保存提示未写入，目标文件确实不存在。此代表 PNG 与分享逻辑未受随后体积文案校准影响；未测试系统图片剪贴板或跨应用粘贴，不扩大到 Windows。测试 app 已退出、注销并移入废纸篓，正式数据未动。
-- 当前源码版本统一为 0.2.3；公开 Release、Homebrew 与本机正式安装仍为 0.2.2。没有创建发布 tag、上传新 Release 或推送 Tap；后续签名目标产物需单独核验。
+- 上述候选整理完成时，源码版本统一为 0.2.3，尚未创建发布 tag 或新 Release；公开版、Homebrew 与本机正式安装均为 0.2.2。后续签名草稿及真实旧版升级证据见本页顶部，不用这些普通候选包替代签名目标。
 - 分享改为独立设置页，默认跟随界面语言，也可单选中文或 English。两种文案与五个主题均有中英版本，共 4 段文案、10 张 1080×1440 PNG，合计 805,747 字节。海报使用原创固定示意；逐图目视复核，修正数据主题说明与分隔线间距。浏览器实际切换语种后仍保留 AI 主题，预览从 `ai-en.png` 切到 `ai.png`，英文保存名 `Starclip-AI-access.png`；下载文件与内置英文 PNG 的 SHA-256 一致。Node 186 项、Web 构建、Rust 分享目录 / PNG 校验 2 项通过；浏览器下载不等于桌面复制或跨应用粘贴实测。
 - 固定阴影区域内存实验只改忽略目录中的诊断副本，保留动画、交互与完整 SVG 外观。独立空库、暂停、100% idle、成长关闭、主控制页释放后，同一新包冷启动单轮 120 秒总物理足迹：原动画 201.3 MiB，固定 SVG 阴影区域 199.6 MiB；仅少约 1.7 MiB，未证明稳定收益，没有合入生产。不是多轮中位数；30 秒请求实际分别在约 99 / 54 秒执行，不能作为固定 30 秒对比。几十 MiB 目标仍未达到。实验 app 已退出、注销并移至废纸篓，正式应用与数据未动；协议与原始样本留在 `artifacts/acceptance.noindex/memory-diagnostic/`。
 

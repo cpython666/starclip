@@ -1,6 +1,6 @@
 # 可选使用统计：GA4 标准版与 Cloudflare Free
 
-当前方案使用 GA4 标准版与 Cloudflare Workers Free，按用户要求只使用免费服务，不开通 Azure、不绑定银行卡、不升级付费计划。既有 v1 接收端已部署，固定事件与 macOS 隔离桌面事件已在 GA Realtime 核对。当前未发布源码新增静默离线缓存和 v2 设备字段；兼容 v1 / v2 的中继已部署，真实 Rust v2 固定批次返回 204，GA 三个设备维度已创建并核对。新设备参数已在 Realtime 核对；2026-10-29 已另行完成 GA4 非实时探索中的 `count` 汇总，以及 macOS 隔离应用进程级断网、重启恢复与恢复联网后的静默补报。长期持续观察和 Windows 原生断网仍未完成，具体证据与边界见下文；不能由 HTTP 成功或实时参数推定其他报表已验收。没有配置接收端地址的构建不收集、不发送统计；接收端缺少 Google 配置时拒绝转发。使用统计缺省开启、可随时关闭；已保存的关闭选择保留。它与默认开启的「检查新版本」是两个独立开关。
+当前方案使用 GA4 标准版与 Cloudflare Workers Free，按用户要求只使用免费服务，不开通 Azure、不绑定银行卡、不升级付费计划。既有 v1 接收端已部署，固定事件与 macOS 隔离桌面事件已在 GA Realtime 核对。已发布的 0.2.3 新增静默离线缓存和 v2 设备字段；兼容 v1 / v2 的中继已部署，真实 Rust v2 固定批次返回 204，GA 三个设备维度已创建并核对。新设备参数已在 Realtime 核对；2026-10-29 已另行完成 GA4 非实时探索中的 `count` 汇总，以及 macOS 隔离应用进程级断网、重启恢复与恢复联网后的静默补报。长期持续观察和 Windows 原生断网仍未完成，具体证据与边界见下文；不能由 HTTP 成功或实时参数推定其他报表已验收。没有配置接收端地址的构建不收集、不发送统计；接收端缺少 Google 配置时拒绝转发。使用统计缺省开启、可随时关闭；已保存的关闭选择保留。它与默认开启的「检查新版本」是两个独立开关。
 
 本方案不需要自行购买服务器或域名：桌面端通过 HTTPS 向 Cloudflare Worker 发送精简计数，Worker 默认只转给 Google Analytics 4（GA4）。接收端可使用 Cloudflare 提供的 [workers.dev 地址](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/)。已有 Microsoft Application Insights 通道仅保留为显式启用的可选模板，不属于当前接入计划；不集成网页录屏、点击热图或自动采集 SDK。
 
@@ -10,11 +10,11 @@
 - Cloudflare：当时控制台已确认账户使用 Free，Worker 已改名 `desktop-usage-relay`；v1 代码经 API 部署，当时远端 `worker.mjs` 与本地 SHA-256 均为 `a081d50ba6221fd8736882a7423972d0bc2a16db3a03369de5aa5f898cb6f02b`，两个 GA secrets 已绑定。`ENABLE_APPLICATION_INSIGHTS=false`，控制台日志、跟踪与问题开关均关闭；当前接收端为 `https://desktop-usage-relay.cpython666.workers.dev/collect`。实际运行发现 `redirect: 'error'` 不受 Workers 支持，已改为 `manual` 并拒绝 3xx，不跟随重定向。
 - macOS 原生：独立标识 `com.starclip.telemetryfreeverify20261028` 的 0.2.2 验证包全程暂停、0 条记录。统计默认开启且接收端正确；打开一次空白星绘坊后自动发送成功、无待发事件。关闭统计后再次打开星绘坊不计数、发送按钮不可用；完全退出并重启后关闭选择保留，仍暂停、0 条记录、尚未发送。测试应用已退出，未替换正式安装。
 - 出站头：使用相同 `send` 逻辑的独立无 secret 探针，以 `https://httpbun.com/headers` 为回显目标，检查合成 Cookie / User-Agent 标记；探针返回 204，固定转发头、无合成 Cookie、无合成 User-Agent 标记、无原始客户端 IP 四项断言均通过。回显端响应的 `Server` 为 `cloudflare`；此证据仅说明回显端未观察到原始 IP / Cookie / User-Agent，不是 Google 接收侧的完整抓包，也不能证明网络层匿名。临时探针 Worker 已删除，仅保留正式接收端，正式接收端没有调试路由。
-- 发布准备：GitHub 仓库变量 `STARCLIP_TELEMETRY_ENDPOINT` 已设置并回读为上述接收端地址，没有触发工作流或发布软件。截至该轮等待用户发布确认；当时常规报表自定义指标仍需传播后核对 `count` 汇总，Windows 未实机验证。**发布须经用户明确确认**。Azure 开通已取消，不再作为待办。
+- 发布准备：GitHub 仓库变量 `STARCLIP_TELEMETRY_ENDPOINT` 已设置并回读为上述接收端地址，没有触发工作流或发布软件。截至该轮等待用户发布确认；当时常规报表自定义指标仍需传播后核对 `count` 汇总，Windows 未实机验证。该轮云端配置不代表软件已发布；0.2.3 后续经用户明确授权发布。Azure 开通已取消，不再作为待办。
 
 仅 Google 方案已通过 `npm test` 156 项、Rust 无 desktop 特性核心测试 95 项（另有 3 项默认忽略）及 Web 构建。9 项中继回归覆盖默认只发 Google、禁用微软时忽略残留配置、显式启用时的严格校验、重定向拒绝及失败处理。另显式执行默认忽略的真实 Rust sender 测试 1 项通过，使用生产 HTTPS 发送函数发送 9 种固定事件、每种 `count=1`，不读取数据库或剪贴板。Apple Silicon 隔离 release app 为 14.00 MiB，strict/deep ad-hoc 验签通过；上述原生场景与 GA Realtime 属于当时实际验收，不能将这些证据扩大为 Windows 或常规报表汇总已验证；后续汇总验收另见下文。
 
-## 当前源码变化（2026-10-29，未发布）
+## 0.2.3 新增能力与发布前验收（2026-10-29）
 
 本轮实现静默发送、有界离线缓存和重试，增加 v2 设备基础信息；生产 Worker 继续接受旧 v1。以下是本轮新增证据，与上面的 v1 历史记录分别保留：
 
@@ -24,7 +24,7 @@
 - macOS 原生：独立应用 `com.starclip.usageverify20261029` 全程暂停，使用 123 条原创固定记录。主列表每页 50 条，第二页显示编号 73–24 的 50 条；全库搜索能找到仅在第三页的编号 1。星伴默认显示 26 个日常表情，额外心情开关未勾选；静默发送后无待发事件，也无成功提示。追加核对：在普通记录筛选中把原创编号 123 标记为隐私后，该记录移出当前页（普通记录共 122 条），已打开的详情立即折叠并显示手动保护依据，验证 `get_clips` IPC 可用。测试应用已退出，全程暂停。
 - 自动检查：`npm test` 166 项通过，Rust 无 desktop 核心测试 106 项通过、另有 3 项默认忽略。该阶段离线缓存、异常与重试由单元测试覆盖，尚未进行原生断网验收；后续 macOS 进程级断网证据另见下文，Windows 本轮未实机验证。最终 Apple Silicon 独立 release 应用为 14.07 MiB，应用标识 `com.starclip.usageverify20261029`，strict/deep 签名核验通过。
 
-软件尚未发布，仍须用户明确确认后发布。
+上述验收进行时软件尚未发布；0.2.3 已于 2026-10-29 经用户明确授权[正式发布](https://github.com/cpython666/starclip/releases/tag/v0.2.3)。本机正式安装仍为 0.2.2，未替换。
 
 ## 补充验收：常规计数汇总与 macOS 进程级断网（2026-10-29）
 
@@ -51,7 +51,7 @@ macOS 使用独立 `com.starclip.acceptance20261029` 验收包与新空库，全
 - 正常退出后仍在出站限制下重启，分钟 checkpoint 后核对缓存恢复并累计为 `app_started=2`、`studio_opened=1`。
 - 再次正常退出，解除该进程出站限制后重新启动，后台自动发送后缓存被删除，界面显示无待发事件，成功与失败均未出现 toast。
 
-以上确认 macOS 进程级断网、正常退出 / 重启恢复及恢复联网后的静默补报；不是系统 Wi-Fi 切换或所有网络条件的验收，不据此宣称该次补报已逐条在 GA 报表核对。验收包构建于字体展示文案修改之前，统计代码未因此更改；这些证据不用于证明最新字体展示已原生验证。长期持续观察、Windows 原生断网仍未完成。软件未发布，发布仍须用户明确确认。
+以上确认 macOS 进程级断网、正常退出 / 重启恢复及恢复联网后的静默补报；不是系统 Wi-Fi 切换或所有网络条件的验收，不据此宣称该次补报已逐条在 GA 报表核对。验收包构建于字体展示文案修改之前，统计代码未因此更改；这些证据不用于证明最新字体展示已原生验证。长期持续观察、Windows 原生断网仍未完成。该轮隔离验收未发布或替换正式应用；0.2.3 已在后续经用户授权发布。
 
 ## 收集范围与界面
 
@@ -158,7 +158,7 @@ cargo test --locked --offline --manifest-path src-tauri/Cargo.toml \
 
 Cloudflare Workers Free 每个账号每天共 **100,000 次请求**，同账号多个 Worker 共享，UTC 00:00 重置。当前 `workers.dev` 接收端超限后请求被拒绝（Error 1027），不会自动升级为付费计划；不同产品分部署不增加账号免费额度。此额度按进入 Worker 的请求计算，不是事件 `count` 总和。参见 [官方限制](https://developers.cloudflare.com/workers/platform/limits/#daily-requests) 与 [官方定价](https://developers.cloudflare.com/workers/platform/pricing/)。
 
-既有 v1 仅 Google 方案已有生产中继部署、真实 Rust 发送、GA Realtime 事件 / 参数、macOS 隔离原生开关 / 重启验收及 GitHub 构建变量核对。本轮兼容 v1 / v2 中继已部署，真实 Rust v2 固定批次返回 204，设备维度配置已核对，macOS 隔离分页 / 默认日常表情 / 静默发送场景已通过；新设备参数及公开 Mac 产品代号的 Realtime 接收已核对。软件仍需用户确认后发布。2026-10-29 已在 GA4 非实时探索中分别核对固定范围的事件条目数与自定义 `count` 使用次数，并完成 macOS 隔离应用进程级断网、重启恢复和恢复联网后的静默补报。该证据不覆盖系统 Wi-Fi 切换、全部网络异常、长期持续观察或 Windows 原生断网；出站头证据仍限于相同发送逻辑的回显探针。软件尚未发布。
+既有 v1 仅 Google 方案已有生产中继部署、真实 Rust 发送、GA Realtime 事件 / 参数、macOS 隔离原生开关 / 重启验收及 GitHub 构建变量核对。本轮兼容 v1 / v2 中继已部署，真实 Rust v2 固定批次返回 204，设备维度配置已核对，macOS 隔离分页 / 默认日常表情 / 静默发送场景已通过；新设备参数及公开 Mac 产品代号的 Realtime 接收已核对。这些能力已随 0.2.3 经用户授权发布。2026-10-29 已在 GA4 非实时探索中分别核对固定范围的事件条目数与自定义 `count` 使用次数，并完成 macOS 隔离应用进程级断网、重启恢复和恢复联网后的静默补报。该证据不覆盖系统 Wi-Fi 切换、全部网络异常、长期持续观察或 Windows 原生断网；出站头证据仍限于相同发送逻辑的回显探针。正式发布不扩大上述平台或场景的验收范围；本机正式安装仍为 0.2.2，未替换。
 
 ## 可选手动模板：Microsoft Application Insights（当前不启用）
 

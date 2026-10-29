@@ -36,6 +36,10 @@
 
 2026-10-27，[0.2.2 同步](https://github.com/cpython666/starclip/actions/runs/40466604899) 的验证和写入 job 全部通过。Tap 的 [机器人提交](https://github.com/cpython666/homebrew-tap/commit/5e3ed7db8d459a6f3961b0461816406516add923) 将版本更新为 0.2.2；远端 Cask 的 SHA-256 与公开 DMG 的 `600784a9fc48ffab2702cdbef66628dc71a34061c7566242ffd9bf075a428cb4` 一致。
 
+2026-10-29，[0.2.3 正式 Release](https://github.com/cpython666/starclip/releases/tag/v0.2.3) 发布后自动触发的 [同步 run 40896366521](https://github.com/cpython666/starclip/actions/runs/40896366521) 已完成，`verify` 与 `update-tap` 两个 job 均通过。公开 DMG 的实际字节、内部应用身份 / 版本 / arm64、严格签名，以及 Homebrew 格式、在线审计和下载检查均通过；写入前再次核对公开 latest 与附件身份。
+
+当前远端 `Casks/starclip.rb` 为 **0.2.3**，DMG SHA-256 为 `18457b1b5f5878dbdcc51ebcc9db90ecf9cc14263537a4d72525c24d7045a072`，与本次公开包一致。Tap [机器人提交 `79d2e48ca567086a5e1b15863787a8810490b6bd`](https://github.com/cpython666/homebrew-tap/commit/79d2e48ca567086a5e1b15863787a8810490b6bd) 仅更新该 Cask。此次同步没有安装或启动本机应用；应用内升级的实测范围与旧 macOS 0.2.2 可能需要手动重新打开的限制，见 [验证记录](verification.md)。
+
 Homebrew 审计使用步骤范围的 `HOMEBREW_GITHUB_API_TOKEN`，值来自已有只读 `github.token`，避免公共 runner 共用 IP 的匿名 API 限流。没有新建个人令牌、跳过在线审计或修改已公开安装包。
 
 ## 重试与预演

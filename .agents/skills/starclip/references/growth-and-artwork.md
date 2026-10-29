@@ -4,7 +4,7 @@
 
 ## 已核实的现状
 
-- 现有 32 表情全部可用；当前未发布源码默认展示与巡游只使用 26 种正面 / 中性表情，其余须明确选择或调用，详见 [日常表情决策](product-decisions.md#星伴)。原有 `starpet_v1` 继续只保存开关、心情、颜色和大小。成长独立存入 `preferences.starpet_growth_v1`，默认关闭，提供 20 级、三项每日任务共 45 XP、六成就、四槽十件装饰及六个主动动作；目录由 `src/starpet-growth-catalog.json` 前后端共用。
+- 现有 32 表情全部可用；0.2.3 默认展示与巡游只使用 26 种正面 / 中性表情，其余须明确选择或调用，详见 [日常表情决策](product-decisions.md#星伴)。原有 `starpet_v1` 继续只保存开关、心情、颜色和大小。成长独立存入 `preferences.starpet_growth_v1`，默认关闭，提供 20 级、三项每日任务共 45 XP、六成就、四槽十件装饰及六个主动动作；目录由 `src/starpet-growth-catalog.json` 前后端共用。
 - `StarPet.vue` 中的书、杯子、皇冠仍是表情道具，新装饰独立穿戴；冲突时表情道具优先，手持装备暂时隐藏。新增比心 / 庆祝是临时动作，不新增基础表情 ID；原生本体按下即拖动的约定仍有效，成长记账不阻塞起拖。
 - 四套界面贴纸由 `src/components/StickerScene.vue` 的内联 SVG 实现（首增提交 `6c2457b`）；README / 产品文档有原创声明，根 LICENSE 是 MIT。本轮未发现 Hello Kitty 或用户附图被纳入贴纸，也未找到单独的第三方贴纸授权记录。自行绘制、文档声称原创、MIT 均不能独立证明零侵权风险。
 - 星芽概念与提示词已有 `docs/starpet-design.md`，当前第三方参考许可说明在 `docs/starpet.md`。概念位图不进入安装包。新装扮和动作由 `StarPet.vue` 内联 SVG 绘制，未加入第三方角色图片。
