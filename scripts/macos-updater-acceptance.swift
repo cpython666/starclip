@@ -27,11 +27,20 @@ if args[1] == "preflight" {
 }
 guard args.count >= 3 else { fail("Expected an owned bundle path or PID") }
 if args[1] == "processes" {
-    let path = URL(fileURLWithPath: args[2]).standardizedFileURL.path
+    let path = URL(fileURLWithPath: args[2]).resolvingSymlinksInPath().standardizedFileURL.path
     let pids = NSRunningApplication.runningApplications(withBundleIdentifier: "com.starclip.desktop")
-        .filter { $0.bundleURL?.standardizedFileURL.path == path && !$0.isTerminated }
+        .filter { $0.bundleURL?.resolvingSymlinksInPath().standardizedFileURL.path == path && !$0.isTerminated }
         .map { $0.processIdentifier }
     emit(["pids": pids]); exit(0)
+}
+if args[1] == "diagnose-processes" {
+    let temporary = URL(fileURLWithPath: environment["RUNNER_TEMP"]!).resolvingSymlinksInPath().path + "/"
+    let owned = NSRunningApplication.runningApplications(withBundleIdentifier: "com.starclip.desktop")
+        .filter { $0.bundleURL?.resolvingSymlinksInPath().path.hasPrefix(temporary) == true }
+    emit(owned.map { ["pid": $0.processIdentifier, "bundle": $0.bundleURL?.path ?? "",
+                     "executable": $0.executableURL?.path ?? "", "terminated": $0.isTerminated,
+                     "finishedLaunching": $0.isFinishedLaunching, "active": $0.isActive] as [String: Any] })
+    exit(0)
 }
 guard let pid = Int32(args[2]), pid > 0 else { fail("Expected a positive owned PID") }
 let runningApp = NSRunningApplication(processIdentifier: pid)
@@ -40,9 +49,9 @@ if args[1] == "inspect" && (runningApp == nil || runningApp?.bundleIdentifier ==
 }
 guard let app = runningApp,
       app.bundleIdentifier == "com.starclip.desktop",
-      let bundle = app.bundleURL?.standardizedFileURL,
+      let bundle = app.bundleURL?.resolvingSymlinksInPath().standardizedFileURL,
       let temporary = environment["RUNNER_TEMP"],
-      bundle.path.hasPrefix(URL(fileURLWithPath: temporary).standardizedFileURL.path + "/"),
+      bundle.path.hasPrefix(URL(fileURLWithPath: temporary).resolvingSymlinksInPath().standardizedFileURL.path + "/"),
       bundle.path.contains("starclip-macos-updater-"), bundle.path.hasSuffix("/Starclip.app") else {
     fail("Refusing to inspect or operate a process outside the runner-owned application")
 }
@@ -87,13 +96,10 @@ func walk(_ root: AXUIElement) -> [AXUIElement] {
 let application = AXUIElementCreateApplication(pid)
 AXUIElementSetMessagingTimeout(application, 3)
 if args[1] == "prepare" {
-    _ = app.activate(options: [])
-    // WebKit propagates this app-scoped assistive-client flag to its web
-    // process (WebProcessPoolCocoa.mm::registerNotificationObservers). It
-    // materializes the AX tree; it neither grants TCC access nor changes data.
-    // Call once per app launch, never once per polling iteration.
-    let result = AXUIElementSetAttributeValue(application, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
-    emit(["accessibilityModeResult": result.rawValue, "activated": app.isActive]); exit(0)
+    // The runner already grants AX access. Foreground this owned test app once
+    // per launch so its WebKit content is available; no system setting changes.
+    let requested = app.activate(options: [])
+    emit(["activationRequested": requested, "activated": app.isActive]); exit(0)
 }
 let roots = attribute(application, kAXWindowsAttribute) as? [AXUIElement] ?? []
 var nodes = roots.flatMap(walk)

@@ -125,6 +125,7 @@ def main():
     process, active_pid = None, None
     stage = "preflight"
     baseline_hash = ""
+    app_error_log = (evidence / "synthetic-app-stderr.log").open("ab", buffering=0)
 
     def write(name, result):
         (evidence / name).write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
@@ -165,7 +166,7 @@ def main():
         # Only write original synthetic canaries; do not inspect a clipboard.
         command("pbcopy", input=b"Starclip CI original clipboard canary: a quiet orbit.")
         process = subprocess.Popen([str(binary)], cwd=scratch, start_new_session=True,
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                   stdout=subprocess.DEVNULL, stderr=app_error_log)
         active_pid = process.pid
         wait_window()
         write("accessibility-prepare-" + str(active_pid) + ".json", ui("prepare", active_pid))
@@ -293,6 +294,29 @@ def main():
             file.write("- Only Tauri comparison/package metadata was 0.2.1. The source is this run's commit; target is pinned public 0.2.2. This is neither historical 0.2.1-source migration nor acceptance/publication of a future target.\n")
     except Exception as error:
         write("result.json", dict(result="failed", stage=stage, message=str(error)))
+        diagnostic = dict(oldProcessReturnCode=process.poll() if process else None)
+        try:
+            diagnostic["runningApplications"] = ui("diagnose-processes", installation)
+            diagnostic["matchedPids"] = ui("processes", installation)["pids"]
+            # Inspect only this scratch directory's executable paths, never
+            # arguments/environment or processes from another user profile.
+            rows = command("ps", "-ax", "-o", "pid=,comm=", capture_output=True, text=True).stdout.splitlines()
+            diagnostic["scratchProcesses"] = [row.strip() for row in rows if str(scratch) + "/" in row]
+            if installation.exists():
+                info = plistlib.loads((installation / "Contents/Info.plist").read_bytes())
+                diagnostic["installedVersion"] = info.get("CFBundleShortVersionString")
+                diagnostic["installedExecutableSha256"] = digest(binary)
+                diagnostic["expectedExecutableSha256"] = target_executable_hash
+        except Exception as diagnostic_error:
+            diagnostic["diagnosticError"] = str(diagnostic_error)
+        write("failure-diagnostics.json", diagnostic)
+        if stage == "automatic-restart":
+            try:
+                # Preserve the independent backup/data result even when
+                # automatic restart fails. This does not mark the run passed.
+                fixture("after-install")
+            except Exception as fixture_error:
+                write("after-install-error.json", dict(message=str(fixture_error)))
         if active_pid:
             try:
                 write("owned-window-ax.json", ui("dump", active_pid))
@@ -301,6 +325,7 @@ def main():
         raise
     finally:
         stop()
+        app_error_log.close()
         # VM disposal removes the test app and profile. Evidence deliberately
         # excludes databases, application backups, clipboard and credentials.
 
