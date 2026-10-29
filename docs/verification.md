@@ -1,8 +1,14 @@
-# 星笺验证记录（当前源码 0.2.2，更新至 2026-10-29）
+# 星笺验证记录（当前源码 0.2.3 候选，更新至 2026-10-29）
+
+## 0.2.3 候选整理与分享素材
+
+- 当前源码版本统一为 0.2.3；公开 Release、Homebrew 与本机正式安装仍为 0.2.2。没有创建发布 tag、上传新 Release 或推送 Tap；后续签名目标产物需单独核验。
+- 分享改为独立设置页，默认跟随界面语言，也可单选中文或 English。两种文案与五个主题均有中英版本，共 4 段文案、10 张 1080×1440 PNG，合计 805,675 字节。海报使用原创固定示意；逐图目视复核，修正数据主题说明与分隔线间距。浏览器实际切换语种后仍保留 AI 主题，预览从 `ai-en.png` 切到 `ai.png`，英文保存名 `Starclip-AI-access.png`；下载文件与内置英文 PNG 的 SHA-256 一致。Node 186 项、Web 构建、Rust 分享目录 / PNG 校验 2 项通过；浏览器下载不等于桌面复制或跨应用粘贴实测。
+- 固定阴影区域内存实验只改忽略目录中的诊断副本，保留动画、交互与完整 SVG 外观。独立空库、暂停、100% idle、成长关闭、主控制页释放后，同一新包冷启动单轮 120 秒总物理足迹：原动画 201.3 MiB，固定 SVG 阴影区域 199.6 MiB；仅少约 1.7 MiB，未证明稳定收益，没有合入生产。不是多轮中位数；30 秒请求实际分别在约 99 / 54 秒执行，不能作为固定 30 秒对比。几十 MiB 目标仍未达到。实验 app 已退出、注销并移至废纸篓，正式应用与数据未动；协议与原始样本留在 `artifacts/acceptance.noindex/memory-diagnostic/`。
 
 ## 未发布：启动与后台运行（2026-10-29）
 
-- 发布前复核修复保存启动偏好与托盘暂停操作之间的锁等待：原生读取、设置和失败回滚均不持有存储锁，保存前再次检查更新 / 迁移冻结。新增定向回归通过，覆盖正常保存、操作中途冻结、外部状态回滚及旧偏好保留。`scripts/windows-smoke.ps1` 新增的启动设置原生验收已在下述候选 CI 通过；macOS 应用内更新的完整安装 / 重启仍待测试工具修复后重跑。
+- 发布前复核修复保存启动偏好与托盘暂停操作之间的锁等待：原生读取、设置和失败回滚均不持有存储锁，保存前再次检查更新 / 迁移冻结。新增定向回归通过，覆盖正常保存、操作中途冻结、外部状态回滚及旧偏好保留。`scripts/windows-smoke.ps1` 新增的启动设置原生验收已在下述候选 CI 通过；macOS 应用内更新的完整安装 / 重启随后在 `22480ca` 修复退出顺序后通过，详见[完整链路](#macos-应用内更新完整链路)。
 - **本轮双平台候选 CI：** 提交 `f3da89d45fb25f46d88130794b3cfe77aa7786f5` 的 [Verify 40852732856](https://github.com/cpython666/starclip/actions/runs/40852732856) 全部成功。日志确认 Node **183 项**、无 desktop Rust core **112 项**（另 3 ignored）、macOS desktop lib **128 项**（另 3 ignored）、Windows desktop lib **123 项**（另 3 ignored）；两平台 CLI / MCP stdio 各 **1 项**，打包后的成品 CLI / MCP 各再检查 **1 项**。Web 构建、macOS app / DMG、Windows NSIS 打包，以及两平台 23 款字体逐款实际下载、大小 / SHA-256 核验与离线渲染通过。macOS / Windows 全新安装及真实 0.1.0 覆盖升级的固定数据检查均通过；macOS 安装 smoke 未操作更新按钮，不等于应用内更新完整链路通过。计数及结果只对应此提交，不覆盖之后尚未送 CI 的修改。
 - 在「偏好设置 → 使用习惯」加入登录自启动、启动收起主窗和菜单栏 / 托盘图标显隐，默认分别为关、关、开；三项独立即时保存。登录项从系统读取，窗口偏好存为 `window_startup_v1`，不改变采集暂停状态、不提交其他草稿、不触发保留清理。主窗隐藏启动不创建 WebView；快捷键注册或偏好读取失败时回退显示主窗；星伴仍按原开关运行。设置内退出保护未保存内容，后台更新安装也有退出保护。
 - 先前本地检查（同日、上述候选提交前）：Node 183 项、Rust core 112 项（另 3 ignored）、macOS desktop lib 127 项（另 3 ignored）和 CLI / MCP stdio 1 项通过，Web 构建、macOS 隔离 app 打包通过。权限测试确认新命令仅主窗可用，直接 autostart 插件 IPC 未授权；新增存储测试覆盖缺省兼容、损坏数据、写失败和不触碰采集 / 清理。
@@ -10,7 +16,7 @@
 - 隐藏启动采用临时诊断包记录控制流：启动输出 `show=false hidden=true shortcut_error=false existing_main=false`，首次观测前无主窗创建调用；CUA 读取会激活应用，随后才收到 `mac_reopen` 并以 `reopened=true` 创建主窗，界面仍暂停。诊断仅加入三处日志，未改变窗口逻辑；诊断语句已从源码撤回，证据与截图留在忽略目录 `artifacts/acceptance.noindex/startup-check/`，不加入 Git。不要用 CUA 激活后的窗口画面误判隐藏启动失败。
 - **Windows 原生启动设置：** 上述 CI 的 [fresh job](https://github.com/cpython666/starclip/actions/runs/40852732856/job/123381971693) 与 [upgrade job](https://github.com/cpython666/starclip/actions/runs/40852732856/job/123381971992) 均通过，日志分别在 2026-10-29 10:04:20 UTC、10:04:31 UTC 输出 `Native startup settings passed`。在路径含空格的真实 NSIS 安装后，经原生 UI 开关核对当前用户 HKCU Run 的完整路径引号、启用 / 删除及未写 HKLM；写入外部 `StartupApproved` 禁用状态后重新打开面板，显示关闭且不会静默重启用。关闭托盘图标、开启隐藏主窗后从设置正常退出；冷启动达到事件循环后观察 7 秒，无可见或隐藏的主窗口 HWND，第二次启动恢复主窗；重新进入设置确认隐藏 / 托盘偏好持久化，再复原开关并正常退出。两组还核对关闭主窗销毁 HWND、二次启动重建、暂停 UI 及固定数据库完整性；upgrade 先安装真实 0.1.0 再覆盖候选 0.2.2，原记录、分组、偏好和迁移恢复副本保留。测试只运行于拒绝既有 Starclip 状态的一次性 GitHub runner，使用原创固定剪贴 canary、不读真实剪贴板，结束时仅清理本轮登录项值。
 - **启动验收边界：** macOS 实测发现 `launchctl print-disabled` 返回 `enabled` / `disabled`，已兼容这组格式及 `true` / `false`，并补回归；后台项目审批不能仅凭注册状态完全判断。两平台都未实际注销后重新登录或重启机器；Windows 此轮未核对 Explorer 通知区图标的实际显示与点击、快捷键冲突、休眠恢复、统计真实联网 / 断网或字体 GUI。安装 smoke 的成功也不替代应用内更新下载安装 / 重启验收。
-- **macOS 完整更新首轮：** 同提交的独立 [运行 40852732899](https://github.com/cpython666/starclip/actions/runs/40852732899) 未通过。日志确认 Accessibility 已获授权、隔离应用首启固定数据库检查通过，随后 AX 测试工具等待「开启剪贴记录 / Start recording」控件超时，尚未进入检查更新 / 下载 / 安装步骤。因此本轮没有证明 updater 成功，也不能将此工具识别失败归因为 updater 安装失败；测试工具修复及重跑仍待完成，完整安装 / 重启继续列为未验收。
+- **macOS 完整更新：** `22480ca20defb4abe7507a80d527dffca96d676a` 的独立 [运行 40862701839](https://github.com/cpython666/starclip/actions/runs/40862701839) 已完成检查、签名下载、稍后安装、确认后备份、应用替换与自动重启，固定数据和暂停状态保留。该实验仅将当前源码的 Tauri 比较版本设为 0.2.1，目标固定为公开签名 0.2.2；不是 0.2.3 新目标验收。前几轮故障及修复事实见下方[完整链路](#macos-应用内更新完整链路)。
 - 2026-10-29 先前用包含三项启动偏好的工作区完成 Apple Silicon macOS release 模式 app / DMG 打包，专用测量标识 `com.starclip.packagemeasure20261029`，未启动或安装。DMG 为 6,978,352 字节（6.98 MB / 6.66 MiB）；应用内普通文件总量为 15,013,697 字节（15.01 MB / 14.32 MiB），不含后续字体下载、历史图片或备份。ad-hoc deep / strict 验签通过，不等于 Apple Developer 公证。候选仍显示 0.2.2，不是公开正式版或带 updater 签名的升级包；测量 app 注销后移入废纸篓，DMG 与测量记录留在忽略目录 `artifacts/package-size-20261029.noindex/`。本轮 Windows 新候选 NSIS 构建随后已通过，尚未在本节核对其安装包字节数；已保存公开 0.2.2 安装器为 5,139,609 字节，仅作旧版参考。
 - 本机测试登录项已关闭、加载的服务已卸载，隔离应用退出并注销后移入废纸篓；正式应用、正式数据与正式登录项未更改。候选提交已由 CI 构建和验收，未安装新正式版或发布新版本。
 
@@ -21,10 +27,10 @@
 - **手写原生验收：** 原 9 款中的「手写体」代表项已完成原生在线下载、本地预览与 PNG 导出。外部代表「站酷快乐体」下载后正常退出，用 `sandbox-exec` 只禁止该隔离进程的 `network-outbound` 再启动；始终 0 条记录、采集暂停，目录仍显示 2 款已下载。使用原创固定两行正文选择站酷快乐体，自动预览显示已更新，经原生保存对话框导出 1200×1600 PNG，目视清晰且无裁切。证据 `artifacts/acceptance.noindex/handwriting-external-offline-native.png`。这证明两个代表项及外部代表的离线重启 / 渲染 / 导出，不扩大为 23 项逐款 GUI 或 Windows 验收。
 - **GA4 常规汇总：** 私有探索「星笺功能使用次数（验收）」的固定日期范围为 2026-10-01 至 2026-10-28，9 类固定事件共 14 条，`Usage count` 合计 22 次；`studio_opened` 为 3 条 / 9 次、`font_downloaded` 为 2 条 / 4 次，事件条目与使用次数分别核对。逐项结果见 [统计说明](telemetry.md)，证据 `artifacts/acceptance.noindex/ga4-standard-count-evidence.json`；不复制账号、属性编号或报表私有网址到 Git。
 - **统计断网恢复：** `com.starclip.acceptance20261029` 新空库全程暂停，以 `sandbox-exec` 只限制该进程出站。离线固定计数 `app_started=1` / `studio_opened=1` 落盘为 86 字节、无身份 / 设备字段；正常退出后再次断网启动，分钟 checkpoint 后恢复累计为 2 / 1。再次正常退出并移除进程网络限制后启动，后台自动发送后缓存删除，界面无待发事件，无成功 / 错误 toast。只确认 macOS 进程级断网、正常退出 / 重启与恢复联网；不覆盖系统 Wi-Fi 切换、全部网络条件、Windows 原生断网或长期持续观察。该验收包在字体展示修改前构建，统计代码未更改，不用于证明最新字体展示的原生状态。
-- **更新验收：** macOS 当前源码使用独立测试 ID，仅以构建配置覆盖 `config.version=0.2.1`，真实检测公开 0.2.2，完成下载、签名校验、就绪提示，并选择稍后安装。macOS 未执行安装 / 重启：公开签名目标使用正式标识，安装后会切换应用标识及其数据目录，超出本轮隔离范围。Windows 一次性隔离实验已完成真实检查、下载验签、稍后安装、确认后备份、安装与自动重启，详情见下方「Windows 应用内更新完整链路」。两者均非真实旧 0.2.1 源码二进制升级；本机正式 0.2.2 未替换。
+- **早期更新验收：** macOS 使用独立测试 ID，仅以构建配置覆盖 `config.version=0.2.1`，真实检测公开 0.2.2，完成下载、签名校验、就绪提示，并选择稍后安装。当时未执行安装 / 重启：公开签名目标使用正式标识，安装后会切换应用标识及其数据目录，超出该轮隔离范围。后续改在全新 GitHub runner 使用空白正式命名空间，完整安装 / 重启已通过；Windows 也已完成完整隔离实验，分别见下方两平台完整链路。两者均非真实旧 0.2.1 源码二进制升级；本机正式 0.2.2 未替换。
 - **暂停竞态修复：** `Settings.pause_revision`（JSON 为 `pauseRevision`）兼容旧数据默认 0。`Store::save_settings_with_pause_guard` 在同一事务比较 `expectedPauseRevision`，过期草稿保留数据库当前 `paused`，其他偏好仍可保存；版本只由 Store 在实际暂停状态变化时递增，忽略客户端 payload 自带版本。`App.vue` 刷新发现版本变化时只同步暂停草稿和版本，保留其他未保存草稿；版本本身不计入 dirty。回归覆盖 true → false → true 的 ABA 变化、显式恢复、旧数据默认与客户端不能伪造版本，不用真实剪贴板验证。
 - **自动检查：** 本地 Node 174、Rust core 109（另 3 ignored）、macOS desktop lib 122（另 3 ignored）、CLI / MCP stdio 1 项及 Web / fmt / 差异 / 版本一致性检查已通过。候选提交的双平台 CI 也已成功，范围见下方「双平台候选 CI」；短时内存诊断与共享路径实验已完成，测量与未采用实验的理由见下方「内存诊断与共享路径实验」。
-- **候选交付与剩余边界：** `codex/acceptance-20261029` 的代码提交 `7fbbae542b89b9ea245e703330594cb1d78ffc76` 已通过双平台 CI，未发布新版本或替换本机正式应用。长期持续观察、Windows 统计真实联网 / 断网、Windows 字体 GUI、macOS 应用内更新安装 / 重启完整链路仍未验收；23 款逐款字体的无 GUI 渲染成功不替代 GUI 验收。正式发布和安装仍待用户明确确认。
+- **候选交付与剩余边界：** `codex/acceptance-20261029` 的代码提交 `7fbbae542b89b9ea245e703330594cb1d78ffc76` 已通过双平台 CI，未发布新版本或替换本机正式应用。长期持续观察、Windows 统计真实联网 / 断网和 Windows 字体 GUI 仍未验收；该阶段尚未完成的 macOS 应用内安装 / 重启已由后续 `22480ca` 的独立实验补齐。23 款逐款字体的无 GUI 渲染成功不替代 GUI 验收；后续实际发布目标仍须核对其自己的签名产物，正式发布和安装仍待用户明确确认。
 
 ### 双平台候选 CI
 
@@ -46,6 +52,17 @@
 - 首次实验失败来自测试脚本误用不存在的 `GetParentElement` 方法，改为 `GetParent` 后通过；未修改产品代码。原始证据位于忽略的 `artifacts/acceptance.noindex/windows-updater-experiment/evidence-run40821236132/`。
 
 此结果限定于 Windows 隔离 runner 中当前源码到公开 0.2.2 的完整链路，不替代 macOS 应用内安装 / 重启、Windows 统计真实联网 / 断网、字体 GUI 或长期使用验收；没有发布新版本或替换本机正式应用。
+
+### macOS 应用内更新完整链路
+
+提交 `22480ca20defb4abe7507a80d527dffca96d676a` 的 [GitHub Actions 运行 40862701839](https://github.com/cpython666/starclip/actions/runs/40862701839) 已完整通过。`.github/workflows/macos-updater-acceptance.yml` 与 `scripts/macos-updater-acceptance.py` / `.swift` 只允许全新 GitHub-hosted Apple Silicon macOS runner，先拒绝既有 Starclip 安装、进程或数据目录；应用放在 runner 临时 `.noindex` 路径，使用原创固定数据，不访问本机正式应用、真实历史或真实剪贴板。测试没有修改 TCC 授权，也没有降低 HTTPS、签名或绑定版本校验。
+
+- **被测对象：** 当前提交源码只覆盖 Tauri / 打包比较版本为 0.2.1，Cargo 与前端版本仍为 0.2.2；同一空白 `com.starclip.desktop` 命名空间内，更新到固定公开签名 0.2.2。清单 SHA-256 为 `10d0e5646027d4bd0804446b477bd6fafc10f232b0d3135b44b46be3595a706d`，macOS 更新包 SHA-256 为 `83113a8c37739335cbc11d905c5b3bc089bba4aa0ad9b380a5d39199b63d224e`。
+- **真实 GUI：** 原生 AX 操作帮助页检查、下载、就绪弹窗与「稍后再说」，随后重新打开确认弹窗并点击其中的「安装并重启」。没有注入 JavaScript、绕过界面调用 IPC 或替换下载结果。检查前、下载验签就绪时以及稍后安装后，固定数据均不变，恢复点和旧应用备份均未提前生成。
+- **安装与自动重启：** 确认安装后旧 PID `5833` 退出，原安装路径自动出现新 PID `6085`，没有脚本手动补开。新 bundle 为 0.2.2，deep / strict 代码签名检查通过，二进制 SHA-256 `ec6d08edf90f2d51b1cb75cf9271103b82f3e68763f1d94931a8e66ae94fe40f` 与固定公开更新包内的目标一致，且不同于旧比较包。
+- **数据和恢复副本：** 新窗口仍显示暂停；schema 2、1 条原创记录、1 个分组和全部固定偏好连续三次核对，退出后再核对一次，均保留。恰好 1 个 `before-update` 快照，快照数据库摘要 / 内容及原比较版 0.2.1 的完整 app 备份和签名均核验通过。全过程只写原创 clipboard canary，未读取真实剪贴板。
+- **故障及修复：** 首轮 [40852732899](https://github.com/cpython666/starclip/actions/runs/40852732899) 只因测试助手尚未激活自有窗口、未读到 WebKit 控件而停止，没有执行更新。调整窗口激活及按钮子文本读取后，[40857560871](https://github.com/cpython666/starclip/actions/runs/40857560871) 和带诊断的 [40860315562](https://github.com/cpython666/starclip/actions/runs/40860315562) 均完成签名下载及应用替换，却未留下重启实例；第三轮明确核对旧进程退出码 0、安装目标摘要正确、数据 / 旧应用备份保留，而原安装路径的 LaunchServices 与 POSIX 进程均为空。源码复核确认同步 `restart_app` 命令直接调用 `app.restart()` 会跳过正常 `Exit` 清理，残留单实例 socket 可能截获新进程。`22480ca` 改为 `app.request_restart()` 后返回，让正常退出先清理单实例状态，第四轮上述完整链路通过。
+- **证据与限制：** 原始合成证据位于忽略的 `artifacts/acceptance.noindex/macos-updater-run40862701839/`；前几轮失败证据保留于对应 run 目录。此结果证明该源码到公开 0.2.2 的 macOS 完整更新链路，**不是历史旧 0.2.1 源码升级，也不是 0.2.3 新目标或其签名产物验收**。没有发布新版本、推送 Homebrew 或替换本机 `/Applications/Starclip.app`，也不代表 Apple Developer 公证、所有网络 / 磁盘失败恢复或长期稳定性已经验收。
 
 ### 内存诊断与共享路径实验
 
