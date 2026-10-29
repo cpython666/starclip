@@ -169,6 +169,29 @@ def fixture_transport(directory, temporary):
     finally:
         event("cleanup-started")
         errors = []
+        def cleanup_command(*arguments):
+            try:
+                event("cleanup-command", command=list(arguments[:4]))
+                return subprocess.run(arguments, check=False, capture_output=True, text=True, timeout=30)
+            except Exception as error:
+                errors.append(str(error))
+                return None
+        # Removing the last admin trust entry can request authorization UI on
+        # the hosted runner. Revoke this CA with a standard deny rule instead;
+        # that one deny record remains until this disposable VM is destroyed.
+        # Do not change SIP or authorization rules to make removal succeed.
+        event("revoke-fixture-trust")
+        revoked = cleanup_command("sudo", "-n", "security", "add-trusted-cert", "-d", "-r", "deny", "-p", "ssl", str(certificate))
+        rejection = None
+        if revoked is not None and revoked.returncode == 0 and server is not None and server.poll() is None and changed_hosts:
+            # The same server and hosts mapping are still active. Curl 60
+            # specifically means certificate verification failed, unlike a
+            # stopped server, HTTP rejection, or any disabled TLS validation.
+            rejection = cleanup_command("/usr/bin/curl", "--fail", "--silent", "--show-error", "--max-time", "5", ENDPOINT)
+        trust_revoked = revoked is not None and revoked.returncode == 0 and rejection is not None and rejection.returncode == 60
+        event("revoked-tls-probe", trustRevoked=trust_revoked,
+              returncode=rejection.returncode if rejection is not None else None,
+              error=rejection.stderr if rejection is not None else None)
         try:
             if changed_hosts:
                 transport_command("restore-hosts", "sudo", "-n", "cp", str(saved), str(hosts))
@@ -188,17 +211,8 @@ def fixture_transport(directory, temporary):
                     server.wait(timeout=10)
         except Exception as error:
             errors.append(str(error))
-        # Both cleanup operations run even if restoring hosts or stopping the
-        # owned server fails. Remove only this freshly generated certificate.
-        def cleanup_command(*arguments):
-            try:
-                event("cleanup-command", command=list(arguments[:3]))
-                return subprocess.run(arguments, check=False, capture_output=True, text=True, timeout=30)
-            except Exception as error:
-                errors.append(str(error))
-                return None
-        removed = cleanup_command("sudo", "security", "remove-trusted-cert", "-d", str(certificate))
-        deleted = cleanup_command("sudo", "security", "delete-certificate", "-Z", fingerprint, "/Library/Keychains/System.keychain")
+        # Exact certificate/key removal still runs if another cleanup failed.
+        deleted = cleanup_command("sudo", "-n", "security", "delete-certificate", "-Z", fingerprint, "/Library/Keychains/System.keychain")
         remaining = cleanup_command("security", "find-certificate", "-a", "-Z", "/Library/Keychains/System.keychain")
         certificate_absent = remaining is not None and remaining.returncode == 0 and fingerprint.upper() not in remaining.stdout.upper()
         for name in ("ca.key", "server.key"):
@@ -210,11 +224,15 @@ def fixture_transport(directory, temporary):
         (evidence / "transport-cleanup.json").write_text(json.dumps(dict(hostsRestored=hosts.read_bytes() == before,
                                            serverStopped=server is None or server.poll() is not None,
                                            certificateAbsent=certificate_absent,
-                                           trustRemovalStatus=removed.returncode if removed is not None else None,
+                                           trustRevoked=trust_revoked,
+                                           trustRevocationStatus=revoked.returncode if revoked is not None else None,
+                                           revokedTlsProbeStatus=rejection.returncode if rejection is not None else None,
+                                           temporaryDenyRecordUntilVmDisposal=revoked is not None and revoked.returncode == 0,
+                                           privateKeysRemoved=not any((directory / name).exists() for name in ("ca.key", "server.key")),
                                            certificateRemovalStatus=deleted.returncode if deleted is not None else None,
                                            errors=errors), indent=2) + "\n")
         event("cleanup-finished", errors=errors)
-        if errors or not certificate_absent or removed is None or deleted is None or removed.returncode != 0 or deleted.returncode != 0:
+        if errors or not certificate_absent or not trust_revoked or deleted is None or deleted.returncode != 0:
             raise RuntimeError("Disposable HTTPS fixture cleanup did not fully succeed; inspect transport-cleanup.json")
 
 
