@@ -66,7 +66,7 @@ def verify_assets(assets, version):
                 f"Starclip_{version}_aarch64.app.tar.gz", f"Starclip_{version}_aarch64.app.tar.gz.sig",
                 f"Starclip_{version}_x64-setup.exe", f"Starclip_{version}_x64-setup.exe.sig"}
     hashes = {}
-    for row in (assets / "SHA256SUMS").read_text().splitlines():
+    for row in (assets / "SHA256SUMS").read_text(encoding="utf-8").splitlines():
         match = re.fullmatch(r"([a-f0-9]{64})  ([A-Za-z0-9_.-]+)", row)
         if not match or match[2] in hashes:
             raise ValueError("Unexpected or duplicate SHA256SUMS entry")
@@ -77,7 +77,7 @@ def verify_assets(assets, version):
         file = assets / name
         if file.is_symlink() or not file.is_file() or sha(file) != digest:
             raise ValueError("Release asset checksum mismatch: " + name)
-    manifest = json.loads((assets / "latest.json").read_text())
+    manifest = json.loads((assets / "latest.json").read_text(encoding="utf-8"))
     if manifest["version"] != version or set(manifest["platforms"]) != {"darwin-aarch64", "windows-x86_64"}:
         raise ValueError("Release manifest target/platform mismatch")
     mapping = {urlsplit(ENDPOINT).path: "latest.json"}
@@ -85,7 +85,7 @@ def verify_assets(assets, version):
         name = f"Starclip_{version}_{suffix}"
         item = manifest["platforms"][platform]
         url = f"https://github.com/cpython666/starclip/releases/download/v{version}/{name}"
-        if item["url"] != url or item["signature"] != (assets / (name + ".sig")).read_text().strip():
+        if item["url"] != url or item["signature"] != (assets / (name + ".sig")).read_text(encoding="utf-8").strip():
             raise ValueError("Signed release URL or signature differs from the manifest")
         signature = base64.b64decode(item["signature"], validate=True).decode("utf-8").splitlines()
         if len(signature) != 4 or not signature[2].startswith("trusted comment: "):
@@ -122,7 +122,7 @@ extendedKeyUsage = serverAuth
 subjectAltName = DNS:github.com
 subjectKeyIdentifier = hash
 authorityKeyIdentifier = keyid,issuer
-""")
+""", encoding="utf-8")
     def openssl(*arguments):
         subprocess.run(["openssl", *map(str, arguments)], check=True, capture_output=True, timeout=60)
     openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256", "-days", "2", "-config", config,
@@ -142,7 +142,7 @@ authorityKeyIdentifier = keyid,issuer
                     sourceHeadSha=args.source_head_sha, publicKey=PUBLIC_KEY, endpoint=ENDPOINT,
                     assetDirectory=str(assets), mapping=mapping, hashes=hashes,
                     transport="runner-local HTTPS fixture; public GitHub delivery not exercised")
-    (output / "fixture.json").write_text(json.dumps(metadata, indent=2) + "\n")
+    (output / "fixture.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     (output / "fixture.json").chmod(0o600)
     print(json.dumps({key: value for key, value in metadata.items() if key not in ("mapping", "hashes", "assetDirectory")}))
 
@@ -151,7 +151,7 @@ def serve(directory, temporary):
     directory = directory.resolve(strict=True)
     if not directory.is_relative_to(temporary):
         raise ValueError("Fixture directory must be runner-owned")
-    metadata = json.loads((directory / "fixture.json").read_text())
+    metadata = json.loads((directory / "fixture.json").read_text(encoding="utf-8"))
     assets = Path(metadata["assetDirectory"]).resolve(strict=True)
     if not assets.is_relative_to(temporary):
         raise ValueError("Fixture assets must be runner-owned")
