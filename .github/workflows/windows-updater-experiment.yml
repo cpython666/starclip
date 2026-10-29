@@ -1,0 +1,58 @@
+name: One-off Windows updater acceptance
+on:
+  push:
+    branches: [codex/windows-updater-acceptance-20261029]
+permissions:
+  contents: read
+jobs:
+  updater:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require the reviewed source and unchanged production updater
+        shell: pwsh
+        run: |
+          git diff --exit-code 7fbbae542b89b9ea245e703330594cb1d78ffc76 HEAD -- src src-tauri package.json package-lock.json scripts/windows-smoke.ps1 scripts/installer-fixture.py
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate production sources differ from the reviewed commit.' }
+          $tokens = $null; $errors = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $env:GITHUB_WORKSPACE 'scripts/windows-updater-experiment.ps1'), [ref]$tokens, [ref]$errors)
+          if ($errors.Count) { throw ($errors | Out-String) }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@1.90.0
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci --no-audit --no-fund
+      - run: npm run version:check
+      - run: npm run tauri icon public/starclip.svg
+      - name: Build current source with only an older Tauri comparison version
+        shell: pwsh
+        run: |
+          $overlay = Join-Path $env:RUNNER_TEMP 'updater-comparison-only.json'
+          @{ version='0.2.1'; bundle=@{ createUpdaterArtifacts=$false } } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $overlay -Encoding utf8
+          npm run tauri build -- --target x86_64-pc-windows-msvc --bundles nsis --config $overlay
+          if ($LASTEXITCODE -ne 0) { throw 'One-off comparison build failed.' }
+      - name: Exercise the shipped Windows UI and genuine signed updater
+        shell: pwsh
+        run: |
+          $packages = @(Get-ChildItem src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis -File -Filter 'Starclip_0.2.1_x64-setup.exe')
+          if ($packages.Count -ne 1) { throw 'Expected exactly one 0.2.1 comparison installer.' }
+          ./scripts/windows-updater-experiment.ps1 -Installer $packages[0].FullName -RepositoryRoot $env:GITHUB_WORKSPACE
+      - name: Retain only synthetic acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-updater-experiment-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/starclip-updater-evidence/*
+          if-no-files-found: warn
+          retention-days: 7
