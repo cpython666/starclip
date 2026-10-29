@@ -124,14 +124,16 @@ def fixture_transport(directory, temporary):
     server = None
     changed_hosts = False
     try:
+        print("HTTPS fixture: installing temporary runner trust", flush=True)
         command("sudo", "security", "add-trusted-cert", "-d", "-r", "trustRoot", "-p", "ssl",
                 "-k", "/Library/Keychains/System.keychain", str(certificate))
+        print("HTTPS fixture: starting fixed-path server and mapping update host", flush=True)
         server = subprocess.Popen(["sudo", "-E", sys.executable, str(helper), "serve", "--directory", str(directory)],
                                   start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         command("sudo", "cp", str(mapped), str(hosts))
         changed_hosts = True
         command("sudo", "dscacheutil", "-flushcache")
-        subprocess.run(["sudo", "killall", "-HUP", "mDNSResponder"], check=False, capture_output=True)
+        subprocess.run(["sudo", "killall", "-HUP", "mDNSResponder"], check=False, capture_output=True, timeout=30)
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
             if server.poll() is not None:
@@ -144,31 +146,38 @@ def fixture_transport(directory, temporary):
             raise RuntimeError("Trusted HTTPS fixture was not reachable with normal certificate validation")
         yield
     finally:
+        print("HTTPS fixture: restoring runner network/trust state", flush=True)
         errors = []
         try:
             if changed_hosts:
                 command("sudo", "cp", str(saved), str(hosts))
                 command("sudo", "dscacheutil", "-flushcache")
-                subprocess.run(["sudo", "killall", "-HUP", "mDNSResponder"], check=False, capture_output=True)
+                subprocess.run(["sudo", "killall", "-HUP", "mDNSResponder"], check=False, capture_output=True, timeout=30)
             assert hosts.read_bytes() == before, "Temporary hosts mapping was not restored"
         except Exception as error:
             errors.append(str(error))
         try:
             if server is not None:
-                subprocess.run(["sudo", "/bin/kill", "-TERM", "-" + str(server.pid)], check=False, capture_output=True)
+                subprocess.run(["sudo", "/bin/kill", "-TERM", "-" + str(server.pid)], check=False, capture_output=True, timeout=30)
                 try:
                     server.wait(timeout=10)
                 except subprocess.TimeoutExpired:
-                    subprocess.run(["sudo", "/bin/kill", "-KILL", "-" + str(server.pid)], check=False, capture_output=True)
+                    subprocess.run(["sudo", "/bin/kill", "-KILL", "-" + str(server.pid)], check=False, capture_output=True, timeout=30)
                     server.wait(timeout=10)
         except Exception as error:
             errors.append(str(error))
         # Both cleanup operations run even if restoring hosts or stopping the
         # owned server fails. Remove only this freshly generated certificate.
-        removed = subprocess.run(["sudo", "security", "remove-trusted-cert", "-d", str(certificate)], check=False, capture_output=True)
-        deleted = subprocess.run(["sudo", "security", "delete-certificate", "-Z", fingerprint, "/Library/Keychains/System.keychain"], check=False, capture_output=True)
-        remaining = subprocess.run(["security", "find-certificate", "-a", "-Z", "/Library/Keychains/System.keychain"], check=True, capture_output=True, text=True)
-        certificate_absent = fingerprint.upper() not in remaining.stdout.upper()
+        def cleanup_command(*arguments):
+            try:
+                return subprocess.run(arguments, check=False, capture_output=True, text=True, timeout=30)
+            except Exception as error:
+                errors.append(str(error))
+                return None
+        removed = cleanup_command("sudo", "security", "remove-trusted-cert", "-d", str(certificate))
+        deleted = cleanup_command("sudo", "security", "delete-certificate", "-Z", fingerprint, "/Library/Keychains/System.keychain")
+        remaining = cleanup_command("security", "find-certificate", "-a", "-Z", "/Library/Keychains/System.keychain")
+        certificate_absent = remaining is not None and remaining.returncode == 0 and fingerprint.upper() not in remaining.stdout.upper()
         for name in ("ca.key", "server.key"):
             try:
                 (directory / name).unlink(missing_ok=True)
@@ -178,10 +187,10 @@ def fixture_transport(directory, temporary):
         evidence.write_text(json.dumps(dict(hostsRestored=hosts.read_bytes() == before,
                                            serverStopped=server is None or server.poll() is not None,
                                            certificateAbsent=certificate_absent,
-                                           trustRemovalStatus=removed.returncode,
-                                           certificateRemovalStatus=deleted.returncode,
+                                           trustRemovalStatus=removed.returncode if removed is not None else None,
+                                           certificateRemovalStatus=deleted.returncode if deleted is not None else None,
                                            errors=errors), indent=2) + "\n")
-        if errors or not certificate_absent or removed.returncode != 0 or deleted.returncode != 0:
+        if errors or not certificate_absent or removed is None or deleted is None or removed.returncode != 0 or deleted.returncode != 0:
             raise RuntimeError("Disposable HTTPS fixture cleanup did not fully succeed; inspect transport-cleanup.json")
 
 
