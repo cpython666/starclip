@@ -9,6 +9,8 @@ pub mod images;
 pub mod privacy;
 pub mod share;
 pub mod starpet_growth;
+#[cfg(feature = "desktop")]
+mod startup;
 pub mod storage;
 pub mod store;
 pub mod telemetry;
@@ -48,6 +50,9 @@ mod capability_tests {
         );
         let authority = tauri::runtime_authority!(manifests, resolved);
         for command in [
+            "plugin:autostart|enable",
+            "plugin:autostart|disable",
+            "plugin:autostart|is_enabled",
             "plugin:updater|check",
             "plugin:updater|download",
             "plugin:updater|install",
@@ -57,7 +62,7 @@ mod capability_tests {
                 authority
                     .resolve_access(command, "main", "main", &tauri::ipc::Origin::Local)
                     .is_none(),
-                "updater plugin IPC must not bypass backup and confirmation guards"
+                "plugin IPC must not bypass application guards"
             );
         }
         let permissions: serde_json::Value =
@@ -74,6 +79,9 @@ mod capability_tests {
             .iter()
             .any(|command| command == "open_project_link"));
         for command in [
+            "get_startup_preferences",
+            "set_startup_preferences",
+            "quit_starclip",
             "get_privacy_rules",
             "save_privacy_rules",
             "set_clip_privacy",

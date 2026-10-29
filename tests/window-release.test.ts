@@ -50,7 +50,7 @@ async function mount(options: { delayedRead?: boolean; delayedCloseListener?: bo
   const closeQuery = deferred<number | null>();
   const calls: { release: boolean; requestId?: number }[] = [];
   let closeRequest: ((requestId: number) => void) | undefined;
-  const stopped = { change: 0, close: 0, growth: 0 };
+  const stopped = { change: 0, close: 0, growth: 0, quit: 0 };
   const stopClose = () => { stopped.close++; };
   const mock = {
     async getState() { return options.delayedRead ? read.promise : structuredClone(state); },
@@ -68,17 +68,18 @@ async function mount(options: { delayedRead?: boolean; delayedCloseListener?: bo
     navigator: { platform: 'MacIntel' },
     windowReleaseMock: {
       api: mock, getAppearance: async () => defaultAppearance(),
-      recordStudioOpened() {},
+      recordStudioOpened() {}, async quitStarclip() { stopped.quit++; },
       async listen(name: string) { assert.equal(name, 'starpet-growth-error'); return () => { stopped.growth++; }; },
     },
   });
-  const mockUrl = moduleUrl(`export const { api, getAppearance, listen, recordStudioOpened } = globalThis.windowReleaseMock; export const isDesktop = true; export const appVersion = '0.0.0-test'; // ${sequence++}`);
+  const mockUrl = moduleUrl(`export const { api, getAppearance, listen, recordStudioOpened, quitStarclip } = globalThis.windowReleaseMock; export const isDesktop = true; export const appVersion = '0.0.0-test'; // ${sequence++}`);
   const stubUrl = moduleUrl('export default { render() { return null; } };');
   const { descriptor } = parse(fs.readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8'));
   const script = compileScript(descriptor, { id: 'window-release-test' });
   const source = script.content.replace(/from (['"])vue\1/g, `from '${import.meta.resolve('vue')}'`)
     .replace(/(['"])\.\/components\/[^'"]+\.vue\1/g, `'${stubUrl}'`)
     .replaceAll("'./api'", `'${mockUrl}'`).replaceAll("'./appearance-api'", `'${mockUrl}'`).replaceAll("'./update-api'", `'${mockUrl}'`)
+    .replaceAll("'./startup-api'", `'${mockUrl}'`)
     .replaceAll("'./telemetry-api'", `'${mockUrl}'`)
     .replaceAll("'@tauri-apps/api/event'", `'${mockUrl}'`)
     .replaceAll("'./appearance'", `'${new URL('../src/appearance.ts', import.meta.url).href}'`)
@@ -134,7 +135,7 @@ test('loading and active work defer release until they settle, including every c
     const savingTheme = vm.changeTheme('forest'); await flush();
     await fixture.close(22); assert.deepEqual(calls.pop(), { release: false, requestId: 22 });
     theme.resolve({ ...vm.state.settings, theme: 'forest' }); await savingTheme;
-    for (const flag of ['dataOperationBusy', 'updateBusy', 'shareBusy', 'appearanceBusy', 'privacyBusy', 'telemetryBusy', 'aiBusy', 'clipPrivacyBusy']) {
+    for (const flag of ['startupBusy', 'dataOperationBusy', 'updateBusy', 'shareBusy', 'appearanceBusy', 'privacyBusy', 'telemetryBusy', 'aiBusy', 'clipPrivacyBusy']) {
       vm[flag] = true; assert.equal(vm.dataBusy, true, flag);
       await fixture.close(23); assert.deepEqual(calls.pop(), { release: false, requestId: 23 }, flag);
       vm[flag] = false;
@@ -423,14 +424,14 @@ test('capture revision supersedes an old resume draft even when the saved boolea
 test('App unregisters close listeners and ignores close events after unmount, including late subscription', async () => {
   const fixture = await mount();
   try {
-    fixture.unmount(); assert.deepEqual(fixture.stopped, { change: 1, close: 1, growth: 1 });
+    fixture.unmount(); assert.deepEqual(fixture.stopped, { change: 1, close: 1, growth: 1, quit: 0 });
     assert.equal(fixture.windowEvents.count(), 0); assert.equal(fixture.themeEvents.count(), 0);
     await fixture.close(30); assert.deepEqual(fixture.calls, []);
   } finally { fixture.cleanup(); }
   const pending = await mount({ delayedCloseListener: true });
   try {
     pending.unmount(); pending.finishListener(); await flush();
-    assert.deepEqual(pending.stopped, { change: 0, close: 1, growth: 0 });
+    assert.deepEqual(pending.stopped, { change: 0, close: 1, growth: 0, quit: 0 });
     await pending.close(31); assert.deepEqual(pending.calls, []);
     assert.equal(pending.windowEvents.count(), 0); assert.equal(pending.themeEvents.count(), 0);
   } finally { pending.cleanup(); }
@@ -543,4 +544,25 @@ test('late detail responses cannot replace another open record and failed checks
     await vm.privacyChanged(); await flush();
     assert.equal(vm.clipDetailsBlocked, false);
   } finally { fixture.cleanup(); }
+});
+
+
+test('settings quit preserves pending work and drafts, then exits when all settings are saved', async () => {
+  const f = await mount();
+  try {
+    f.vm.openSettings(); f.vm.settingsTab = 'habits';
+    f.vm.appearanceSettings = { canRelease: true };
+    f.vm.startupSettings = { canRelease: true };
+    f.vm.settingsDraft.layout = 'list';
+    await f.vm.quitFromSettings(); assert.equal(f.stopped.quit, 0);
+    assert.match(f.vm.toast, /保存|save/i);
+    f.vm.settingsDraft.layout = f.vm.state.settings.layout;
+    f.vm.startupBusy = true;
+    await f.vm.quitFromSettings(); assert.equal(f.stopped.quit, 0);
+    f.vm.startupBusy = false;
+    f.vm.startupSettings.canRelease = false;
+    await f.vm.quitFromSettings(); assert.equal(f.stopped.quit, 0);
+    f.vm.startupSettings.canRelease = true;
+    await f.vm.quitFromSettings(); assert.equal(f.stopped.quit, 1);
+  } finally { f.cleanup(); }
 });

@@ -1,0 +1,49 @@
+name: One-off macOS updater acceptance
+on:
+  push:
+    branches: [codex/acceptance-20261029]
+    paths:
+      - '.github/workflows/macos-updater-acceptance.yml'
+      - 'scripts/macos-updater-acceptance.*'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  updater:
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check runner isolation and native UI authorization before building
+        run: |
+          python3 scripts/macos-updater-acceptance.py --preflight
+          xcrun swiftc scripts/macos-updater-acceptance.swift -o "$RUNNER_TEMP/starclip-updater-ui"
+          "$RUNNER_TEMP/starclip-updater-ui" preflight
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@1.90.0
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci --no-audit --no-fund
+      - run: npm run version:check
+      - run: npm run tauri icon public/starclip.svg
+      - name: Build current source with only an older Tauri comparison version
+        env:
+          APPLE_SIGNING_IDENTITY: '-'
+        run: |
+          npm run tauri build -- --target aarch64-apple-darwin --bundles app --config '{"version":"0.2.1","bundle":{"createUpdaterArtifacts":false}}'
+      - name: Exercise native UI, genuine signed download, bundle replacement and restart
+        run: |
+          python3 scripts/macos-updater-acceptance.py --app src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Starclip.app --inspector "$RUNNER_TEMP/starclip-updater-ui"
+      - name: Retain only synthetic acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-updater-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/starclip-macos-updater-evidence/*
+          if-no-files-found: warn
+          retention-days: 7

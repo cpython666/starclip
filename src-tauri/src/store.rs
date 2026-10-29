@@ -154,6 +154,24 @@ pub struct Settings {
     pub sticker_pack: String,
 }
 
+/// Window behavior is saved independently from capture and retention settings.
+/// Login startup registration belongs to the OS and is never cached here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WindowStartupPreferences {
+    pub start_hidden: bool,
+    pub show_tray_icon: bool,
+}
+
+impl Default for WindowStartupPreferences {
+    fn default() -> Self {
+        Self {
+            start_hidden: false,
+            show_tray_icon: true,
+        }
+    }
+}
+
 /// Preferences for the low-frequency stable update check. Kept separate from
 /// ordinary settings so toggling updates never runs retention or changes
 /// clipboard behavior.
@@ -947,6 +965,38 @@ impl Store {
             }
             None => Ok(Settings::default()),
         }
+    }
+
+    pub fn window_startup_preferences(&self) -> Result<WindowStartupPreferences> {
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM preferences WHERE key='window_startup_v1'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error)?;
+        match json {
+            Some(json) => serde_json::from_str(&json)
+                .map_err(|_| "启动与菜单栏偏好损坏，请从备份恢复。".into()),
+            None => Ok(WindowStartupPreferences::default()),
+        }
+    }
+
+    pub fn save_window_startup_preferences(
+        &self,
+        preferences: &WindowStartupPreferences,
+    ) -> Result<()> {
+        let json = serde_json::to_string(preferences).map_err(|error| error.to_string())?;
+        self.conn
+            .execute(
+                "INSERT INTO preferences(key,value) VALUES('window_startup_v1',?1)
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [json],
+            )
+            .map_err(sql_error)?;
+        Ok(())
     }
 
     pub fn telemetry_preferences(&self) -> Result<TelemetryPreferences> {
@@ -2327,6 +2377,137 @@ mod tests {
     fn store() -> Store {
         Store::from_connection(Connection::open_in_memory().unwrap()).unwrap()
     }
+
+    #[test]
+    fn window_startup_preferences_default_without_writing_and_accept_missing_fields() {
+        let db = store();
+        assert_eq!(
+            db.window_startup_preferences().unwrap(),
+            WindowStartupPreferences::default()
+        );
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT count(*) FROM preferences WHERE key='window_startup_v1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+        for (json, expected) in [
+            ("{}", WindowStartupPreferences::default()),
+            (
+                r#"{"startHidden":true}"#,
+                WindowStartupPreferences {
+                    start_hidden: true,
+                    show_tray_icon: true,
+                },
+            ),
+            (
+                r#"{"showTrayIcon":false}"#,
+                WindowStartupPreferences {
+                    start_hidden: false,
+                    show_tray_icon: false,
+                },
+            ),
+        ] {
+            db.conn.execute(
+                "INSERT INTO preferences(key,value) VALUES('window_startup_v1',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [json]
+            ).unwrap();
+            assert_eq!(db.window_startup_preferences().unwrap(), expected);
+            let saved: String = db
+                .conn
+                .query_row(
+                    "SELECT value FROM preferences WHERE key='window_startup_v1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(saved, json, "reading defaults must not rewrite stored data");
+        }
+    }
+
+    #[test]
+    fn window_startup_preferences_persist_without_touching_capture_or_retention() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("window-startup.sqlite3");
+        let db = Store::open(&path).unwrap();
+        let saved = WindowStartupPreferences {
+            start_hidden: true,
+            show_tray_icon: false,
+        };
+        db.save_window_startup_preferences(&saved).unwrap();
+        drop(db);
+        let db = Store::open(&path).unwrap();
+        assert_eq!(db.window_startup_preferences().unwrap(), saved);
+        let ordinary = r#"{"paused":false,"pauseRevision":9,"theme":"dark","layout":"grid","maxHistory":50,"shortcut":"CommandOrControl+Shift+V","retentionDays":1}"#;
+        db.conn
+            .execute(
+                "INSERT INTO preferences(key,value) VALUES('settings',?1)",
+                [ordinary],
+            )
+            .unwrap();
+        db.conn.execute("INSERT INTO clips(content,kind,created_at,updated_at) VALUES('启动偏好原创超期夹具','text',0,0)", []).unwrap();
+        db.conn.execute_batch("CREATE TRIGGER forbid_startup_prune BEFORE DELETE ON clips BEGIN SELECT RAISE(ABORT, 'startup must not prune'); END;").unwrap();
+        let before = db.settings().unwrap();
+        db.save_window_startup_preferences(&WindowStartupPreferences::default())
+            .unwrap();
+        assert_eq!(db.settings().unwrap(), before);
+        assert_eq!(db.clips().unwrap().len(), 1);
+        let settings: String = db
+            .conn
+            .query_row(
+                "SELECT value FROM preferences WHERE key='settings'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(settings, ordinary);
+        let json: String = db
+            .conn
+            .query_row(
+                "SELECT value FROM preferences WHERE key='window_startup_v1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&json).unwrap(),
+            serde_json::json!({ "startHidden": false, "showTrayIcon": true })
+        );
+        db.conn.execute_batch("CREATE TRIGGER fail_startup_preferences BEFORE UPDATE ON preferences WHEN NEW.key='window_startup_v1' BEGIN SELECT RAISE(ABORT, 'fixture write failure'); END;").unwrap();
+        assert!(db.save_window_startup_preferences(&saved).is_err());
+        assert_eq!(
+            db.window_startup_preferences().unwrap(),
+            WindowStartupPreferences::default()
+        );
+    }
+
+    #[test]
+    fn window_startup_preferences_report_corruption_without_resetting_it() {
+        let db = store();
+        for json in [
+            "broken",
+            "null",
+            r#"{"startHidden":"true"}"#,
+            r#"{"showTrayIcon":null}"#,
+        ] {
+            db.conn.execute(
+                "INSERT INTO preferences(key,value) VALUES('window_startup_v1',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [json]
+            ).unwrap();
+            assert!(db.window_startup_preferences().is_err());
+            let saved: String = db
+                .conn
+                .query_row(
+                    "SELECT value FROM preferences WHERE key='window_startup_v1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(saved, json);
+        }
+    }
+
     #[test]
     fn history_selected_details_are_bounded_fresh_and_omit_deleted_ids() {
         let store = store();

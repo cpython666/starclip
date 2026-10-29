@@ -11,6 +11,7 @@
 | `src/types.ts`、`src/api.ts` | 前后端数据形状与调用入口；用 `__TAURI_INTERNALS__` 区分桌面 invoke 和原创内存演示。修改行为时检查两条分支及 Rust 类型 |
 | `src/components/ProductShare.vue`、`src/product-share.ts`、`src/product-share-catalog.json` | 帮助页分享入口、两套文案与三张固定产品 PNG、复制 / 保存回执；元数据与 Rust 共用 |
 | `src/components/UpdateSettings.vue`、`src/components/UpdateNotice.vue`、`src/update-api.ts`、`src/update-state.ts` | 更新与恢复界面、独立自动检查开关、主界面空闲时的稳定版提示 / 单版本忽略、进度订阅、确认版本固定、恢复后重启保护；浏览器仅说明。偏好按 revision 合并，提示本身不发起网络检查 |
+| `src/components/StartupSettings.vue`、`src/startup-api.ts` | 使用习惯中的三项独立即时保存开关：登录自启动、启动收起、图标显隐；读取 / 保存中保护释放，失败可重读。退出事件交由 `App.vue` 核对草稿与子面板状态；浏览器只说明桌面限定 |
 | `src/privacy.ts`、`src/components/PrivacyRules.vue`、`src/components/AiSettings.vue` | 标签 / 来源 / 隐私筛选、规则与重扫、本地 AI 授权及连接配置；`src/api.ts` 包装命令，浏览器只作固定数据演示 |
 | `src/components/DataSettings.vue`、`src/components/CleanupPanel.vue` | 数据位置、备份回执与目录操作；整理预览和确认。父设置的挂载状态由 `src/App.vue` 保留 |
 | `src/components/CodeStudio.vue`、`src/code-card.ts`、`src/snippets.ts` | 星绘坊在打开时按需加载；Canvas 代码卡片、语言与导出工具，卡片预览和 PNG 共用渲染 |
@@ -36,6 +37,7 @@
 | --- | --- |
 | `src-tauri/src/lib.rs`、`src-tauri/src/main.rs`、`src-tauri/Cargo.toml` | 默认启用 `desktop`；主程序在 Tauri 启动前分流 `ai` / `mcp` 模式。无默认特性可测存储与纯逻辑，不启动桌面 |
 | `src-tauri/src/desktop.rs` | 命令注册、共享状态、采集循环、系统剪贴板、托盘、全局快捷键、原生窗口与重启 |
+| `src-tauri/src/startup.rs` | 系统登录项读取与显式启停，按应用标识隔离；核对可执行路径和可检测的系统禁用，macOS 后台运行审批仍是额外限制，不从数据库偏好重建注册 |
 | `src-tauri/src/updater.rs` | 原生更新状态与互斥、正式下载源限制、旧应用备份；desktop.rs 包装检查 / 下载 / 备份 / 安装命令 |
 | `src-tauri/src/telemetry.rs`、`src-tauri/src/telemetry_device.rs` | 固定功能计数、临时会话、有界磁盘缓存与重试；架构 / 系统主版本 / 机型按白名单归一化，禁止原始固件内容或永久身份 |
 | `src-tauri/src/capture.rs` | 开启时捕获当前内容、变更和重试状态机；本模块不访问真实剪贴板 |
@@ -50,7 +52,7 @@
 | `src-tauri/src/storage.rs` | `data-location.json` 定位、数据目录校验、SQLite 一致快照、迁移与采用已有目录；受管目录 `renderers` / `fonts` 共用占用计算、迁移与恢复摘要白名单，拒绝符号链接；旧 `handwriting_directory()` 仅用于外部渲染器配置兼容，内置字体必须位于 `current/fonts` |
 | `src-tauri/src/handwriting.rs`、`public/handwriting-fonts/` | 未发布内置 CPU 渲染与受管字体：原手写仓库 9 项及 Google Fonts 14 项，固定 commit、限定字节数及 SHA-256，验证后启用，TTF 按需保存到 `current/fonts`；目录与 IPC 透传 `author` / `tags`，原 9 项按用户确认显示「来源于互联网」（英文 “Sourced from the internet”），14 个外部字体选项保留原作者；面板可筛手写体。安装包只有清单、静态 PNG 预览与分来源许可 / 提供说明，旧外部 CLI 配置仅保留迁移兼容 |
 
-SQLite 主要表为 `clips`、`clip_images`、`clip_privacy`、`groups`、`preferences`。`clip_privacy` 的 JSON 元数据保存手动隐私、持续保护原因、规则扫描版本、手动 / 自动标签、域名来源和随机记录身份。偏好独立使用 `settings`、`onboarding_v1`、`starpet_v1`、`starpet_growth_v1`、`appearance_v1`、`privacy_rules_v1`、`update_preferences_v1`、`telemetry_preferences_v1`；教程、主题、外观、成长、规则与更新提醒保存不能随意换成完整设置保存，后者带有清理副作用。JSON v3 含记录、手动标签、隐私与规则，不包含其它偏好；成长另有独立存档。
+SQLite 主要表为 `clips`、`clip_images`、`clip_privacy`、`groups`、`preferences`。`clip_privacy` 的 JSON 元数据保存手动隐私、持续保护原因、规则扫描版本、手动 / 自动标签、域名来源和随机记录身份。偏好独立使用 `settings`、`onboarding_v1`、`starpet_v1`、`starpet_growth_v1`、`appearance_v1`、`privacy_rules_v1`、`update_preferences_v1`、`telemetry_preferences_v1`、`window_startup_v1`；教程、主题、外观、成长、规则、更新提醒与启动设置保存不能随意换成完整设置保存，后者带有清理副作用。`window_startup_v1` 仅保存启动收起与图标显隐，系统登录项不缓存进数据库。JSON v3 含记录、手动标签、隐私与规则，不包含其它偏好；成长另有独立存档。
 
 普通设置中的 `Settings.pause_revision`（JSON `pauseRevision`）由 Store 管理，旧数据缺字段默认为 0；前端提交 `expectedPauseRevision`，`Store::save_settings_with_pause_guard` 在同一事务读当前版本并保存。期望版本过期时保留当前 `paused`，其他字段继续保存；只有暂停状态实际改变才递增版本，忽略 payload 伪造值。`App.vue` 刷新同步较新暂停状态与版本而保留其他草稿，`settingsDirty` 排除版本字段；这也覆盖 true → false → true 的 ABA 变化。入口为 `store.rs`、`desktop.rs::save_settings`、`api.ts::saveSettings`。
 
@@ -75,6 +77,7 @@ SQLite 主要表为 `clips`、`clip_images`、`clip_privacy`、`groups`、`prefe
 - `src-tauri/tauri.conf.json` 配置主窗口 `main` 与 CSP；星伴窗口 `starpet` 由 Rust 创建。
 - `desktop.rs` 收到主窗关闭先隐藏，再向 `App.vue` 发送带令牌的关闭请求；前端经 `api.hideWindow(release, requestId)` 确认安全空闲后销毁 WebView。当前未发布修复将编号与 pending 状态同锁保存；主窗早订阅后调用仅 main 可用的 `get_main_window_close_request` 补读启动期事件。前端安全状态变化后续办，仅原生更新 / 存储暂缓时保留一个 1 秒重试计时器。编辑、星绘坊、教程、任务及尚未初始化时保护；设置页须父偏好无修改、全部已挂载子页 `canRelease === true`，隐藏草稿、凭证与确认态也保护。重新打开先作废旧令牌，在工作线程等待销毁完成并按配置重建，后台采集与托盘继续；只缓存本次运行的尺寸、位置和最大化状态，重新应用置顶，不持有 WebView。重建不重播启动画面，搜索 / 筛选 / 滚动等未持久化界面状态复位；Windows 此流程未实机验收。
 - 星伴停用成功保存偏好后销毁窗口，重新开启时重建；失败保留既有偏好回滚处理，星伴位置不持久化。界面语言由 `set_native_language` 同步托盘菜单、主窗口与星伴窗口标题；托盘菜单项句柄保存在 `TrayItems`，语言切换时就地更新文字与提示。
+- 2026-10-29 未发布启动设置：`tauri.conf.json` 关闭主窗自动创建，`desktop.rs` setup 根据 `WindowStartupPreferences.start_hidden` 决定是否创建；快捷键注册失败或窗口偏好损坏则显示主窗，星伴仍按原偏好恢复。托盘继续创建并按 `show_tray_icon` 设置可见，快捷键 / 单实例再次启动 / macOS `RunEvent::Reopen` 复用主窗恢复路径。`get_startup_preferences` 合并系统登录项与本地窗口偏好，`set_startup_preferences` 只接受三字段布尔补丁，外部副作用或持久化失败尝试回滚并报告错误；两命令和 `quit_starclip` 仅主窗授权，写入受存储 / 更新保护。`App.vue::quitFromSettings` 先检查普通草稿和子页 `canRelease`。本轮全量自动检查及 macOS 隔离原生验收通过；Windows 构建 / 原生与真实注销重登待验证，边界见 `docs/verification.md`。
 - 自定义命令同时涉及 `src-tauri/build.rs`、`src-tauri/permissions/windows.json`、`src-tauri/capabilities/default.json`、`src-tauri/capabilities/starpet.json` 和 `src-tauri/src/desktop.rs`。增加命令时一起核对注册与最小授权；`set_native_language` 只在 `main-commands`，星伴窗口不得调用。
 - 隐私 / 标签 / 规则 / 重扫、AI 开关 / 授权 / 配置 / 审计命令仅主窗口可用；星伴不能借这些命令取得历史。AI 工具不允许改变权限或写入数据。
 - 产品分享三个命令仅主窗口可用；读取固定打包素材，不授予星伴窗口剪贴板权限。剪贴写入与既有历史复制共用 helper，成功后才登记自采集抑制；保存使用专用命令，不走会授予成长经验的 `save_export`。

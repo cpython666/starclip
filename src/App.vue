@@ -8,6 +8,8 @@ import HistoryPagination from './components/HistoryPagination.vue'
 import StartupScreen from './components/StartupScreen.vue'
 import DataSettings from './components/DataSettings.vue'
 import UpdateSettings from './components/UpdateSettings.vue'
+import StartupSettings from './components/StartupSettings.vue'
+import { quitStarclip } from './startup-api'
 import UpdateNotice from './components/UpdateNotice.vue'
 import ProductShare from './components/ProductShare.vue'
 import { appVersion } from './update-api'
@@ -38,6 +40,7 @@ const windowReady = ref(false)
 const busy = ref(false)
 const dataOperationBusy = ref(false)
 const updateBusy = ref(false)
+const startupBusy = ref(false)
 const updateNoticeBusy = ref(false)
 const shareBusy = ref(false)
 const appearance = ref(defaultAppearance())
@@ -53,7 +56,7 @@ const rulesRevision = ref(0)
 const privateRevealed = ref(false)
 const appearanceLoading = ref(true)
 const appearanceError = ref('')
-const dataBusy = computed(() => dataOperationBusy.value || updateBusy.value || shareBusy.value || appearanceBusy.value || privacyBusy.value || telemetryBusy.value || aiBusy.value || clipPrivacyBusy.value || clipDetailsLoading.value)
+const dataBusy = computed(() => startupBusy.value || dataOperationBusy.value || updateBusy.value || shareBusy.value || appearanceBusy.value || privacyBusy.value || telemetryBusy.value || aiBusy.value || clipPrivacyBusy.value || clipDetailsLoading.value)
 const customSticker = computed(() => appearance.value.stickerEnabled ? appearance.value.stickerDataUrl : null)
 const startupVisible = ref(false)
 const firstGuidePending = ref(false)
@@ -124,6 +127,7 @@ const telemetrySettings = ref<InstanceType<typeof TelemetrySettings>>()
 const aiSettings = ref<InstanceType<typeof AiSettings>>()
 const productShare = ref<InstanceType<typeof ProductShare>>()
 const updateSettings = ref<InstanceType<typeof UpdateSettings>>()
+const startupSettings = ref<InstanceType<typeof StartupSettings>>()
 const dataTabVisited = ref(false)
 const privacyTabVisited = ref(false)
 const aiTabVisited = ref(false)
@@ -133,6 +137,7 @@ const settingsCanRelease = computed(() => !settingsDirty.value && !appearanceLoa
   && (!privacyTabVisited.value || (privacySettings.value?.canRelease === true && telemetrySettings.value?.canRelease === true))
   && (!aiTabVisited.value || aiSettings.value?.canRelease === true)
   && (!dataTabVisited.value || dataSettings.value?.canRelease === true)
+  && (settingsTab.value !== 'habits' || startupSettings.value?.canRelease === true)
   && (settingsTab.value !== 'starpet' || starPetSettings.value?.canRelease === true)
   && (settingsTab.value !== 'help' || (productShare.value?.canRelease === true && updateSettings.value?.canRelease === true)))
 const updateNoticeBlocked = computed(() => !windowReady.value || loading.value || busy.value || dataBusy.value || themeSaving.value
@@ -323,6 +328,17 @@ async function privacyChanged() {
 }
 function openGroup() { groupName.value = ''; groupColor.value = colors[state.value.groups.length % colors.length]!; modal.value = 'group' }
 async function saveGroup() { if (!groupName.value.trim()) return notify(t('请为星座起一个名字'), true); await run(async () => { const group = await api.createGroup(groupName.value.trim(), groupColor.value); filter.value = `group-${group.id}`; modal.value = '' }, t('分组已创建')) }
+async function quitFromSettings() {
+  if (busy.value || dataBusy.value || themeSaving.value) return
+  if (!settingsCanRelease.value) {
+    notify(t('请先保存或取消尚未保存的修改，再退出星笺。'), true)
+    return
+  }
+  busy.value = true
+  try { await quitStarclip() }
+  catch (error) { notify(errorText(error), true) }
+  finally { busy.value = false }
+}
 function closeModal() { if (!dataBusy.value && !busy.value && !cleanupOpen.value) modal.value = '' }
 // A close remains pending while drafts or work prevent releasing the WebView.
 // Native request IDs ensure a delayed reply can never hide a reopened window.
@@ -621,7 +637,8 @@ onUnmounted(() => { disposed = true; pendingWindowClose = null; clearTimeout(win
               <StarPetSettings ref="starPetSettings" :disabled="busy || appearanceBusy || privacyBusy || telemetryBusy || aiBusy || shareBusy || updateBusy" @busy="dataOperationBusy = $event" />
             </section>
             <section v-show="settingsTab === 'habits'" id="settings-panel-habits" role="tabpanel" aria-labelledby="settings-tab-habits" class="settings-panel">
-              <fieldset class="settings-section preferences-boundary" :disabled="busy || dataBusy" :aria-label="t('使用习惯')"><h3><Icon name="sliders" :size="16" />{{ t('使用习惯') }}</h3><div class="setting-row"><div><strong>{{ t('界面语言') }}</strong><p>{{ t('保存后立即切换界面语言；跟随系统时，中文系统显示简体中文，其他系统显示英文。') }}</p></div><UiSelect v-model="settingsDraft.uiLanguage" :options="uiLanguageChoices" :label="t('界面语言')" :disabled="busy || dataBusy" /></div><div class="setting-row"><div><strong>{{ t('流星启动画面') }}</strong><p>{{ t('仅首次打开短暂显示，可随时跳过') }}</p></div><div class="startup-preference"><button type="button" class="startup-replay" :disabled="dataBusy" @click="replayStartup">{{ t('重看一次') }}</button><button type="button" :class="['switch', { on: settingsDraft.showStartup }]" role="switch" :aria-checked="settingsDraft.showStartup" :aria-label="t('流星启动画面')" :disabled="dataBusy" @click="settingsDraft.showStartup = !settingsDraft.showStartup"><span /></button></div></div><div class="setting-row"><div><strong>{{ t('默认布局') }}</strong><p>{{ t('网格、列表，或横向快取的流星栏') }}</p></div><UiSelect v-model="settingsDraft.layout" :options="layoutChoices" :label="t('默认布局')" :disabled="busy || dataBusy" /></div><div class="setting-row"><div><strong>{{ t('窗口置顶') }}</strong><p>{{ isDesktop ? t('保持在其他应用窗口上方') : t('桌面版生效；此处仅预览设置') }}</p></div><button type="button" :class="['switch', { on: settingsDraft.alwaysOnTop }]" role="switch" :aria-checked="settingsDraft.alwaysOnTop" :aria-label="t('窗口置顶')" @click="settingsDraft.alwaysOnTop = !settingsDraft.alwaysOnTop"><span /></button></div><div class="setting-row"><div><strong>{{ t('呼出快捷键') }}</strong><p>{{ t('从任何应用打开星笺') }}</p></div><input class="shortcut-input" v-model="settingsDraft.shortcut" :aria-label="t('呼出快捷键')" placeholder="CommandOrControl+Shift+V" /></div><div class="setting-row"><div><strong>{{ t('分类 / 分组切换') }}</strong><p>{{ t('窗口内循环切换；输入文字和弹窗内不触发') }}</p></div><kbd class="setting-shortcut">{{ modKey }} ⇧ ← / →</kbd></div><p class="retention-note">{{ t('关闭主窗口后，星笺会继续在菜单栏 / 托盘运行，已开启的记录也会继续。可用呼出快捷键或托盘菜单重新打开；要完全退出，请在托盘菜单选择「退出星笺」。Windows 托盘图标可能收在通知区域的折叠菜单中。') }}</p></fieldset>
+              <StartupSettings v-if="settingsTab === 'habits'" ref="startupSettings" :disabled="busy || themeSaving || dataOperationBusy || updateBusy || shareBusy || appearanceBusy || privacyBusy || telemetryBusy || aiBusy || clipPrivacyBusy" @busy="startupBusy = $event" @quit="quitFromSettings" />
+              <fieldset class="settings-section preferences-boundary" :disabled="busy || dataBusy" :aria-label="t('使用习惯')"><h3><Icon name="sliders" :size="16" />{{ t('使用习惯') }}</h3><div class="setting-row"><div><strong>{{ t('界面语言') }}</strong><p>{{ t('保存后立即切换界面语言；跟随系统时，中文系统显示简体中文，其他系统显示英文。') }}</p></div><UiSelect v-model="settingsDraft.uiLanguage" :options="uiLanguageChoices" :label="t('界面语言')" :disabled="busy || dataBusy" /></div><div class="setting-row"><div><strong>{{ t('流星启动画面') }}</strong><p>{{ t('仅首次打开短暂显示，可随时跳过') }}</p></div><div class="startup-preference"><button type="button" class="startup-replay" :disabled="dataBusy" @click="replayStartup">{{ t('重看一次') }}</button><button type="button" :class="['switch', { on: settingsDraft.showStartup }]" role="switch" :aria-checked="settingsDraft.showStartup" :aria-label="t('流星启动画面')" :disabled="dataBusy" @click="settingsDraft.showStartup = !settingsDraft.showStartup"><span /></button></div></div><div class="setting-row"><div><strong>{{ t('默认布局') }}</strong><p>{{ t('网格、列表，或横向快取的流星栏') }}</p></div><UiSelect v-model="settingsDraft.layout" :options="layoutChoices" :label="t('默认布局')" :disabled="busy || dataBusy" /></div><div class="setting-row"><div><strong>{{ t('窗口置顶') }}</strong><p>{{ isDesktop ? t('保持在其他应用窗口上方') : t('桌面版生效；此处仅预览设置') }}</p></div><button type="button" :class="['switch', { on: settingsDraft.alwaysOnTop }]" role="switch" :aria-checked="settingsDraft.alwaysOnTop" :aria-label="t('窗口置顶')" @click="settingsDraft.alwaysOnTop = !settingsDraft.alwaysOnTop"><span /></button></div><div class="setting-row"><div><strong>{{ t('呼出快捷键') }}</strong><p>{{ t('从任何应用打开星笺') }}</p></div><input class="shortcut-input" v-model="settingsDraft.shortcut" :aria-label="t('呼出快捷键')" placeholder="CommandOrControl+Shift+V" /></div><div class="setting-row"><div><strong>{{ t('分类 / 分组切换') }}</strong><p>{{ t('窗口内循环切换；输入文字和弹窗内不触发') }}</p></div><kbd class="setting-shortcut">{{ modKey }} ⇧ ← / →</kbd></div><p class="retention-note">{{ t('关闭主窗口后，星笺继续在后台运行，已开启的记录也会继续。可用呼出快捷键、再次打开应用或菜单栏 / 托盘菜单重新打开；要完全退出，可使用上方的「退出星笺」或托盘菜单。Windows 托盘图标可能收在通知区域的折叠菜单中。') }}</p></fieldset>
             </section>
             <section v-show="settingsTab === 'privacy'" id="settings-panel-privacy" role="tabpanel" aria-labelledby="settings-tab-privacy" class="settings-panel">
               <fieldset class="settings-section preferences-boundary" :disabled="busy || dataBusy" :aria-label="t('记录与隐私')"><h3><Icon name="shield" :size="16" />{{ t('采集与保留') }}</h3><div class="setting-row"><div><strong>{{ t('自动记录新复制的文本与图片') }}</strong><p>{{ t('开启或恢复时先记录当前剪贴内容，再监听新的复制；内容保存在本机') }}</p></div><button type="button" :class="['switch', { on: !settingsDraft.paused }]" role="switch" :aria-checked="!settingsDraft.paused" :aria-label="t('自动记录新复制的文本与图片')" @click="settingsDraft.paused = !settingsDraft.paused"><span /></button></div><div class="setting-row"><div><strong>{{ t('历史记录上限') }}</strong><p>{{ t('星标、永久保留与分组记录不计入上限') }}</p></div><UiSelect v-model="settingsDraft.maxHistory" :options="historyChoices" :label="t('历史记录上限')" :disabled="busy || dataBusy" /></div><div class="setting-row"><div><strong>{{ t('历史保留时长') }}</strong><p>{{ t('按最近更新时间计算；星标、永久保留与分组受保护') }}</p></div><UiSelect v-model="settingsDraft.retentionDays" :options="retentionChoices" :label="t('历史保留时长')" :disabled="busy || dataBusy" /></div><p class="field-note">{{ t('默认长期保留：不限条数、不限天数。历史不会因数量或时间自动移除；你仍可主动删除或整理，也可自行设置清理规则。') }}</p><p class="retention-note">{{ t('保存偏好后立即应用清理规则。桌面版还会在启动、新记录和约每分钟检查；暂停记录时也会按已选时长清理。浏览器演示只在保存偏好或新增内容时检查。永久保留、星标和已分组内容不会自动清理；重新捕获相同内容会更新保留起点。清理无法撤回，可先导出备份。同时选择「不限条数」和「不限天数」可关闭自动淘汰；重要内容也可单独标记永久保留。') }}</p><div class="privacy-note"><Icon name="shield" :size="16" /><p>{{ t('内容仅保存在本机，不上传云端。剪贴板可能含有私密内容，复制密码等敏感信息前请先暂停记录。') }}</p></div></fieldset>

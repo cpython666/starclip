@@ -14,7 +14,7 @@ use crate::updater::{self, UpdateStatus, Updates};
 use crate::{images, share};
 use arboard::{Clipboard, ImageData};
 use base64::Engine;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, OpenOptions},
     io::Write,
@@ -47,6 +47,7 @@ struct Context {
     window_error: Mutex<Option<String>>,
     cleanup: Mutex<Option<CleanupSnapshot>>,
     starpet_operation: Mutex<()>,
+    startup_operation: Mutex<()>,
     tray_items: OnceLock<TrayItems>,
     native_language: Mutex<String>,
 }
@@ -314,7 +315,7 @@ impl MainWindowGeometry {
 }
 
 // Window creation must run off the event-loop thread, especially on Windows.
-fn show_window_inner(app: &AppHandle) -> Result<()> {
+fn show_window_inner(app: &AppHandle, reopened: bool) -> Result<()> {
     let session = app.state::<MainWindowSession>();
     let _operation = lock(&session.operation)?;
     let window = if let Some(window) = app.get_webview_window("main") {
@@ -327,10 +328,13 @@ fn show_window_inner(app: &AppHandle) -> Result<()> {
             .iter()
             .find(|window| window.label == "main")
             .ok_or("主窗口配置不存在。")?;
-        let window = WebviewWindowBuilder::from_config(app, config)
+        let mut builder = WebviewWindowBuilder::from_config(app, config)
             .map_err(|error| error.to_string())?
-            .visible(false)
-            .initialization_script("window.__STARCLIP_REOPENED__ = true;")
+            .visible(false);
+        if reopened {
+            builder = builder.initialization_script("window.__STARCLIP_REOPENED__ = true;");
+        }
+        let window = builder
             .build()
             .map_err(|error| format!("无法重新创建主窗口：{error}"))?;
         if let Some(geometry) = lock(&session.geometry)?.as_ref() {
@@ -361,7 +365,7 @@ fn show_window(app: &AppHandle) {
     let _ = app.state::<MainWindowSession>().next_request(false);
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if let Err(error) = show_window_inner(&app) {
+        if let Err(error) = show_window_inner(&app, true) {
             app.dialog()
                 .message(error)
                 .title(native_dialog_title(native_is_english_app(&app)))
@@ -663,7 +667,7 @@ async fn set_starpet_preferences(
 #[tauri::command]
 async fn show_main_window(app: AppHandle) -> Result<()> {
     app.state::<MainWindowSession>().next_request(false)?;
-    tauri::async_runtime::spawn_blocking(move || show_window_inner(&app))
+    tauri::async_runtime::spawn_blocking(move || show_window_inner(&app, true))
         .await
         .map_err(|_| "主窗口创建任务失败，请重试。".to_string())?
 }
@@ -1826,6 +1830,142 @@ fn restart_app(app: AppHandle, context: AppContext<'_>) -> Result<()> {
     lock(&context.storage)?.release_for_restart()?;
     app.restart();
 }
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StartupPreferences {
+    auto_launch: bool,
+    start_hidden: bool,
+    show_tray_icon: bool,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StartupPreferencePatch {
+    auto_launch: Option<bool>,
+    start_hidden: Option<bool>,
+    show_tray_icon: Option<bool>,
+}
+fn read_startup_preferences(app: &AppHandle, context: &Context) -> Result<StartupPreferences> {
+    let local = {
+        let _storage = lock(&context.storage)?;
+        lock(&context.store)?.window_startup_preferences()?
+    };
+    Ok(StartupPreferences {
+        auto_launch: crate::startup::read_enabled(app)?,
+        start_hidden: local.start_hidden,
+        show_tray_icon: local.show_tray_icon,
+    })
+}
+#[tauri::command]
+async fn get_startup_preferences(
+    app: AppHandle,
+    context: AppContext<'_>,
+) -> Result<StartupPreferences> {
+    let context = context.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _operation = lock(&context.startup_operation)?;
+        read_startup_preferences(&app, &context)
+    })
+    .await
+    .map_err(|_| "无法读取启动设置。".to_string())?
+}
+fn apply_startup_preferences(
+    context: &Context,
+    patch: StartupPreferencePatch,
+    read_auto_launch: impl FnOnce() -> Result<bool>,
+    mut set_auto_launch: impl FnMut(bool) -> Result<()>,
+    mut set_tray_visible: impl FnMut(bool) -> Result<()>,
+) -> Result<StartupPreferences> {
+    let _operation = lock(&context.startup_operation)?;
+    let local = {
+        let _storage = write_guard(context)?;
+        lock(&context.store)?.window_startup_preferences()?
+    };
+    let previous = StartupPreferences {
+        auto_launch: read_auto_launch()?,
+        start_hidden: local.start_hidden,
+        show_tray_icon: local.show_tray_icon,
+    };
+    let next = crate::store::WindowStartupPreferences {
+        start_hidden: patch.start_hidden.unwrap_or(previous.start_hidden),
+        show_tray_icon: patch.show_tray_icon.unwrap_or(previous.show_tray_icon),
+    };
+    let auto_launch = patch.auto_launch.unwrap_or(previous.auto_launch);
+    let result = (|| -> Result<()> {
+        if auto_launch != previous.auto_launch {
+            set_auto_launch(auto_launch)?;
+        }
+        if next.show_tray_icon != previous.show_tray_icon {
+            set_tray_visible(next.show_tray_icon)?;
+        }
+        // Native tray calls synchronously wait for the event loop. Never
+        // hold storage there: a queued tray pause event also needs storage.
+        // Recheck the write gate after external work in case an update or
+        // migration began; rollback below runs outside this storage guard.
+        let _storage = write_guard(context)?;
+        lock(&context.store)?.save_window_startup_preferences(&next)
+    })();
+    if let Err(mut error) = result {
+        // Restore external side effects if persistence failed. Never silently
+        // claim the UI choice was saved while the OS has a different state.
+        if auto_launch != previous.auto_launch {
+            if let Err(rollback) = set_auto_launch(previous.auto_launch) {
+                error.push_str(&format!("；恢复系统登录项失败：{rollback}"));
+            }
+        }
+        if next.show_tray_icon != previous.show_tray_icon {
+            if let Err(rollback) = set_tray_visible(previous.show_tray_icon) {
+                error.push_str(&format!("；恢复图标显示失败：{rollback}"));
+            }
+        }
+        return Err(error);
+    }
+    Ok(StartupPreferences {
+        auto_launch,
+        start_hidden: next.start_hidden,
+        show_tray_icon: next.show_tray_icon,
+    })
+}
+#[tauri::command]
+async fn set_startup_preferences(
+    app: AppHandle,
+    context: AppContext<'_>,
+    patch: StartupPreferencePatch,
+) -> Result<StartupPreferences> {
+    let context = context.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let tray = app
+            .tray_by_id("main-tray")
+            .ok_or("菜单栏 / 托盘图标不可用，请重启星笺后重试。")?;
+        apply_startup_preferences(
+            &context,
+            patch,
+            || crate::startup::read_enabled(&app),
+            |enabled| crate::startup::set_enabled(&app, enabled).map(|_| ()),
+            |visible| {
+                tray.set_visible(visible)
+                    .map_err(|error| format!("无法更改菜单栏 / 托盘图标：{error}"))
+            },
+        )
+    })
+    .await
+    .map_err(|_| "无法保存启动设置。".to_string())?
+}
+#[tauri::command]
+async fn quit_starclip(app: AppHandle, context: AppContext<'_>) -> Result<()> {
+    let context = context.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // Never block the native event loop while a writer waits on tray/window UI.
+        let _storage = lock(&context.storage)?;
+        if app.state::<Updates>().installing() {
+            return Err("正在备份或安装更新，请等待完成后再退出。".into());
+        }
+        app.exit(0);
+        Ok(())
+    })
+    .await
+    .map_err(|_| "无法退出星笺，请稍后重试。".to_string())?
+}
 #[tauri::command]
 async fn open_data_directory(context: AppContext<'_>) -> Result<()> {
     let directory = lock(&context.storage)?.current.clone();
@@ -2401,11 +2541,14 @@ fn monitor(app: AppHandle, context: Arc<Context>) {
 }
 
 pub fn run() {
+    let app_context = tauri::generate_context!();
+    let startup_plugin = crate::startup::init(&app_context.config().identifier);
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             show_window(app)
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(startup_plugin)
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Updates::new())
         .manage(MainWindowSession::default())
@@ -2452,17 +2595,24 @@ pub fn run() {
                         .map_err(|_| "快捷键注册失败，可在偏好设置中更换。".to_string())
                 })
                 .err();
-            let window_error = store
-                .settings()
-                .and_then(|settings| {
-                    app.get_webview_window("main")
-                        .ok_or("主窗口不存在。".to_string())?
-                        .set_always_on_top(settings.always_on_top)
-                        .map_err(|error| {
-                            format!("无法应用已保存的窗口置顶设置，可在偏好设置中重试：{error}")
-                        })
-                })
-                .err();
+            let (window_startup, window_error) = match store.window_startup_preferences() {
+                Ok(preferences) => (preferences, None),
+                Err(error) => (Default::default(), Some(error)),
+            };
+            // A broken shortcut or preference must never leave an invisible app
+            // with no obvious way to recover its controls.
+            let show_at_startup =
+                !window_startup.start_hidden || shortcut_error.is_some() || window_error.is_some();
+            let saved_language = store.settings()?.ui_language;
+            let native_language = if saved_language == "system" {
+                if sys_locale::get_locale().is_some_and(|locale| locale.starts_with("zh")) {
+                    "zh-CN".to_string()
+                } else {
+                    "en".to_string()
+                }
+            } else {
+                saved_language
+            };
             let context = Arc::new(Context {
                 telemetry: Mutex::new(
                     Telemetry::new(store.telemetry_preferences())
@@ -2480,8 +2630,9 @@ pub fn run() {
                 window_error: Mutex::new(window_error),
                 cleanup: Mutex::new(None),
                 starpet_operation: Mutex::new(()),
+                startup_operation: Mutex::new(()),
                 tray_items: OnceLock::new(),
-                native_language: Mutex::new("zh-CN".into()),
+                native_language: Mutex::new(native_language),
             });
             let pet_app = app.handle().clone();
             start_ai_broker(&context, move |snapshot| {
@@ -2552,7 +2703,10 @@ pub fn run() {
                 starpet,
                 quit,
             });
-            tray.build(app)?;
+            let tray = tray.build(app)?;
+            if !window_startup.show_tray_icon {
+                tray.set_visible(false)?;
+            }
             let startup_settings = lock(&context.store)?.settings()?;
             refresh_tray(app.handle(), &context, &startup_settings);
             apply_window_titles(app.handle(), native_is_english(&context));
@@ -2565,6 +2719,18 @@ pub fn run() {
             });
             record_telemetry(app.handle(), &context, "app_started");
             monitor(app.handle().clone(), context);
+            if show_at_startup {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    if let Err(error) = show_window_inner(&handle, false) {
+                        handle
+                            .dialog()
+                            .message(error)
+                            .title(native_dialog_title(native_is_english_app(&handle)))
+                            .show(|_| {});
+                    }
+                });
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -2597,6 +2763,9 @@ pub fn run() {
             flush_telemetry,
             clear_telemetry_queue,
             get_state,
+            get_startup_preferences,
+            set_startup_preferences,
+            quit_starclip,
             get_clips,
             get_starpet_preferences,
             get_starpet_signal,
@@ -2672,7 +2841,7 @@ pub fn run() {
             restore_recovery_point,
             restart_app
         ])
-        .build(tauri::generate_context!())
+        .build(app_context)
         .expect("星笺启动失败，请检查本地数据目录权限或磁盘空间。")
         .run(|app, event| match event {
             // A visible starpet does not mean the main window is open.
@@ -2705,6 +2874,122 @@ pub fn run() {
 mod tests {
     use super::{project_link, write_and_suppress};
     use crate::capture::{CaptureKey, CaptureState};
+
+    #[test]
+    fn startup_native_operations_release_storage_and_rollback_after_update_freeze() {
+        use super::*;
+        use std::cell::{Cell, RefCell};
+
+        for freeze_during_apply in [false, true] {
+            let mut random = [0u8; 16];
+            getrandom::fill(&mut random).unwrap();
+            let path = std::env::temp_dir().join(format!(
+                "starclip-startup-lock-test-{:x}",
+                u128::from_le_bytes(random)
+            ));
+            fs::create_dir_all(&path).unwrap();
+            let storage = Storage::open(&path, &path).unwrap();
+            let store = storage.open_store().unwrap();
+            let previous = store.window_startup_preferences().unwrap();
+            let context = Context {
+                telemetry: Mutex::new(Telemetry::new(Ok(Default::default()))),
+                storage: Mutex::new(storage),
+                store: Mutex::new(store),
+                ai: Mutex::new(AiAccess::default()),
+                reader: Mutex::new(Reader {
+                    clipboard: None,
+                    capture: CaptureState::default(),
+                }),
+                clipboard_error: Mutex::new(None),
+                shortcut_error: Mutex::new(None),
+                window_error: Mutex::new(None),
+                cleanup: Mutex::new(None),
+                starpet_operation: Mutex::new(()),
+                startup_operation: Mutex::new(()),
+                tray_items: OnceLock::new(),
+                native_language: Mutex::new("zh-CN".into()),
+            };
+            let auto_launch = Cell::new(false);
+            let tray_visible = Cell::new(true);
+            let operations = RefCell::new(Vec::new());
+            let result = apply_startup_preferences(
+                &context,
+                StartupPreferencePatch {
+                    auto_launch: Some(true),
+                    start_hidden: Some(true),
+                    show_tray_icon: Some(false),
+                },
+                || {
+                    assert!(
+                        context.storage.try_lock().is_ok(),
+                        "native read holds storage"
+                    );
+                    Ok(auto_launch.get())
+                },
+                |enabled| {
+                    // A synchronous native callback must be able to acquire
+                    // storage, both during application and during rollback.
+                    assert!(
+                        context.storage.try_lock().is_ok(),
+                        "login operation holds storage"
+                    );
+                    auto_launch.set(enabled);
+                    operations.borrow_mut().push(("login", enabled));
+                    Ok(())
+                },
+                |visible| {
+                    let mut storage = context
+                        .storage
+                        .try_lock()
+                        .expect("tray operation holds storage");
+                    tray_visible.set(visible);
+                    operations.borrow_mut().push(("tray", visible));
+                    if freeze_during_apply && !visible {
+                        storage.freeze_for_update().unwrap();
+                    }
+                    Ok(())
+                },
+            );
+            let saved = context
+                .store
+                .lock()
+                .unwrap()
+                .window_startup_preferences()
+                .unwrap();
+            if freeze_during_apply {
+                assert!(result
+                    .err()
+                    .expect("freeze must reject persistence")
+                    .contains("正在安装更新"));
+                assert_eq!(
+                    saved, previous,
+                    "failed save must retain the original preferences"
+                );
+                assert!(!auto_launch.get());
+                assert!(tray_visible.get());
+                assert_eq!(
+                    *operations.borrow(),
+                    [
+                        ("login", true),
+                        ("tray", false),
+                        ("login", false),
+                        ("tray", true)
+                    ]
+                );
+                assert!(context.storage.lock().unwrap().writable().is_err());
+            } else {
+                let result = result.unwrap();
+                assert!(result.auto_launch && result.start_hidden && !result.show_tray_icon);
+                assert!(saved.start_hidden && !saved.show_tray_icon);
+                assert!(auto_launch.get());
+                assert!(!tray_visible.get());
+                assert_eq!(*operations.borrow(), [("login", true), ("tray", false)]);
+            }
+            assert!(context.startup_operation.try_lock().is_ok());
+            drop(context);
+            fs::remove_dir_all(path).unwrap();
+        }
+    }
 
     #[test]
     fn settings_interactions_notify_only_after_validation_without_double_rewards_or_enabling_pet() {
@@ -2868,6 +3153,7 @@ mod tests {
             window_error: Mutex::new(None),
             cleanup: Mutex::new(None),
             starpet_operation: Mutex::new(()),
+            startup_operation: Mutex::new(()),
             tray_items: OnceLock::new(),
             native_language: Mutex::new("zh-CN".into()),
         });

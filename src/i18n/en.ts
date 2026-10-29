@@ -247,7 +247,7 @@ export const en: Record<string, string> = {
   "从任何应用打开星笺": "Open Starclip from any app",
   "分类 / 分组切换": "Switch category / constellation",
   "窗口内循环切换；输入文字和弹窗内不触发": "Cycles inside the window; ignored while typing or in dialogs",
-  "关闭主窗口后，星笺会继续在菜单栏 / 托盘运行，已开启的记录也会继续。可用呼出快捷键或托盘菜单重新打开；要完全退出，请在托盘菜单选择「退出星笺」。Windows 托盘图标可能收在通知区域的折叠菜单中。": "Closing the main window only hides it. Starclip keeps running in the menu bar / tray and continues recording if enabled. Reopen it with the global shortcut or the tray menu. To quit fully, choose “Quit Starclip” in the tray menu. On Windows, the tray icon may be tucked into the notification area.",
+  "关闭主窗口后，星笺继续在后台运行，已开启的记录也会继续。可用呼出快捷键、再次打开应用或菜单栏 / 托盘菜单重新打开；要完全退出，可使用上方的「退出星笺」或托盘菜单。Windows 托盘图标可能收在通知区域的折叠菜单中。": "Closing the main window keeps Starclip running in the background, including recording if enabled. Reopen it with the global shortcut, by launching the app again, or from the menu bar / tray menu. To quit fully, use Quit Starclip above or in the tray menu. On Windows, the tray icon may be tucked into the notification area.",
   "记录与隐私": "Clips & privacy",
   "采集与保留": "Capture & retention",
   "自动记录新复制的文本与图片": "Automatically record new text and images",
