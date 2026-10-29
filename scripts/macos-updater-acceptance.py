@@ -155,9 +155,12 @@ def fixture_transport(directory, temporary):
         while time.monotonic() < deadline:
             if server.poll() is not None:
                 raise RuntimeError("Runner-local HTTPS fixture exited during startup")
-            probe = subprocess.run(["/usr/bin/curl", "--fail", "--silent", "--show-error", "--max-time", "2", ENDPOINT], capture_output=True, timeout=5)
+            probe = subprocess.run(["/usr/bin/curl", "--fail", "--silent", "--show-error", "--max-time", "2",
+                                    "--resolve", "github.com:443:127.0.0.1", "--noproxy", "github.com",
+                                    "--write-out", "%{stderr}\nhttp_status=%{http_code} remote_ip=%{remote_ip}\n",
+                                    ENDPOINT], capture_output=True, timeout=5)
             last_probe = dict(returncode=probe.returncode, responseSha256=hashlib.sha256(probe.stdout).hexdigest(),
-                              error=probe.stderr.decode("utf-8", errors="replace"))
+                              diagnostic=probe.stderr.decode("utf-8", errors="replace"))
             if probe.returncode == 0 and hashlib.sha256(probe.stdout).hexdigest() == MANIFEST_HASH:
                 event("trusted-https-ready", **last_probe)
                 break
@@ -187,11 +190,13 @@ def fixture_transport(directory, temporary):
             # The same server and hosts mapping are still active. Curl 60
             # specifically means certificate verification failed, unlike a
             # stopped server, HTTP rejection, or any disabled TLS validation.
-            rejection = cleanup_command("/usr/bin/curl", "--fail", "--silent", "--show-error", "--max-time", "5", ENDPOINT)
+            rejection = cleanup_command("/usr/bin/curl", "--fail", "--silent", "--show-error", "--max-time", "5",
+                                        "--resolve", "github.com:443:127.0.0.1", "--noproxy", "github.com",
+                                        "--write-out", "%{stderr}\nhttp_status=%{http_code} remote_ip=%{remote_ip}\n", ENDPOINT)
         trust_revoked = revoked is not None and revoked.returncode == 0 and rejection is not None and rejection.returncode == 60
         event("revoked-tls-probe", trustRevoked=trust_revoked,
               returncode=rejection.returncode if rejection is not None else None,
-              error=rejection.stderr if rejection is not None else None)
+              diagnostic=rejection.stderr if rejection is not None else None)
         try:
             if changed_hosts:
                 transport_command("restore-hosts", "sudo", "-n", "cp", str(saved), str(hosts))
