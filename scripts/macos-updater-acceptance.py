@@ -110,6 +110,20 @@ def verify_app(app, version):
 def fixture_transport(directory, temporary):
     """Temporarily trust and route only this disposable runner's update traffic."""
     assert directory.resolve(strict=True).is_relative_to(temporary)
+    evidence = temporary / "starclip-macos-updater-evidence"
+
+    def event(stage, **details):
+        entry = dict(stage=stage, timestamp=time.time(), **details)
+        with (evidence / "transport-stages.jsonl").open("a", encoding="utf-8") as file:
+            file.write(json.dumps(entry) + "\n")
+        print("HTTPS fixture: " + stage, flush=True)
+
+    def transport_command(stage, *arguments):
+        event(stage + "-started")
+        result = subprocess.run(arguments, check=True, capture_output=True, text=True, timeout=30)
+        event(stage + "-finished")
+        return result
+
     helper = Path(__file__).with_name("release-updater-fixture.py")
     hosts = Path("/etc/hosts")
     before = hosts.read_bytes()
@@ -122,42 +136,50 @@ def fixture_transport(directory, temporary):
     fingerprint = command("openssl", "x509", "-in", str(certificate), "-noout", "-fingerprint", "-sha1", capture_output=True, text=True).stdout.strip().split("=")[-1].replace(":", "")
     assert re.fullmatch(r"[A-Fa-f0-9]{40}", fingerprint)
     server = None
+    server_log = (evidence / "fixture-server.log").open("ab", buffering=0)
     changed_hosts = False
     try:
-        print("HTTPS fixture: installing temporary runner trust", flush=True)
-        command("sudo", "security", "add-trusted-cert", "-d", "-r", "trustRoot", "-p", "ssl",
+        transport_command("install-trust", "sudo", "-n", "security", "add-trusted-cert", "-d", "-r", "trustRoot", "-p", "ssl",
                 "-k", "/Library/Keychains/System.keychain", str(certificate))
-        print("HTTPS fixture: starting fixed-path server and mapping update host", flush=True)
-        server = subprocess.Popen(["sudo", "-E", sys.executable, str(helper), "serve", "--directory", str(directory)],
-                                  start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        command("sudo", "cp", str(mapped), str(hosts))
+        event("start-server")
+        server = subprocess.Popen(["sudo", "-n", "-E", sys.executable, str(helper), "serve", "--directory", str(directory)],
+                                  start_new_session=True, stdout=server_log, stderr=server_log)
+        transport_command("map-host", "sudo", "-n", "cp", str(mapped), str(hosts))
         changed_hosts = True
-        command("sudo", "dscacheutil", "-flushcache")
-        subprocess.run(["sudo", "killall", "-HUP", "mDNSResponder"], check=False, capture_output=True, timeout=30)
+        transport_command("flush-dns-cache", "sudo", "-n", "dscacheutil", "-flushcache")
+        event("signal-dns-responder")
+        subprocess.run(["sudo", "-n", "killall", "-HUP", "mDNSResponder"], check=False, capture_output=True, timeout=30)
+        event("probe-trusted-https", serverPid=server.pid)
         deadline = time.monotonic() + 20
+        last_probe = None
         while time.monotonic() < deadline:
             if server.poll() is not None:
                 raise RuntimeError("Runner-local HTTPS fixture exited during startup")
-            probe = subprocess.run(["/usr/bin/curl", "--fail", "--silent", "--max-time", "2", ENDPOINT], capture_output=True)
+            probe = subprocess.run(["/usr/bin/curl", "--fail", "--silent", "--show-error", "--max-time", "2", ENDPOINT], capture_output=True, timeout=5)
+            last_probe = dict(returncode=probe.returncode, responseSha256=hashlib.sha256(probe.stdout).hexdigest(),
+                              error=probe.stderr.decode("utf-8", errors="replace"))
             if probe.returncode == 0 and hashlib.sha256(probe.stdout).hexdigest() == MANIFEST_HASH:
+                event("trusted-https-ready", **last_probe)
                 break
             time.sleep(0.5)
         else:
+            event("trusted-https-probe-failed", **(last_probe or {}))
             raise RuntimeError("Trusted HTTPS fixture was not reachable with normal certificate validation")
         yield
     finally:
-        print("HTTPS fixture: restoring runner network/trust state", flush=True)
+        event("cleanup-started")
         errors = []
         try:
             if changed_hosts:
-                command("sudo", "cp", str(saved), str(hosts))
-                command("sudo", "dscacheutil", "-flushcache")
-                subprocess.run(["sudo", "killall", "-HUP", "mDNSResponder"], check=False, capture_output=True, timeout=30)
+                transport_command("restore-hosts", "sudo", "-n", "cp", str(saved), str(hosts))
+                transport_command("restore-dns-cache", "sudo", "-n", "dscacheutil", "-flushcache")
+                subprocess.run(["sudo", "-n", "killall", "-HUP", "mDNSResponder"], check=False, capture_output=True, timeout=30)
             assert hosts.read_bytes() == before, "Temporary hosts mapping was not restored"
         except Exception as error:
             errors.append(str(error))
         try:
             if server is not None:
+                event("stop-server", serverPid=server.pid)
                 subprocess.run(["sudo", "/bin/kill", "-TERM", "-" + str(server.pid)], check=False, capture_output=True, timeout=30)
                 try:
                     server.wait(timeout=10)
@@ -170,6 +192,7 @@ def fixture_transport(directory, temporary):
         # owned server fails. Remove only this freshly generated certificate.
         def cleanup_command(*arguments):
             try:
+                event("cleanup-command", command=list(arguments[:3]))
                 return subprocess.run(arguments, check=False, capture_output=True, text=True, timeout=30)
             except Exception as error:
                 errors.append(str(error))
@@ -183,13 +206,14 @@ def fixture_transport(directory, temporary):
                 (directory / name).unlink(missing_ok=True)
             except OSError as error:
                 errors.append(str(error))
-        evidence = temporary / "starclip-macos-updater-evidence" / "transport-cleanup.json"
-        evidence.write_text(json.dumps(dict(hostsRestored=hosts.read_bytes() == before,
+        server_log.close()
+        (evidence / "transport-cleanup.json").write_text(json.dumps(dict(hostsRestored=hosts.read_bytes() == before,
                                            serverStopped=server is None or server.poll() is not None,
                                            certificateAbsent=certificate_absent,
                                            trustRemovalStatus=removed.returncode if removed is not None else None,
                                            certificateRemovalStatus=deleted.returncode if deleted is not None else None,
                                            errors=errors), indent=2) + "\n")
+        event("cleanup-finished", errors=errors)
         if errors or not certificate_absent or removed is None or deleted is None or removed.returncode != 0 or deleted.returncode != 0:
             raise RuntimeError("Disposable HTTPS fixture cleanup did not fully succeed; inspect transport-cleanup.json")
 
