@@ -72,9 +72,10 @@
 - 2026-10-27 正式发布前公开端点实测：通过 Clash 可访问 GitHub Releases 列表（200），但正式 latest API 及应用配置的 latest.json 地址均 404；仅两个 alpha 预发布、无 latest.json 附件。当时持续检查失败有已确认的发布端原因，不能靠修改用户代理补齐；此结论只适用于该次检测时间，0.2.2 公开后的成功证据见下文。
 - 同日只读核对已安装 0.2.0 的网络依赖：`tauri-plugin-updater 2.14.0` 默认启用 `system-proxy`，经 `reqwest 0.13.5` / `hyper-util 0.1.21` 使用 macOS `SCDynamicStoreCopyProxies`。检查时系统 HTTP / HTTPS 代理均已开启，指向 `127.0.0.1:7890`；没有修改任何设置。不能仅以 GUI 未继承 shell 环境推断它未使用系统代理；清单 404 证据与依赖 / 设置核对分别记录，不将其扩大为应用内更新成功。
 - 0.2.1 的[签名门禁](https://github.com/cpython666/starclip/actions/runs/40460247031) 因 macOS Agent 分段请求测试失败停止，未公开 Release，保留原 tag。根因是接收 socket 继承非阻塞状态，把短暂 `WouldBlock` 当作失败；0.2.2 显式恢复阻塞读取，保持原 2 秒超时、帧上限和授权过滤，真实分帧回归验证旧实现失败、修复后通过。
-- [0.2.2](https://github.com/cpython666/starclip/releases/tag/v0.2.2) 已正式公开；[更新清单](https://github.com/cpython666/starclip/releases/latest/download/latest.json) 及两平台公开更新包均经既有 Clash 匿名下载返回 HTTP 200，与发布前已核验摘要、Ed25519 签名及绑定版本的草稿内容一致。此前清单 404 已解决，未修改代理或用户数据；不等于用户 GUI 已完成下载、安装与重启。
+- [0.2.2](https://github.com/cpython666/starclip/releases/tag/v0.2.2) 已正式公开；[更新清单](https://github.com/cpython666/starclip/releases/latest/download/latest.json) 及两平台公开更新包均经既有 Clash 匿名下载返回 HTTP 200，与发布前已核验摘要、Ed25519 签名及绑定版本的草稿内容一致。此前清单 404 已解决，未修改代理或用户数据；这份公开产物核验本身不等于用户 GUI 已完成下载、安装与重启，后续分平台证据见下文。
 - [Homebrew 同步 40466604899](https://github.com/cpython666/starclip/actions/runs/40466604899) 已成功，远端 API 核实 Cask 为 0.2.2、摘要与已验签 DMG 一致。完整发布证据与 CI 修复见 [验证记录](../../../../docs/verification.md)。
 - 2026-10-29 当前源码的 macOS 隔离验收包使用独立测试 ID，仅在构建配置覆盖 `config.version=0.2.1`，已真实检测公开 0.2.2、完成下载验签、就绪提示与稍后安装。未运行安装 / 重启：公开签名目标使用正式应用标识，安装后会切换到该标识及数据目录；不得借此绕过隔离去验证正式历史。正式 0.2.2 安装未替换，当前源码的下载就绪证据不等于真实旧 0.2.1 二进制升级或完整安装链路。
+- Windows 后续已在隔离 runner 以产品提交 `7fbbae5` 的完整源码、比较版本 0.2.1 更新到公开 0.2.2，真实 GUI 下载、稍后再安装、再次确认、程序替换与新进程启动均通过；暂停偏好、固定记录 / 分组、恢复点和旧程序备份均保留。证据为一次性实验提交 `2b148e9` 的 [run 40821236132](https://github.com/cpython666/starclip/actions/runs/40821236132)，详见 [验证记录](../../../../docs/verification.md)。这不代表历史旧 0.2.1 二进制、macOS 完整安装 / 重启、Windows 统计联网或字体 GUI 均已验收；实验未修改产品源码、未发布，也未替换本机正式应用。
 - 恢复点存储在默认应用数据目录，而不是任意自定义当前数据目录；恢复目标为该默认目录下新建 `recovered/` 子目录。快照和旧应用副本均为明文且不自动清理；它们不替代异盘备份。恢复后启动照常执行旧偏好中的保留规则。
 - 数据恢复与旧程序重装不同，本版没有自动二进制回滚。尤其 0.1.0 缺少结构版本拒绝逻辑，不得直接让它打开已升级的数据；程序回退要匹配兼容的数据副本。发布/密钥操作不由本知识库授权。
 
