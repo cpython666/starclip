@@ -6,6 +6,8 @@ import { compileScript, parse } from '@vue/compiler-sfc';
 import { createRenderer, markRaw, nextTick } from 'vue';
 import { emptyGrowth } from '../src/starpet-growth.ts';
 import type { PetSnapshot } from '../src/starpet-signal-api.ts';
+import type { StarPetMoodId } from '../src/starpet.ts';
+import type { StarPetInteraction } from '../src/starpet-growth-api.ts';
 
 // A memory DOM runs the actual Vue template and handlers without a desktop or clipboard.
 type Listener = (event: any) => void;
@@ -48,20 +50,26 @@ function button(root: MemoryNode, label: string) { const found = nodes(root).fin
 function opened(root: MemoryNode) { return button(root, '和星芽互动').props['aria-expanded']; }
 async function flush() { await new Promise(resolve => setImmediate(resolve)); await nextTick(); }
 let sequence = 0;
-async function mount(options: { delayedBlur?: boolean; delayedSignal?: boolean; delayedSignalListener?: boolean; initialSignal?: PetSnapshot } = {}) {
+async function mount(options: { delayedBlur?: boolean; delayedSignal?: boolean; delayedSignalListener?: boolean; delayedInteractionListener?: boolean; initialSignal?: PetSnapshot; initialMood?: StarPetMoodId } = {}) {
   const document = currentDocument = eventHub(), window = eventHub();
   const globals = ['document', 'window', 'Node', 'petDesktopMenuMock'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
   let nativeBlur = () => {}, stopBlur = 0, finishBlur!: (stop: () => void) => void;
   const calls: string[] = [];
   let signalCallback = (_snapshot: PetSnapshot) => {}, finishSignal!: (snapshot: PetSnapshot) => void, finishSignalListener!: (stop: () => void) => void, stopSignal = 0;
-  let preferences = { enabled: true, mood: 'idle', color: '#FFD66E', size: 100 };
+  let interactionCallback = (_interaction: StarPetInteraction) => {}, finishInteractionListener!: (stop: () => void) => void, stopInteraction = 0;
+  let interactionRevision = options.initialSignal?.revision ?? 0;
+  let preferences = { enabled: true, mood: options.initialMood ?? 'idle', color: '#FFD66E', size: 100 };
   const mock = {
     async getStarPetPreferences() { return { ...preferences }; },
     async onStarPetChanged() { return () => {}; },
     async setStarPetPreferences(patch: object) { calls.push('preferences'); return preferences = { ...preferences, ...patch }; },
     async showStarPetMainWindow() { calls.push('main'); }, async dragStarPet() { calls.push('drag'); },
     async getStarPetGrowth() { return emptyGrowth(); }, async onStarPetGrowthChanged() { return () => {}; },
-    async interactStarPet(_id: string) { calls.push('interact'); return emptyGrowth(); },
+    async interactStarPet(action: StarPetInteraction['action'], animate = true) { calls.push('interact'); interactionCallback({ action, animate, signalRevision: ++interactionRevision }); return emptyGrowth(); },
+    onStarPetInteraction(callback: (interaction: StarPetInteraction) => void): Promise<() => void> {
+      interactionCallback = callback;
+      return options.delayedInteractionListener ? new Promise(resolve => { finishInteractionListener = resolve; }) : Promise.resolve(() => { stopInteraction++; });
+    },
     getStarPetSignal(): Promise<PetSnapshot> { return options.delayedSignal ? new Promise(resolve => { finishSignal = resolve; }) : Promise.resolve(options.initialSignal ?? { revision: 0, signal: null }); },
     onStarPetSignal(callback: (snapshot: PetSnapshot) => void): Promise<() => void> {
       signalCallback = callback;
@@ -73,7 +81,7 @@ async function mount(options: { delayedBlur?: boolean; delayedSignal?: boolean; 
     },
   };
   Object.assign(globalThis, { document, window, Node: MemoryNode, petDesktopMenuMock: mock });
-  const api = `const api=globalThis.petDesktopMenuMock; export const { getStarPetPreferences, onStarPetChanged, setStarPetPreferences, showStarPetMainWindow, dragStarPet, getStarPetGrowth, onStarPetGrowthChanged, onStarPetWindowBlur, getStarPetSignal, onStarPetSignal }=api; export { petStatusLabel, petStatusMood } from '${new URL('../src/starpet-signal-api.ts', import.meta.url).href}'; export const interactStarPet=(...args)=>api.interactStarPet(...args); // ${sequence++}`;
+  const api = `const api=globalThis.petDesktopMenuMock; export const { getStarPetPreferences, onStarPetChanged, setStarPetPreferences, showStarPetMainWindow, dragStarPet, getStarPetGrowth, onStarPetGrowthChanged, onStarPetWindowBlur, getStarPetSignal, onStarPetSignal, onStarPetInteraction }=api; export { petStatusLabel, petStatusMood } from '${new URL('../src/starpet-signal-api.ts', import.meta.url).href}'; export const interactStarPet=(...args)=>api.interactStarPet(...args); // ${sequence++}`;
   const apiUrl = 'data:text/javascript;base64,' + Buffer.from(api).toString('base64');
   const { descriptor } = parse(fs.readFileSync(new URL('../src/components/StarPetDesktop.vue', import.meta.url), 'utf8'));
   const script = compileScript(descriptor, { id: 'starpet-menu-test', inlineTemplate: true });
@@ -83,7 +91,7 @@ async function mount(options: { delayedBlur?: boolean; delayedSignal?: boolean; 
     .replaceAll("'../starpet'", `'${new URL('../src/starpet.ts', import.meta.url).href}'`)
     .replaceAll("'../starpet-growth'", `'${new URL('../src/starpet-growth.ts', import.meta.url).href}'`)
     .replaceAll("'./Icon.vue'", "'data:text/javascript,export default {render(){return null}}'")
-    .replaceAll("'./StarPet.vue'", `'data:text/javascript;base64,${Buffer.from(`import {h} from '${import.meta.resolve('vue')}'; export default {props:['mood','action','actionNonce'],render(){return h('pet-fixture',{...this.$props})}}`).toString('base64')}'`);
+    .replaceAll("'./StarPet.vue'", `'data:text/javascript;base64,${Buffer.from(`import {h} from '${import.meta.resolve('vue')}'; export default {props:['mood','action','actionNonce'],render(){return h('pet-fixture',{...this.$props})}}`).toString('base64')}'`).replaceAll("'../i18n'", `'${new URL('../src/i18n/index.ts', import.meta.url).href}'`).replaceAll("'./i18n'", `'${new URL('../src/i18n/index.ts', import.meta.url).href}'`);
   const component = await import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'));
   const root = new MemoryNode('root'), app = renderer.createApp(component.default); app.mount(root); await flush();
   const open = async () => { assert.equal(opened(root), false); await button(root, '和星芽互动').props.onClick(); await flush(); assert.equal(opened(root), true); };
@@ -91,8 +99,10 @@ async function mount(options: { delayedBlur?: boolean; delayedSignal?: boolean; 
   const unmount = () => { if (!unmounted) { unmounted = true; app.unmount(); } };
   return { root, mock, calls, document, window, open, unmount, nativeBlur: () => nativeBlur(), stopBlur: () => stopBlur,
     finishBlur: () => finishBlur(() => { stopBlur++; }),
-    signal: (snapshot: PetSnapshot) => signalCallback(snapshot), finishSignal: (snapshot: PetSnapshot) => finishSignal(snapshot),
+    signal: (snapshot: PetSnapshot) => { interactionRevision = Math.max(interactionRevision, snapshot.revision); signalCallback(snapshot); }, finishSignal: (snapshot: PetSnapshot) => finishSignal(snapshot),
     finishSignalListener: () => finishSignalListener(() => { stopSignal++; }), stopSignal: () => stopSignal,
+    interaction: (value: StarPetInteraction) => interactionCallback(value),
+    finishInteractionListener: () => finishInteractionListener(() => { stopInteraction++; }), stopInteraction: () => stopInteraction,
     cleanup() { unmount(); for (const [key, descriptor] of globals) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); } },
   };
 }
@@ -127,7 +137,7 @@ test('pet menu returns focus only on explicit close and releases all outside/blu
     for (const dismiss of [() => fixture.nativeBlur(), () => window.emit('blur'), () => document.emit('focusin', new MemoryNode('outside')), () => { document.hidden = true; document.emit('visibilitychange'); }]) {
       await open(); const count = trigger.focusCount; dismiss(); await flush(); assert.equal(opened(root), false); assert.equal(trigger.focusCount, count);
     }
-    fixture.unmount(); assert.equal(document.count(), 0); assert.equal(window.count(), 0); assert.equal(fixture.stopBlur(), 1);
+    fixture.unmount(); assert.equal(document.count(), 0); assert.equal(window.count(), 0); assert.equal(fixture.stopBlur(), 1); assert.equal(fixture.stopInteraction(), 1);
   } finally { fixture.cleanup(); }
 });
 
@@ -225,4 +235,70 @@ test('Agent initial snapshot never replays action and manual dismissal or hidden
   const late = await mount({ delayedSignalListener: true });
   try { late.unmount(); late.finishSignalListener(); await flush(); assert.equal(late.stopSignal(), 1); }
   finally { late.cleanup(); }
+});
+
+test('settings interaction events replay identical actions once each without extra growth writes or preference changes', async () => {
+  const fixture = await mount();
+  try {
+    const pet = () => nodes(fixture.root).find(item => item.type === 'pet-fixture')!;
+    for (const action of ['greet', 'highfive', 'stretch', 'stretch'] as const) {
+      const previous = pet().props.actionNonce;
+      fixture.interaction({ action, animate: true, signalRevision: 0 }); await flush();
+      assert.equal(pet().props.action, action); assert.equal(pet().props.actionNonce, previous + 1);
+      assert.equal(pet().props.mood, 'idle');
+    }
+    assert.deepEqual(fixture.calls, [], 'receiving settings actions never records XP or saves preferences');
+    await fixture.open(); const previous = pet().props.actionNonce;
+    await button(fixture.root, '问个好').props.onClick(); await flush();
+    assert.deepEqual(fixture.calls, ['interact']); assert.equal(pet().props.actionNonce, previous + 1, 'native event plus command response plays once');
+    fixture.interaction({ action: 'greet', animate: false, signalRevision: 1 }); await flush();
+    assert.equal(pet().props.actionNonce, previous + 1, 'body touches preserve their existing reaction instead of playing a second action');
+    fixture.document.hidden = true; fixture.document.emit('visibilitychange');
+    fixture.interaction({ action: 'stretch', animate: true, signalRevision: 1 }); await flush();
+    assert.equal(pet().props.actionNonce, previous + 1, 'hidden windows do not replay or show themselves');
+    fixture.unmount(); fixture.interaction({ action: 'stretch', animate: true, signalRevision: 2 }); await flush();
+    assert.equal(fixture.stopInteraction(), 1);
+  } finally { fixture.cleanup(); }
+  const late = await mount({ delayedInteractionListener: true });
+  try { late.unmount(); late.finishInteractionListener(); await flush(); assert.equal(late.stopInteraction(), 1); }
+  finally { late.cleanup(); }
+});
+
+test('a local interaction clears the previous Agent signal while a newer Agent revision still wins', async () => {
+  const fixture = await mount({ delayedSignal: true });
+  try {
+    const pet = () => nodes(fixture.root).find(item => item.type === 'pet-fixture')!;
+    const signal = { source: '原创同步测试', status: 'working' as const, action: 'greet' as const, message: '临时 Agent 状态', expiresAt: Date.now() + 5000 };
+    fixture.signal({ revision: 1, signal }); await flush(); assert.equal(pet().props.mood, 'writing');
+    fixture.interaction({ action: 'highfive', animate: true, signalRevision: 2 }); await flush();
+    assert.equal(pet().props.mood, 'idle'); assert.equal(pet().props.action, 'highfive'); assert.equal(pet().props.actionNonce, 2);
+    assert.doesNotMatch(text(fixture.root), /临时 Agent 状态/);
+    fixture.finishSignal({ revision: 1, signal }); await flush(); assert.equal(pet().props.mood, 'idle', 'late startup snapshot cannot restore the cleared signal');
+    fixture.signal({ revision: 3, signal }); await flush(); assert.equal(pet().props.mood, 'writing');
+    fixture.interaction({ action: 'stretch', animate: true, signalRevision: 2 }); await flush();
+    assert.equal(pet().props.mood, 'writing'); assert.equal(pet().props.action, 'greet', 'late local event cannot overwrite a newer Agent signal');
+    assert.deepEqual(fixture.calls, []);
+  } finally { fixture.cleanup(); }
+});
+
+
+test('routine mood cycling stays positive or neutral while saved choices and explicit Agent errors remain available', async () => {
+  const fixture = await mount({ initialMood: 'sad' });
+  try {
+    const pet = () => nodes(fixture.root).find(item => item.type === 'pet-fixture')!;
+    assert.equal(pet().props.mood, 'sad', 'keep an explicitly saved mood');
+    const cycle = new Set<string>();
+    for (let step = 0; step < 52; step++) {
+      await button(fixture.root, '换个心情').props.onClick(); await flush();
+      const mood = pet().props.mood;
+      assert.ok(!['puzzled', 'sad', 'crying', 'angry', 'nervous', 'error'].includes(mood), mood);
+      cycle.add(mood);
+    }
+    assert.equal(cycle.size, 26, 'two complete cycles still offer all everyday expressions');
+    const savedMood = pet().props.mood;
+    fixture.signal({ revision: 1, signal: { source: '原创状态测试', status: 'error', message: '明确请求错误状态', expiresAt: Date.now() + 5000 } }); await flush();
+    assert.equal(pet().props.mood, 'error', 'an explicitly supplied Agent status is preserved');
+    await button(fixture.root, '收起 Agent 提示').props.onClick(); await flush();
+    assert.equal(pet().props.mood, savedMood, 'dismissing explicit status returns to the chosen everyday mood');
+  } finally { fixture.cleanup(); }
 });

@@ -1,28 +1,61 @@
-//! Optional local integration with the standalone Xingjian renderer.
-//! No text is placed in command arguments or kept after a render.
+//! Built-in handwriting rendering with explicitly downloaded, verified fonts.
+//! Opening the catalog and rendering installed fonts never use the network.
+use crate::store::Result;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
-    ffi::OsString,
     fs::{self, DirBuilder, File, OpenOptions},
-    io::{Read, Write},
+    io::{Cursor, Read, Write},
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicU64, Ordering},
-        Mutex,
+        Mutex, OnceLock,
     },
-    thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
+#[path = "handwriting_render.rs"]
+mod rendering;
 
-use crate::store::Result;
 const MAX_TEXT: usize = 10_000;
-const MAX_PNG: u64 = 10 * 1024 * 1024;
+const MAX_PNG: usize = 10 * 1024 * 1024;
 const MAX_PIXELS: u64 = 8_000_000;
-static CLI_GATE: Mutex<()> = Mutex::new(());
+const MAX_FONT: u64 = 16 * 1024 * 1024;
+static RENDER_GATE: Mutex<()> = Mutex::new(());
+static DOWNLOAD_GATE: Mutex<()> = Mutex::new(());
+static INSTALL_GATE: Mutex<()> = Mutex::new(());
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FontDefinition {
+    id: String,
+    name: String,
+    author: String,
+    tags: Vec<String>,
+    #[cfg(test)]
+    file: String,
+    bytes: u64,
+    sha256: String,
+    url: String,
+    preview_url: String,
+    license: String,
+    license_url: String,
+    source_url: String,
+}
+fn catalog() -> &'static [FontDefinition] {
+    static FONTS: OnceLock<Vec<FontDefinition>> = OnceLock::new();
+    FONTS.get_or_init(|| {
+        serde_json::from_str(include_str!("../../public/handwriting-fonts/catalog.json"))
+            .expect("built-in font catalog must be valid")
+    })
+}
+fn definition(id: &str) -> Result<&'static FontDefinition> {
+    catalog()
+        .iter()
+        .find(|font| font.id == id)
+        .ok_or_else(|| "请选择字体列表中的字体。".into())
+}
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HandwritingAsset {
@@ -31,10 +64,25 @@ pub struct HandwritingAsset {
 }
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct HandwritingFont {
+    pub id: String,
+    pub name: String,
+    pub author: String,
+    pub tags: Vec<String>,
+    pub path: String,
+    pub downloaded: bool,
+    pub bytes: u64,
+    pub preview_url: String,
+    pub license: String,
+    pub license_url: String,
+    pub source_url: String,
+}
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HandwritingAssets {
     pub available: bool,
     pub path: Option<String>,
-    pub fonts: Vec<HandwritingAsset>,
+    pub fonts: Vec<HandwritingFont>,
     pub backgrounds: Vec<HandwritingAsset>,
     pub error: Option<String>,
 }
@@ -48,325 +96,218 @@ pub struct HandwritingOptions {
     pub ink: String,
     pub padding: u32,
 }
-#[derive(Deserialize)]
-struct CliAssets {
-    fonts: Vec<String>,
-    backgrounds: Vec<String>,
-}
-#[derive(Deserialize, Serialize)]
-struct AppSelection {
-    path: String,
-}
 
-fn unavailable(error: impl Into<String>) -> HandwritingAssets {
-    HandwritingAssets {
-        available: false,
-        path: None,
-        fonts: vec![],
-        backgrounds: vec![],
-        error: Some(error.into()),
-    }
+fn font_path(directory: &Path, font: &FontDefinition) -> PathBuf {
+    directory.join("fonts").join(format!("{}.ttf", font.id))
 }
-fn config_path(directory: &Path) -> PathBuf {
-    directory.join("handwriting-app.json")
-}
-fn home_directory() -> Option<PathBuf> {
-    std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from)
-}
-fn executable_name() -> &'static str {
-    if cfg!(windows) {
-        "xingjian.exe"
-    } else {
-        "xingjian"
+fn verify_font(font: &FontDefinition, bytes: &[u8]) -> Result<()> {
+    if font.bytes > MAX_FONT || bytes.len() as u64 != font.bytes {
+        return Err("字体下载不完整或大小不符，未安装，请重试。".into());
     }
+    if format!("{:x}", Sha256::digest(bytes)) != font.sha256 {
+        return Err("字体校验失败，未安装，请重新下载。".into());
+    }
+    Ok(())
 }
-fn normalize_app(path: &Path) -> Result<PathBuf> {
-    let path = if path.is_dir() {
-        if path.extension().is_some_and(|ext| ext == "app") {
-            path.join("Contents/MacOS/xingjian")
-        } else {
-            path.join(executable_name())
-        }
-    } else {
-        path.to_owned()
-    };
-    let path = path
-        .canonicalize()
-        .map_err(|_| "未找到可运行的星笺程序，请选择星笺.app 或 xingjian CLI。")?;
-    if !path.is_file() {
-        return Err("请选择星笺应用或 CLI 文件。".into());
+fn regular_directory(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path).map_err(|_| "字体目录不可用。")?;
+    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+        return Err("字体目录必须是普通文件夹，不能使用符号链接。".into());
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if path
-            .metadata()
-            .map_err(|_| "无法读取程序信息。")?
-            .permissions()
-            .mode()
-            & 0o111
-            == 0
-        {
-            return Err("所选文件不可执行，请选择已安装的星笺程序。".into());
-        }
-    }
-    Ok(path)
+    Ok(())
 }
-fn automatic_candidates() -> Vec<PathBuf> {
-    let mut paths = vec![];
-    if let Some(home) = home_directory() {
-        if cfg!(target_os = "macos") {
-            paths.push(home.join("Applications/星笺.app"));
-            paths.push(PathBuf::from("/Applications/星笺.app"));
-            paths.push(home.join("git_pro/HandwritingGenerator/outputs/rust-build/星笺.app"));
-        } else {
-            paths.push(home.join("Applications").join(executable_name()));
-            paths.push(
-                home.join("git_pro/HandwritingGenerator/outputs/rust-build")
-                    .join(executable_name()),
-            );
-        }
-        paths.push(
-            home.join("git_pro/HandwritingGenerator/rust/target/release")
-                .join(executable_name()),
-        );
+fn installed_bytes(directory: &Path, font: &FontDefinition) -> Result<Vec<u8>> {
+    regular_directory(directory)?;
+    regular_directory(&directory.join("fonts"))?;
+    let path = font_path(directory, font);
+    let meta = fs::symlink_metadata(&path).map_err(|_| "请先下载所选字体。")?;
+    if !meta.file_type().is_file() || meta.file_type().is_symlink() || meta.len() != font.bytes {
+        return Err("字体文件不完整，请重新下载。".into());
     }
-    paths
-}
-fn discover(directory: &Path) -> Result<PathBuf> {
-    let selected = config_path(directory);
-    if selected.exists() {
-        let file =
-            File::open(selected).map_err(|_| "无法读取手写应用设置，请重新选择星笺应用。")?;
-        let selection: AppSelection = serde_json::from_reader(file.take(16 * 1024))
-            .map_err(|_| "手写应用设置无效，请重新选择星笺应用。")?;
-        return normalize_app(&crate::storage::renderer_path(
-            directory,
-            Path::new(&selection.path),
-        )?);
-    }
-    automatic_candidates().iter().find_map(|path| normalize_app(path).ok())
-        .ok_or_else(|| "未发现本机星笺手写应用。请先安装星笺，再点击「选择星笺应用」选择 .app 或 xingjian CLI。".into())
-}
-
-/// An exclusively created private directory also owns failed/partial renderer output.
-struct TemporaryDirectory {
-    path: PathBuf,
-}
-impl TemporaryDirectory {
-    fn in_directory(parent: &Path) -> Result<Self> {
-        for _ in 0..100 {
-            let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let path = parent.join(format!(
-                "starclip-handwriting-{}-{sequence}",
-                std::process::id()
-            ));
-            let mut builder = DirBuilder::new();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::DirBuilderExt;
-                builder.mode(0o700);
-            }
-            match builder.create(&path) {
-                Ok(()) => return Ok(Self { path }),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(_) => return Err("无法创建渲染临时目录，请检查磁盘空间。".into()),
-            }
-        }
-        Err("无法创建独占临时目录，请稍后重试。".into())
-    }
-    fn new() -> Result<Self> {
-        Self::in_directory(&std::env::temp_dir())
-    }
-}
-impl Drop for TemporaryDirectory {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
-struct RunningChild(Child);
-impl Drop for RunningChild {
-    fn drop(&mut self) {
-        if !matches!(self.0.try_wait(), Ok(Some(_))) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
-}
-fn read_bounded(mut stream: impl Read, limit: u64) -> std::io::Result<Vec<u8>> {
-    let mut bytes = vec![];
-    stream.by_ref().take(limit + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > limit {
-        return Err(std::io::Error::other("CLI output exceeds limit"));
-    }
+    let mut bytes = Vec::with_capacity(font.bytes as usize);
+    File::open(path)
+        .map_err(|_| "无法读取字体。")?
+        .take(font.bytes + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "无法读取字体。")?;
+    verify_font(font, &bytes)?;
     Ok(bytes)
 }
-fn run_cli(
-    executable: &Path,
-    args: &[OsString],
-    text: Option<&str>,
-    timeout: Duration,
-) -> Result<Vec<u8>> {
-    let mut command = Command::new(executable);
-    command
-        .args(args)
-        .stdin(if text.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
-    let mut child = RunningChild(
-        command
-            .spawn()
-            .map_err(|_| "无法启动星笺 CLI，请检查所选应用。")?,
-    );
-    let stdout = child.0.stdout.take().ok_or("无法读取星笺响应。")?;
-    let stderr = child.0.stderr.take().ok_or("无法读取星笺状态。")?;
-    let output = thread::spawn(move || read_bounded(stdout, 128 * 1024));
-    let errors = thread::spawn(move || read_bounded(stderr, 8 * 1024));
-    let input = text.map(|text| {
-        let mut stdin = child.0.stdin.take().expect("piped stdin");
-        let text = text.as_bytes().to_vec();
-        thread::spawn(move || stdin.write_all(&text))
-    });
-    let started = Instant::now();
-    let status = loop {
-        if let Some(status) = child.0.try_wait().map_err(|_| "无法读取渲染进程状态。")? {
-            break status;
-        }
-        if started.elapsed() >= timeout {
-            let _ = child.0.kill();
-            let _ = child.0.wait();
-            return Err("星笺渲染超时，已停止本次任务。请缩短正文或降低字号后重试。".into());
-        }
-        thread::sleep(Duration::from_millis(20));
-    };
-    if let Some(input) = input {
-        input
-            .join()
-            .map_err(|_| "正文传输失败。")?
-            .map_err(|_| "星笺未能读取正文。")?;
-    }
-    let output = output
-        .join()
-        .map_err(|_| "星笺响应读取失败。")?
-        .map_err(|_| "星笺响应过大或读取失败。")?;
-    let _ = errors.join();
-    if !status.success() {
-        return Err("星笺未能完成任务，请检查应用版本、字体和纸张设置。".into());
-    }
-    Ok(output)
-}
-fn valid_builtin(value: &str, prefix: &str) -> bool {
-    value.strip_prefix(prefix).is_some_and(|name| {
-        !name.is_empty()
-            && name.len() <= 240
-            && !name.contains(['/', '\\', '\0'])
-            && name != "."
-            && name != ".."
-    })
-}
-fn load_assets(executable: &Path) -> Result<HandwritingAssets> {
-    let output = run_cli(executable, &["assets".into()], None, Duration::from_secs(5))?;
-    let assets: CliAssets = serde_json::from_slice(&output)
-        .map_err(|_| "该程序不支持星笺 assets 接口，请选择新版星笺 CLI。")?;
-    if assets.fonts.is_empty()
-        || assets.fonts.len() > 100
-        || assets.backgrounds.len() > 100
-        || assets
-            .fonts
-            .iter()
-            .any(|value| !valid_builtin(value, "builtin:fonts/"))
-        || assets
-            .backgrounds
-            .iter()
-            .any(|value| !valid_builtin(value, "builtin:bgs/"))
-    {
-        return Err("星笺返回了不支持的素材清单。".into());
-    }
-    let label = |path: String| HandwritingAsset {
-        name: Path::new(&path)
-            .file_stem()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.clone()),
-        path,
-    };
-    Ok(HandwritingAssets {
-        available: true,
-        path: Some(executable.to_string_lossy().into_owned()),
-        fonts: assets.fonts.into_iter().map(label).collect(),
-        backgrounds: assets.backgrounds.into_iter().map(label).collect(),
-        error: None,
-    })
-}
+
 pub fn assets(directory: &Path) -> HandwritingAssets {
-    let Ok(_guard) = CLI_GATE.try_lock() else {
-        return unavailable("手写渲染正在进行，请完成后重试。");
-    };
-    discover(directory)
-        .and_then(|executable| load_assets(&executable))
-        .unwrap_or_else(unavailable)
+    HandwritingAssets {
+        available: true,
+        path: Some("builtin".into()),
+        fonts: catalog()
+            .iter()
+            .map(|font| HandwritingFont {
+                id: font.id.clone(),
+                name: font.name.clone(),
+                author: font.author.clone(),
+                tags: font.tags.clone(),
+                path: font.id.clone(),
+                downloaded: installed_bytes(directory, font).is_ok(),
+                bytes: font.bytes,
+                preview_url: font.preview_url.clone(),
+                license: font.license.clone(),
+                license_url: font.license_url.clone(),
+                source_url: font.source_url.clone(),
+            })
+            .collect(),
+        backgrounds: vec![],
+        error: None,
+    }
 }
-pub fn select_app(directory: &Path, selected: &Path) -> Result<HandwritingAssets> {
-    let _guard = CLI_GATE
+
+/// Compatibility for older callers. No selected executable is read or run.
+pub fn select_app(directory: &Path, _selected: &Path) -> Result<HandwritingAssets> {
+    Ok(assets(directory))
+}
+
+/// Downloads only a built-in font ID. Call off the UI thread, without storage locks.
+pub fn download_font_bytes(id: &str) -> Result<Vec<u8>> {
+    let font = definition(id)?;
+    let _guard = DOWNLOAD_GATE
         .try_lock()
-        .map_err(|_| "手写渲染正在进行，请稍后再选择应用。")?;
-    let executable = normalize_app(selected)?;
-    let assets = load_assets(&executable)?;
+        .map_err(|_| "已有字体正在下载，请稍后重试。")?;
+    // Reuse the updater's ring provider; an already installed provider is retained.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let client = reqwest::blocking::Client::builder()
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(60))
+        .user_agent(concat!("Starclip/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|_| "无法创建字体下载连接，请稍后重试。")?;
+    let response = client.get(&font.url).send().map_err(download_error)?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "GitHub 字体下载链接返回 HTTP {}，请稍后重试。",
+            response.status().as_u16()
+        ));
+    }
+    if response
+        .content_length()
+        .is_some_and(|size| size != font.bytes)
+    {
+        return Err("字体下载大小与清单不符，未安装。".into());
+    }
+    let mut bytes = Vec::with_capacity(font.bytes as usize);
+    response
+        .take(font.bytes.min(MAX_FONT) + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "GitHub 字体下载中断或超时，请检查网络后重试。")?;
+    verify_font(font, &bytes)?;
+    Ok(bytes)
+}
+fn download_error(error: reqwest::Error) -> String {
+    if error.is_timeout() {
+        "连接 GitHub 字体服务超时，请检查网络后重试。"
+    } else {
+        "GitHub 字体链接访问失败，请检查网络连接后重试。"
+    }
+    .into()
+}
+
+struct TemporaryFont(PathBuf);
+impl Drop for TemporaryFont {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+fn write_font(directory: &Path, font: &FontDefinition, bytes: &[u8]) -> Result<()> {
+    verify_font(font, bytes)?;
+    regular_directory(directory)?;
+    let fonts = directory.join("fonts");
     let mut builder = DirBuilder::new();
-    builder.recursive(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
         builder.mode(0o700);
     }
-    builder
-        .create(directory)
-        .map_err(|_| "无法保存手写应用位置。")?;
-    let scratch = TemporaryDirectory::in_directory(directory)?;
-    let temporary = scratch.path.join("selection.json");
-    let mut options = OpenOptions::new();
-    options.create_new(true).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+    if !fonts.exists() {
+        builder
+            .create(&fonts)
+            .map_err(|_| "无法创建字体目录，请检查磁盘空间。")?;
     }
-    let mut file = options
-        .open(&temporary)
-        .map_err(|_| "无法保存手写应用位置。")?;
-    let portable = executable
-        .strip_prefix(directory)
-        .ok()
-        .filter(|path| path.starts_with("renderers"));
-    let path = match portable {
-        Some(relative) => crate::storage::portable_renderer_path(relative)?,
-        None => executable
-            .to_str()
-            .ok_or("手写应用路径不是有效的 Unicode。")?
-            .to_owned(),
-    };
-    let bytes = serde_json::to_vec(&AppSelection { path }).map_err(|_| "无法保存手写应用位置。")?;
-    file.write_all(&bytes)
+    regular_directory(&fonts)?;
+    if installed_bytes(directory, font).is_ok() {
+        return Ok(());
+    }
+    let target = font_path(directory, font);
+    if fs::symlink_metadata(&target)
+        .is_ok_and(|meta| !meta.file_type().is_file() || meta.file_type().is_symlink())
+    {
+        return Err("字体目标不是普通文件，未安装。".into());
+    }
+    let mut file_and_path = None;
+    for _ in 0..100 {
+        let temporary = fonts.join(format!(
+            ".download-{}-{}.tmp",
+            std::process::id(),
+            TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&temporary) {
+            Ok(file) => {
+                file_and_path = Some((file, TemporaryFont(temporary)));
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return Err("无法保存字体，请检查磁盘空间。".into()),
+        }
+    }
+    let (mut file, temporary) = file_and_path.ok_or("无法创建字体下载临时文件。")?;
+    file.write_all(bytes)
         .and_then(|_| file.sync_all())
-        .map_err(|_| "无法保存手写应用位置，请检查磁盘空间。")?;
+        .map_err(|_| "字体保存失败，请检查磁盘空间。")?;
     drop(file);
-    fs::rename(temporary, config_path(directory)).map_err(|_| "无法保存手写应用位置。")?;
-    Ok(assets)
+    fs::rename(&temporary.0, target).map_err(|_| "无法完成字体安装，请重试。")?;
+    Ok(())
 }
+/// Recheck storage writability/location before this short, atomic installation step.
+pub fn install_font(directory: &Path, id: &str, bytes: Vec<u8>) -> Result<HandwritingAssets> {
+    let font = definition(id)?;
+    let _guard = INSTALL_GATE.lock().map_err(|_| "字体安装状态不可用。")?;
+    write_font(directory, font, &bytes)?;
+    Ok(assets(directory))
+}
+pub fn download_font(directory: &Path, id: &str) -> Result<HandwritingAssets> {
+    let font = definition(id)?;
+    if installed_bytes(directory, font).is_ok() {
+        return Ok(assets(directory));
+    }
+    let bytes = download_font_bytes(id)?;
+    install_font(directory, id, bytes)
+}
+
 fn is_color(color: &str) -> bool {
     color.len() == 7
         && color.starts_with('#')
         && color.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit)
 }
-fn validate_dimensions(width: u32, height: u32) -> Result<(u32, u32)> {
+fn color(value: &str) -> [u8; 4] {
+    [
+        u8::from_str_radix(&value[1..3], 16).unwrap(),
+        u8::from_str_radix(&value[3..5], 16).unwrap(),
+        u8::from_str_radix(&value[5..7], 16).unwrap(),
+        255,
+    ]
+}
+fn solid_dimensions(background: &str) -> Result<(u32, u32)> {
+    let parts: Vec<_> = background.split(':').collect();
+    if parts.len() != 4 || parts[0] != "solid" || !is_color(parts[1]) {
+        return Err("请选择纯色纸张。".into());
+    }
+    let width: u32 = parts[2].parse().map_err(|_| "纸张宽度无效。")?;
+    let height: u32 = parts[3].parse().map_err(|_| "纸张高度无效。")?;
     if !(128..=4096).contains(&width)
         || !(128..=4096).contains(&height)
         || u64::from(width) * u64::from(height) > MAX_PIXELS
@@ -375,16 +316,7 @@ fn validate_dimensions(width: u32, height: u32) -> Result<(u32, u32)> {
     }
     Ok((width, height))
 }
-fn solid_dimensions(background: &str) -> Result<(u32, u32)> {
-    let parts: Vec<_> = background.split(':').collect();
-    if parts.len() != 4 || parts[0] != "solid" || !is_color(parts[1]) {
-        return Err("纯色纸张格式无效。".into());
-    }
-    let width = parts[2].parse().map_err(|_| "纸张宽度无效。")?;
-    let height = parts[3].parse().map_err(|_| "纸张高度无效。")?;
-    validate_dimensions(width, height)
-}
-fn validate_options(options: &HandwritingOptions, assets: &HandwritingAssets) -> Result<()> {
+fn validate_options(options: &HandwritingOptions) -> Result<(u32, u32)> {
     if options.text.trim().is_empty()
         || options.text.chars().count() > MAX_TEXT
         || options.text.contains('\0')
@@ -394,229 +326,258 @@ fn validate_options(options: &HandwritingOptions, assets: &HandwritingAssets) ->
     if !(8..=120).contains(&options.font_size) || options.padding > 240 || !is_color(&options.ink) {
         return Err("字号需为 8–120，边距为 0–240，墨色为 #RRGGBB。".into());
     }
-    if !assets.fonts.iter().any(|font| font.path == options.font) {
-        return Err("请选择星笺内置字体。".into());
-    }
-    if options.background.starts_with("solid:") {
-        solid_dimensions(&options.background)?;
-    } else if !assets
-        .backgrounds
-        .iter()
-        .any(|background| background.path == options.background)
+    definition(&options.font)?;
+    let dimensions = solid_dimensions(&options.background)?;
+    if dimensions.0.saturating_sub(options.padding * 2) < options.font_size * 2
+        || dimensions.1.saturating_sub(options.padding * 2) < options.font_size * 2
     {
-        return Err("请选择星笺内置纸张或纯色纸张。".into());
-    }
-    Ok(())
-}
-fn png_dimensions(bytes: &[u8]) -> Result<(u32, u32)> {
-    if bytes.len() < 33 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") || &bytes[12..16] != b"IHDR" {
-        return Err("星笺未返回有效的 PNG 图片。".into());
-    }
-    let width = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
-    let height = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
-    validate_dimensions(width, height)
-}
-fn read_png(path: &Path) -> Result<Vec<u8>> {
-    let file = File::open(path).map_err(|_| "星笺没有生成图片。")?;
-    let bytes = read_bounded(file, MAX_PNG).map_err(|_| "生成图片超过 10 MB 或无法读取。")?;
-    png_dimensions(&bytes)?;
-    Ok(bytes)
-}
-fn render_arguments(
-    options: &HandwritingOptions,
-    output: &Path,
-    width: u32,
-    height: u32,
-    padding: u32,
-) -> Vec<OsString> {
-    let mut args: Vec<OsString> = [
-        "render",
-        "--text-file",
-        "-",
-        "--font",
-        &options.font,
-        "--background",
-        &options.background,
-        "--color",
-        &options.ink,
-    ]
-    .into_iter()
-    .map(Into::into)
-    .collect();
-    for (flag, value) in [
-        ("--font-size", options.font_size),
-        ("--x", padding),
-        ("--y", padding),
-        ("--width", width),
-        ("--height", height),
-    ] {
-        args.push(flag.into());
-        args.push(value.to_string().into());
-    }
-    args.push("--output".into());
-    args.push(output.as_os_str().to_owned());
-    args
-}
-fn render_with(
-    executable: &Path,
-    options: &HandwritingOptions,
-    assets: &HandwritingAssets,
-) -> Result<String> {
-    validate_options(options, assets)?;
-    let scratch = TemporaryDirectory::new()?;
-    let dimensions = if options.background.starts_with("solid:") {
-        solid_dimensions(&options.background)?
-    } else {
-        // The current CLI asset schema has no dimensions. Probe the exact built-in paper without text.
-        let paper = scratch.path.join("paper.png");
-        run_cli(
-            executable,
-            &render_arguments(options, &paper, 1, 1, 0),
-            Some(""),
-            Duration::from_secs(15),
-        )?;
-        png_dimensions(&read_png(&paper)?)?
-    };
-    let width = dimensions
-        .0
-        .checked_sub(options.padding * 2)
-        .ok_or("边距超出纸张宽度。")?;
-    let height = dimensions
-        .1
-        .checked_sub(options.padding * 2)
-        .ok_or("边距超出纸张高度。")?;
-    if width < options.font_size * 2 || height < options.font_size * 2 {
         return Err("纸张可书写区域过小，请减小边距或字号。".into());
     }
-    let output = scratch.path.join("handwriting.png");
-    run_cli(
-        executable,
-        &render_arguments(options, &output, width, height, options.padding),
-        Some(&options.text),
-        Duration::from_secs(25),
-    )?;
-    let png = read_png(&output)?;
-    if png_dimensions(&png)? != dimensions {
-        return Err("星笺返回的图片尺寸与所选纸张不一致。".into());
-    }
-    Ok(base64::engine::general_purpose::STANDARD.encode(png))
+    Ok(dimensions)
 }
 pub fn render(directory: &Path, options: HandwritingOptions) -> Result<String> {
-    let _guard = CLI_GATE
+    let dimensions = validate_options(&options)?;
+    let _guard = RENDER_GATE
         .try_lock()
         .map_err(|_| "已有手写渲染任务，请等待完成后重试。")?;
-    let executable = discover(directory)?;
-    let assets = load_assets(&executable)?;
-    render_with(&executable, &options, &assets)
+    let bytes = installed_bytes(directory, definition(&options.font)?)?;
+    let paper = color(options.background.split(':').nth(1).unwrap());
+    let image = rendering::render(
+        &bytes,
+        &options.text,
+        options.font_size,
+        options.padding,
+        dimensions,
+        paper,
+        color(&options.ink),
+    )?;
+    let mut png = Cursor::new(Vec::new());
+    image
+        .write_to(&mut png, image::ImageFormat::Png)
+        .map_err(|_| "手写图片生成失败。")?;
+    if png.get_ref().len() > MAX_PNG {
+        return Err("生成图片超过 10 MB，请减小纸张。".into());
+    }
+    Ok(base64::engine::general_purpose::STANDARD.encode(png.into_inner()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct Scratch(PathBuf);
+    impl Scratch {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "starclip-font-test-{}-{}",
+                std::process::id(),
+                TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
     fn options() -> HandwritingOptions {
         HandwritingOptions {
-            text: "星光落在纸上。\n每个想法都值得被记住。".into(),
-            font: "builtin:fonts/hand.ttf".into(),
-            background: "solid:#f8f1e3:1200:1600".into(),
+            text: "星光落在纸上。\n  <原样文字> & 123".into(),
+            font: "ma-shan-zheng".into(),
+            background: "solid:#fffaf1:600:800".into(),
             font_size: 32,
             ink: "#26344a".into(),
-            padding: 80,
-        }
-    }
-    fn test_assets() -> HandwritingAssets {
-        HandwritingAssets {
-            available: true,
-            path: None,
-            fonts: vec![HandwritingAsset {
-                name: "hand".into(),
-                path: "builtin:fonts/hand.ttf".into(),
-            }],
-            backgrounds: vec![HandwritingAsset {
-                name: "small".into(),
-                path: "builtin:bgs/#000000-200x200.png".into(),
-            }],
-            error: None,
+            padding: 40,
         }
     }
     #[test]
-    fn validates_limits_and_keeps_literal_text_out_of_arguments() {
-        let mut options = options();
-        let assets = test_assets();
-        assert!(validate_options(&options, &assets).is_ok());
-        assert_eq!(solid_dimensions(&options.background).unwrap(), (1200, 1600));
-        let args = render_arguments(&options, Path::new("output.png"), 1040, 1440, 80);
-        assert!(!args
+    fn fresh_catalog_has_previews_and_no_font_or_network_side_effects() {
+        let scratch = Scratch::new();
+        let listed = assets(&scratch.0);
+        assert!(listed.available);
+        assert_eq!(listed.path.as_deref(), Some("builtin"));
+        assert_eq!(listed.fonts.len(), catalog().len());
+        assert!(listed
+            .fonts
             .iter()
-            .any(|arg| arg.to_string_lossy().contains("星光")));
-        assert!(args
-            .windows(2)
-            .any(|pair| pair[0] == "--text-file" && pair[1] == "-"));
-        options.text = "星".repeat(MAX_TEXT + 1);
-        assert!(validate_options(&options, &assets).is_err());
-        options.text = "正文".into();
-        options.font = "/private/font.ttf".into();
-        assert!(validate_options(&options, &assets).is_err());
-        options.font = "builtin:fonts/hand.ttf".into();
-        options.background = "solid:#ffffff:90000:90000".into();
-        assert!(validate_options(&options, &assets).is_err());
-        assert!(!valid_builtin(
-            "builtin:fonts/../../secret",
-            "builtin:fonts/"
-        ));
-        assert!(!is_color("#星星"));
+            .all(|font| !font.downloaded && font.bytes > 0 && font.preview_url.ends_with(".png")));
+        assert_eq!(fs::read_dir(&scratch.0).unwrap().count(), 0);
+        assert!(render(&scratch.0, options()).unwrap_err().contains("字体"));
+        assert!(download_font_bytes("../../secret").is_err());
     }
     #[test]
-    fn failed_process_and_partial_output_are_cleaned() {
-        let scratch = TemporaryDirectory::new().unwrap();
-        let path = scratch.path.clone();
-        fs::write(path.join("partial.png"), b"partial").unwrap();
-        assert!(run_cli(
-            &path.join("missing-cli"),
-            &["assets".into()],
-            None,
-            Duration::from_millis(20)
-        )
-        .is_err());
-        drop(scratch);
-        assert!(!path.exists());
-        assert!(png_dimensions(b"not a PNG").is_err());
+    fn catalog_fonts_have_unique_ids_and_bounded_immutable_sources() {
+        let mut ids = std::collections::HashSet::new();
+        for font in catalog() {
+            assert!(ids.insert(&font.id));
+            assert!(font
+                .id
+                .bytes()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-'));
+            assert!(font.bytes > 0 && font.bytes <= MAX_FONT);
+            assert_eq!(font.sha256.len(), 64);
+            assert!(font.sha256.bytes().all(|c| c.is_ascii_hexdigit()));
+            assert!(!font.author.trim().is_empty());
+            assert!(!font.tags.is_empty());
+            let source = font
+                .url
+                .strip_prefix("https://raw.githubusercontent.com/google/fonts/")
+                .or_else(|| {
+                    font.url.strip_prefix(
+                        "https://raw.githubusercontent.com/cpython666/HandwritingGenerator/",
+                    )
+                })
+                .unwrap();
+            let (revision, path) = source.split_once('/').unwrap();
+            assert_eq!(revision.len(), 40);
+            assert!(revision.bytes().all(|c| c.is_ascii_hexdigit()));
+            assert!(
+                (path.starts_with("ofl/") || path.starts_with("fonts/")) && path.ends_with(".ttf")
+            );
+        }
+    }
+    #[test]
+    fn validates_limits_and_never_accepts_arbitrary_font_or_background_paths() {
+        let mut opts = options();
+        assert_eq!(validate_options(&opts).unwrap(), (600, 800));
+        opts.font = "/private/font.ttf".into();
+        assert!(validate_options(&opts).is_err());
+        opts = options();
+        opts.background = "builtin:bgs/letter.png".into();
+        assert!(validate_options(&opts).is_err());
+        opts.background = "solid:#fffaf1:4096:4096".into();
+        assert!(validate_options(&opts).is_err());
+        opts = options();
+        opts.text = "星".repeat(MAX_TEXT + 1);
+        assert!(validate_options(&opts).is_err());
+        opts = options();
+        opts.padding = 240;
+        opts.font_size = 120;
+        assert!(validate_options(&opts).is_err());
+    }
+    #[test]
+    fn failed_hash_or_size_never_creates_a_font() {
+        let scratch = Scratch::new();
+        let font = &catalog()[0];
+        assert!(install_font(&scratch.0, &font.id, b"partial".to_vec()).is_err());
+        assert!(install_font(&scratch.0, &font.id, vec![0; font.bytes as usize]).is_err());
+        assert!(!scratch.0.join("fonts").exists());
+    }
+    #[test]
+    fn atomic_install_writes_only_selected_id_and_preserves_valid_existing_file() {
+        let scratch = Scratch::new();
+        let bytes = b"original synthetic fixture";
+        let mut fixture = catalog()[0].clone();
+        fixture.bytes = bytes.len() as u64;
+        fixture.sha256 = format!("{:x}", Sha256::digest(bytes));
+        write_font(&scratch.0, &fixture, bytes).unwrap();
+        let installed = font_path(&scratch.0, &fixture);
+        assert_eq!(fs::read(&installed).unwrap(), bytes);
+        assert_eq!(fs::read_dir(scratch.0.join("fonts")).unwrap().count(), 1);
+        assert!(!font_path(&scratch.0, &catalog()[1]).exists());
+        let modified = fs::metadata(&installed).unwrap().modified().unwrap();
+        write_font(&scratch.0, &fixture, bytes).unwrap();
+        assert_eq!(
+            fs::metadata(&installed).unwrap().modified().unwrap(),
+            modified
+        );
     }
     #[cfg(unix)]
     #[test]
-    fn timed_out_child_is_stopped() {
-        let started = Instant::now();
-        let error = run_cli(
-            Path::new("/bin/sleep"),
-            &["5".into()],
-            None,
-            Duration::from_millis(40),
-        )
-        .unwrap_err();
-        assert!(error.contains("超时"));
-        assert!(started.elapsed() < Duration::from_secs(2));
+    fn symlink_font_directory_is_rejected() {
+        let scratch = Scratch::new();
+        let outside = Scratch::new();
+        std::os::unix::fs::symlink(&outside.0, scratch.0.join("fonts")).unwrap();
+        let bytes = b"original synthetic fixture";
+        let mut fixture = catalog()[0].clone();
+        fixture.bytes = bytes.len() as u64;
+        fixture.sha256 = format!("{:x}", Sha256::digest(bytes));
+        assert!(write_font(&scratch.0, &fixture, bytes).is_err());
+        assert_eq!(fs::read_dir(&outside.0).unwrap().count(), 0);
+    }
+    #[test]
+    #[ignore = "Explicit live official font download check; isolated data, original text only"]
+    fn official_fonts_download_then_render_offline() {
+        let scratch = Scratch::new();
+        let output = Path::new(env!("CARGO_MANIFEST_DIR")).join("../artifacts/handwriting-fonts");
+        fs::create_dir_all(&output).unwrap();
+        for (index, font) in catalog().iter().enumerate() {
+            let downloaded = download_font(&scratch.0, &font.id).unwrap();
+            assert_eq!(
+                downloaded
+                    .fonts
+                    .iter()
+                    .filter(|item| item.downloaded)
+                    .count(),
+                index + 1
+            );
+            let mut opts = options();
+            opts.font = font.id.clone();
+            // render() is purely local: no download client or network fallback.
+            let png = base64::engine::general_purpose::STANDARD
+                .decode(render(&scratch.0, opts).unwrap())
+                .unwrap();
+            let image = image::load_from_memory(&png).unwrap().to_rgba8();
+            assert_eq!(image.dimensions(), (600, 800));
+            assert!(image
+                .pixels()
+                .any(|pixel| *pixel != image::Rgba([255, 250, 241, 255])));
+            let path = output.join(format!("{}-native.png", font.id));
+            fs::write(&path, png).unwrap();
+            println!(
+                "Verified official download and offline render: {}",
+                path.display()
+            );
+        }
     }
 
     #[test]
-    #[ignore = "Requires an installed local Xingjian CLI; uses only original test text"]
-    fn local_cli_renders_original_text_to_png() {
-        let executable = automatic_candidates()
-            .iter()
-            .find_map(|path| normalize_app(path).ok())
-            .expect("Install the local Xingjian CLI first");
-        let assets = load_assets(&executable).unwrap();
-        let image = render_with(&executable, &options(), &assets).unwrap();
-        let png = base64::engine::general_purpose::STANDARD
-            .decode(image)
+    #[ignore = "Requires explicit catalog fixture fonts in ignored artifacts; never downloads during test"]
+    fn downloaded_fonts_render_offline_with_original_text() {
+        let scratch = Scratch::new();
+        for font in catalog() {
+            let bytes = fs::read(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../artifacts/handwriting-fonts")
+                    .join(&font.file),
+            )
+            .expect("Download the explicit test fixtures first");
+            let face = rustybuzz::Face::from_slice(&bytes, 0).unwrap();
+            for character in "星光落在纸上愿每天都有小美好".chars() {
+                assert!(
+                    face.glyph_index(character).is_some(),
+                    "{} lacks {character}",
+                    font.id
+                );
+            }
+            install_font(&scratch.0, &font.id, bytes).unwrap();
+            let mut opts = options();
+            opts.font = font.id.clone();
+            let encoded = render(&scratch.0, opts).unwrap();
+            let png = base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .unwrap();
+            let image = image::load_from_memory(&png).unwrap().to_rgba8();
+            assert_eq!(image.dimensions(), (600, 800));
+            assert!(image
+                .pixels()
+                .any(|pixel| *pixel != image::Rgba([255, 250, 241, 255])));
+            fs::write(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../artifacts/handwriting-fonts")
+                    .join(format!("{}-native.png", font.id)),
+                png,
+            )
             .unwrap();
-        assert_eq!(png_dimensions(&png).unwrap(), (1200, 1600));
-        assert!(png.len() > 1000);
-        let mut small = options();
-        small.background = "builtin:bgs/#000000-200x200.png".into();
-        small.font_size = 16;
-        small.padding = 20;
-        let png = base64::engine::general_purpose::STANDARD
-            .decode(render_with(&executable, &small, &assets).unwrap())
-            .unwrap();
-        assert_eq!(png_dimensions(&png).unwrap(), (200, 200));
+            assert!(
+                assets(&scratch.0)
+                    .fonts
+                    .iter()
+                    .find(|item| item.id == font.id)
+                    .unwrap()
+                    .downloaded
+            );
+        }
     }
 }

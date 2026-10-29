@@ -1,8 +1,23 @@
 # 开发验证、踩坑与待办
 
+## 当前状态与验证快照（2026-10-29）
+
+- 正式公开版与本机安装仍为 0.2.2；本机正式二进制缺少 `get_main_window_close_request` / `get_clips`，不能由相同版本文字推断包含新代码。本轮未替换正式应用或发布；用户要求明确确认后再发布。
+- 本轮暂停竞态修复后的当前源码检查已完成：Node 174、Rust core 109（另 3 ignored）、desktop lib 122（另 3 ignored）、CLI / MCP stdio 1 项通过；Web build、Rust fmt、差异与版本一致性检查通过。macOS 诊断包构建中，Windows 实际 CI 与新内存对照待完成。候选分支 `codex/acceptance-20261029` 准备提交 / 推送运行 CI；正式安装与发布仍待用户确认。此前包大小与测量只对应各自 [验证记录](../../../../docs/verification.md)，不沿用为本轮结果。
+- 既有隔离原生证据：123 条原创文本、始终暂停，50 条分页、第二页与全库搜索、隐私变更后的详情保护、26 种日常表情及静默发送已核对。清理预览显示前 100 条、取消不删记录、重开不保留旧确认已验收，没有在原生执行清理删除。
+- 既有内存采样早于清理预览缓存及本轮暂停竞态修改：关闭主窗只留 100% idle 星伴为 242.6 MiB；再收起星伴、关主窗并等待约两分钟为 36.7 MiB。123 条文本、暂停采集的短时单轮测量，不与真实历史截图或旧 70% 空库样本直接比较；动画星伴还未达到几十 MiB，不用旧数值证明本轮新降幅。
+- 统计兼容 v1 / v2 中继与 Realtime 设备参数已核对；2026-10-29 GA4 非实时探索确认 2026-10-01 至 10-28 固定范围内 9 类事件 14 条、`Usage count` 22 次。专用空库、暂停采集的 macOS 包已完成进程级断网缓存、正常退出 / 重启恢复、联网后清队列与静默发送。只限制测试进程出站，不覆盖系统网络切换、Windows 原生断网或长期持续观察。证据集中在 [统计说明](../../../../docs/telemetry.md)，不复制账号、私有报表网址或具体硬件代号。
+- 字体目录为原 9 款 + 外部 14 项共 23 项，均已有隔离摘要 / 中文覆盖 / 离线渲染检查。原 9 项按用户确认统一显示「来源于互联网」，外部作者署名保留；本轮字体 / 预览 / i18n 定向 15 项通过。macOS 已完成原「手写体」代表项在线下载 / 预览 / PNG 导出，以及外部「站酷快乐体」下载后断网重启、本地预览与 1200×1600 PNG 导出；不扩大为 23 项逐款 GUI 或 Windows 验收。
+- macOS 当前源码以独立测试 ID、仅覆盖 `config.version=0.2.1` 的包完成公开 0.2.2 检测、下载验签、就绪提示与稍后安装。公开目标使用正式标识及其数据目录，隔离验收未执行安装 / 重启；正式安装未换，真实旧版二进制升级与完整安装链路仍须分开验证。
+- 各能力历史版本、样本和日期以 [验证记录](../../../../docs/verification.md) 为准，不把旧验收扩大成最新全功能验收；新验证分支的 CI 结果须按实际运行更新。
+
 ## 环境与检查
 
-运行内存不能只量 `starclip` 主进程，也不能把系统所有 WebKit 相加。macOS 可用 `launchctl print pid/<pid>` 的应用域 / bundle ID 核实辅助进程归属，再用 `footprint --noCategories` 汇总；与 RSS、虚拟地址空间及安装包大小分开。2026-10-26 正式安装包标识版本 0.1.0、运行约 4 小时的只读快照约 398 MiB（主程序约 38 MiB），不是最新源码基准。随后隔离窗口释放验收：空库暂停、无星伴、关闭主窗由旧版 103.6 MiB 降为 54.1 MiB，下一次采样约 33.9 MiB；做过编辑后收起所有窗口约 47.4 MiB，AutoFill helper 仍在。主窗打开仍约 104 MiB，启用星伴约 199–230 MiB，不能承诺所有状态几十 MiB。条件与边界见 [验证记录](../../../../docs/verification.md)。
+- 字体下载复用 reqwest 0.13 系统代理与 TLS；rustls-no-provider 构建客户端前必须安装 ring provider，已有 provider 时保留。真实测试发现遗漏会 panic，不可改成绕过 TLS。GitHub 连接 10 秒 / 总计 60 秒超时，失败不安装半文件。
+
+内存测量先辨认正在运行的可执行文件、构建时间和关键接口；开发源码、隔离测试包、正式安装与线上 Release 是不同对象。用 `launchctl print pid/<pid>` 的应用域 / bundle ID 核实辅助进程，再用 `footprint --noCategories --format bytes` 汇总；不把系统所有 WebKit 相加，也不只量 Rust 主进程。RSS、虚拟地址空间、安装包大小与物理足迹不可混用。
+
+复测固定数据量、采集状态、主窗口 / 草稿状态、星伴大小与心情，分别记录打开、关主窗、收起星伴后的状态和等待时长。关窗后先用进程工具测量，CUA 读取可能激活 / 重建页面；确认页面退出与验证下降数值分开。短时波动不能证明泄漏或长期稳定。主窗早期关闭、busy 结束续办、设置子页草稿与重开令牌由 `window-release` / `settings-release` 回归保护；原生只把实际做过的场景记为通过。
 
 依据 `package.json`、`rust-toolchain.toml`、`src-tauri/Cargo.toml` 和 `.github/workflows/verify.yml`：Node.js 22.12+，Rust 1.90.0，Tauri 2。浏览器开发命令 `npm run dev` 固定在本机 1420 端口；桌面 `npm run tauri dev` 会启动原生应用，不能当作纯编译检查。
 
@@ -11,7 +26,7 @@
 ```sh
 npm test
 npm run build
-cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features
+cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features --lib
 ```
 
 Rust 修改检查格式；桌面改动还要检查 desktop 特性和平台打包。权限或窗口相关改动运行 desktop lib 测试（其中含生成后的运行时 ACL 验证，不创建应用或访问真实剪贴板）：
@@ -31,47 +46,45 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
 | 修改主题 | 优先查阅的测试 |
 | --- | --- |
 | 主题、颜色、偏好兼容 | `tests/theme.test.ts`、`tests/color.test.ts`、`tests/api-import.test.ts`、`store.rs` 内测试 |
+| 界面语言、文案回退 | `tests/i18n.test.ts`；改文案或数据名称后同时核对 `src/i18n/en*.ts` 与 `hasTranslation` 覆盖测试 |
 | 自定义配色与本地贴纸 | `tests/appearance.test.ts`、`tests/appearance-panel.test.ts`，Rust `appearance.rs` / `store.rs` / ACL；原生使用原创 PNG、隔离应用标识 |
 | 导出反馈、监听释放 | `tests/backup-export.test.ts` |
-| 清理、图片、备份、迁移 | `tests/cleanup.test.ts`、`tests/image-clip.test.ts`、`tests/api-import.test.ts`，Rust `store.rs` / `images.rs` / `storage.rs` / `capture.rs` |
-| 卡片排版、手写异步结果 | `tests/code-card.test.ts`、`tests/snippets.test.ts`、`tests/handwriting-preview.test.ts`、Rust `handwriting.rs` |
+| 清理、图片、备份、迁移 | `tests/cleanup.test.ts`、`tests/settings-release.test.ts` 的预览释放 / 迟到响应、`tests/image-clip.test.ts`、`tests/api-import.test.ts`，Rust `store.rs` / `images.rs` / `storage.rs` / `capture.rs` |
+| 卡片排版、手写异步结果 | `tests/code-card.test.ts`、`tests/snippets.test.ts`、`tests/handwriting-preview.test.ts`、`tests/handwriting-fonts.test.ts`、Rust `handwriting.rs` |
 | 隐私、来源、标签与历史扫描 | `tests/privacy.test.ts`、`tests/privacy-panels.test.ts`、v3 备份夹具；Rust `privacy.rs` / `store.rs` / `storage.rs`，使用原创或公开 BIP-39 测试向量 |
 | AI 授权与官方接口 | `tests/ai-api.test.ts`、`tests/privacy-panels.test.ts`；Rust `ai_access.rs`、`ai_bridge.rs`、`src-tauri/tests/ai_stdio.rs`，检查真实主程序 CLI / MCP stdio 与权限一致性 |
 | 产品分享 | `tests/product-share-api.test.ts`、`tests/product-share-panel.test.ts`，Rust `share.rs` / `desktop.rs` / ACL；资产元数据必须与 `public/share/*.png` 一致 |
 | 更新、恢复、版本发布 | `tests/update*.test.ts`、`tests/release.test.ts`，Rust `updater.rs` / `storage.rs` / `store.rs` / ACL |
+| 可选使用统计与接收端 | `tests/telemetry-settings.test.ts`、`tests/telemetry-relay.test.ts`，Rust `telemetry.rs` / `store.rs`；真实 sender 检查默认忽略，显式运行步骤及原生 / GA 验收边界见 `docs/telemetry.md` |
 | 星伴表情、大小与互动 | `tests/starpet*.test.ts`、`src-tauri/src/lib.rs` / `store.rs` / `desktop.rs` |
-| 主窗安全释放、重建与草稿保护 | `tests/window-release.test.ts` 运行真实 App setup / IPC，`desktop.rs` 请求编号回归；原生核实 WebContent 退出及草稿保留 |
+| 主窗安全释放、重建与草稿保护 | `tests/window-release.test.ts` / `tests/settings-release.test.ts` 运行真实 App / 子页 setup 与 IPC，`desktop.rs` 请求编号回归；原生核实 WebContent 退出及草稿保留 |
 
 互动菜单回归集中在 `tests/starpet-desktop-menu.test.ts`：真实 Vue 组件的内存渲染、外部点击 / 焦点 / 显隐、触发器切换、延迟动作、监听释放，以及原生失焦事件的窗口范围。该测试不访问系统剪贴板，也不等于跨应用原生点击实测。
 
+更新回归覆盖默认开启、独立保存、24 小时间隔（含失败 / 重启 / 时钟回退）、关闭排队检查、稳定版本过滤、ready 包保护，以及真实 Vue 提示的延迟响应、忽略单版本与忙碌释放；参见 `tests/update-api.test.ts`、`tests/update-settings.test.ts`、`store.rs` / `updater.rs`。图片隐私回归使用原创图片与显式注入的旧 JSON 原因，验证读取不改数据库、旧备份导入、手动与真实规则保留、图片仍不可授予 AI，详情展示匹配依据不泄漏原文。
+
 隐私面板回归验证规则保存失败保留草稿、预览后显式扫描，AI 面板验证排除隐私 / 待扫 / 图片、明确 ID 与字段、重复提交、失败和数据变化使预览失效。`api.ts` 新增运行时导入时，同步更新以 data URL 转译加载该文件的既有测试映射；浏览器内存模拟不能替代 Rust 检测或原生授权验收。
 
-既有手写 CLI 实测测试默认忽略，需要本机独立渲染器；核心测试通过不代表已完成手写集成验收。不要为凑数运行真实应用或读取剪贴板。
+当前手写内置化修改已通过自动检查与隔离渲染：覆盖字体下载校验与失败不启用、离线渲染、首次不下载、静态预览及过期结果隔离。目录已扩到 23 款字体与字重，清单检查保证固定版本来源、大小上限、唯一 ID、作者与标签、小预览及按来源分别提供的许可 / 提供说明；全部真实字体已用隔离目录验证 SHA-256、中文字符覆盖及离线 CPU 渲染。`storage.rs` 使用合成字体字节验证 `current/fonts` 的占用、迁移、快照与恢复，并拒绝根目录 / 子路径符号链接；普通测试不需要真实 TTF 或个人数据。原有两款已有隔离原生下载 / 预览 / 导出证据；2026-10-29 追加原「手写体」代表项在线流程与外部「站酷快乐体」下载后断网重启 / 本地预览 / PNG 导出，23 项仍未逐款操作原生 GUI。不要为凑数运行真实应用或读取剪贴板。
+
+暂停偏好回归见 `store.rs::save_settings_with_pause_guard`、`tests/api-import.test.ts` 与设置相关组件检查：`pauseRevision` 旧数据默认 0，Store 在事务内比较期望版本并只在 `paused` 实际变化时递增，拒绝旧草稿覆盖较新暂停选择，含 ABA 变化；前端刷新只同步暂停字段与版本，保留其他草稿，版本不计入 dirty。当前源码自动检查已通过，不能据此声称使用真实剪贴板完成原生采集验收。
 
 ## 已踩过的坑
 
-- 同日窗口优化检查为 Node 84、Rust core 73、desktop lib 82 通过（Rust 各 1 项忽略），Apple Silicon 独立 app 本地验签通过；有效原生场景见验证记录。首次关闭后不能立即用 CUA 读取应用来测后台：读取可能激活 / 重开主窗口，应先以进程工具采样。去滤镜 A/B 无确认收益已恢复；多副本实验意外开启了其中一个隔离副本采集，停止并恢复暂停，未查看新增图片，该实验作废。后续一次只运行一个验收副本，并核对暂停状态；不能把异常实验写成未访问剪贴板的通过项。
+- 2026-10-29 核查 macOS 应用搜索中的重复项：`mdfind` 及各 `Contents/Info.plist` 确认当时共 30 个 Starclip 包，其中正式安装 1 个、`src-tauri/target/release/bundle/macos/` 构建 / 隔离测试包 20 个、`artifacts/` 历史产物 7 个、Application Support 中旧应用备份 2 个。隔离测试包的用途见 `docs/verification.md`，保留的 `.app` 被系统索引导致搜索拥挤。随后按用户要求，将 27 个未运行、未被 Git 跟踪的开发产物逐路径取消 Launch Services 注册并通过系统废纸篓接口移走；已核验原路径消失、27 个废纸篓目标存在，搜索索引仅余 `/Applications/Starclip.app` 和两份升级备份。正式包 / 备份的 `Info.plist` 摘要保持一致，未操作数据目录；历史测试包路径现为验收出处，不能再当作可直接启动的当前产物。后续验收收尾应处理不再需要的测试应用包，先区分正式安装、测试产物和恢复用备份，不能按 Starclip 名称一概删除。
+- 首次关闭后不能立即用 CUA 读取应用来测后台：读取可能激活 / 重开主窗口，应先以进程工具采样。去滤镜 A/B 无确认收益已恢复；多副本实验意外开启了其中一个隔离副本采集，停止并恢复暂停，未查看新增图片，该实验作废。后续一次只运行一个验收副本，并核对暂停状态；不能把异常实验写成未访问剪贴板的通过项。
 - 原生 dialog 顶层会遮住外部 toast：导出结果放在设置内，通用提示归当前活动 dialog。整理弹窗不能替换/销毁父设置，Escape 与保存快捷键要遵循当前层级。
 - 即时主题和星伴更新不能调用普通偏好保存，否则会带入草稿或清理副作用；快速连续写入需顺序合并、失败恢复最后确认值，跨窗口采用补丁合并。
 - 独立保存的 checkbox / number 原生 DOM 可能先改变而 Vue 状态仍为旧值；失败回退需同步 DOM，不能只依赖「赋回相同 ref」。外观组件已覆盖。自定义色需要同时考虑强调色文字、按钮前景和受渐变影响的阅读底色；删除覆盖变量才能完整恢复主题默认。
 - macOS 原生拖动要在按下时直接发起，等待移动阈值/长按或异步加载会错过起拖时机；命令成功或入口存在仍不等于实际位移验收。
 - 原生截图可能被工具扁平为 RGB 白底，不能证明透明窗口真实透显；数值运动测试不能证明流畅度或长期 CPU 占用。
 - macOS Dock 重新打开需处理 `RunEvent::Reopen`；`has_visible_windows` 包含星伴浮窗，不能据此跳过主窗显示。2026-10-26 已接入现有 `show_window`。CUA 本轮无法读取 Dock 控件，且关闭后读目标状态无法可靠区分工具激活，真实 Dock 点击 / 最小化 / 仅星伴可见场景仍待人工确认；隔离原生默认不限条数和天数已核对。依据见当日验证记录。
-- 同轮增强既有不限历史测试：550 条原创记录全部设为很早的更新时间后，默认清理仍删除 0 条。Node 58 / Rust core 54 / desktop lib 58 项通过（Rust 各 1 项忽略），Apple Silicon 打包与 app / updater 签名核验通过；本地产物 `artifacts/dock-retention-0.2.0/` 未安装到正式应用。以上只证明记录中的构建和场景，不替代真实 Dock 点按验收。
 - 2026-10-26 默认 Tauri 打包的整包签名核验出现「code has no resources but signature indicates they must be present」。通过 `tauri bundle --bundles app,dmg --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}'` 重新做本地 ad-hoc 签名，两处 app（产物及 DMG 内）通过 strict/deep 核验；不等于公证。DMG 验签挂载点放在开发服务器监听目录之外，或先停 Vite，避免其沿安装器的 Applications 链接扫描其他应用资源。
 - 不把编译、浏览器演示或某次 macOS 场景通过扩大为 Windows、多屏、全屏或全功能验收。历史安装包、本地产物与早期 alpha.1 发布附件可能不同，交付时核对对象。
 
-## 已有证据与未验收范围
+## 历史验收的使用范围
 
-隐私与 AI 首版原生边界（2026-10-26）：独立 `com.starclip.privacy-verify` 导入 8 条原创 / 公开向量，2 条被凭据与助记词检测保护并排除授权；真实创建 / 撤销 2 条普通记录的连接，配置未写日志。最终包重启后保持 8 条记录和暂停采集，AI 恢复默认关闭；app 本地验签与许可资源核对通过，未安装正式版。完整记录见 [验证记录](../../../../docs/verification.md)，Windows 与真实第三方 AI 客户端仍待验收。
-
-截至 2026-10-26，仓库 [验证记录](../../../../docs/verification.md) 已记录 macOS 隔离验收的清理保护、迁移/恢复、首启教程、主题控件、图片采集/复制与关闭主窗继续采集、星伴改色/大小/重启恢复、导出路径及清理返回设置。它们是历史证据，不表示每次修改后都重新执行了这些原生验收。
-
-本轮隐私 / AI 自动检查：Node 76、Rust core 73、desktop lib 78 通过（Rust 各另 1 项忽略），真实主程序 CLI / MCP stdio 集成 1 项通过；前端生产构建通过。测试覆盖隐私不降级、v3 导入停用规则、扫描预览过期、字段 / ID / 记录身份授权、撤销、冻结与并发读取。此处不预写正在进行的原生界面验收，最终平台与客户端证据以验证记录为准。
-
-养成第一版本轮新增证据：34 项 Node、41 项 Rust core、43 项 desktop lib 通过（Rust 各另有一项忽略）；隔离原生界面验证 45 XP / Lv.2 / 眼镜、重启恢复、暂停不加经验、独立存档取消 / 导出 / 确认导入，以及成功保存原创代码从 25 XP 变为 45 XP。隔离库最终一条手动测试记录，始终暂停采集；浏览器验证修订冲突与 70% / 160% 装扮。详情与版本边界仍以验证记录为准。
-
-同日用户随后明确要求安装：将已核验养成 app 替换到 `/Applications/Starclip.app` 并启动。操作前在仓库外私有目录保留完整 SQLite 一致快照、受管文件与旧应用；启动后仅比较本机摘要，clips / clip_images / groups / preferences、数据定位、手写配置与 renderer 一致，无真实正文输出。本次备份是人工升级操作的一部分，不是应用已有自动备份能力。
+既有 macOS 隔离验收包括隐私与 AI 连接、清理保护、迁移 / 恢复、首启教程、图片采集 / 复制、主题、星伴与成长存档等；Windows 与 macOS 的全新安装 / 真实 0.1.0 覆盖升级已在固定数据 CI 中通过。它们证明各自版本和场景，不证明应用内更新 GUI 链路或每次修改都已复测。历史人工安装时做过一致快照及数据摘要核对；这是该次升级操作，不是后续任务的安装授权。详细历史只查 [验证记录](../../../../docs/verification.md)，不在知识库复制每轮测试计数。
 
 ## 产品分享验证边界
 
@@ -81,42 +94,21 @@ Rust 纯目录 / PNG 校验、模拟成功 / 失败写入的自采集抑制、�
 
 Tauri 资产解析器在正式包中读取嵌入资产，在带 `devUrl` 的开发模式回退到 `dist/`；修改 PNG / catalog 后先跑 `npm run build`，否则旧尺寸或字节数会导致校验失败。PNG 被复制为系统图片像素，接收方可能重编码变大；实际小文件分发使用「保存图片」。
 
-## 免费安装包分发候选（2026-10-26 核对）
+## 发布、Homebrew 与更新排障
 
-- 用户后续已要求开通 Homebrew 分发，使用既有 GitHub 账号建立公开 [cpython666/homebrew-tap](https://github.com/cpython666/homebrew-tap)，无需 Homebrew 账号。`Casks/starclip.rb` 当前提供 Apple Silicon 稳定版 `0.2.2`，命令 `brew install --cask cpython666/tap/starclip`；不是 Homebrew 官方主仓收录。其它渠道仍待定。应用内更新源是 GitHub Releases（`updater.rs` 限定下载 URL、`release-manifest.mjs` 生成清单）；SourceForge / Codeberg 没有更新回退接入。详见 [发布指南](../../../../docs/releases.md)。
-- [GitHub Releases 官方说明](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)：可分发二进制，每个附件小于 2 GiB，每个 release 最多 1,000 个附件，未设 release 总大小与下载带宽额度上限。公开开源项目可使用免费方案；安装包应放 release 附件，不写进 Git 历史。
-- [SourceForge 官方项目页](https://sourceforge.net/create/)：面向开源项目提供免费全球下载镜像和不限下载带宽，可分发现有软件版本，不要求迁移主代码仓库。可作为备用手动下载候选；国内可达性 / 速度未实测。GitHub 与 SourceForge 的免费服务不等于非营利组织运营。
-- [Codeberg 官方 FAQ](https://docs.codeberg.org/getting-started/faq/)：由非营利 Codeberg e.V. 支持，服务自由开源项目；[默认额度说明](https://blog.codeberg.org/new-storage-limits-on-codeberg-what-you-need-to-know.html) 为每用户 / 组织 750 MiB Git 存储，以及额外共享 1.5 GiB LFS / Packages / Releases / Attachments，合理开源需求可申请增加。不可表述为无条件无限安装包托管。
-- 命令安装渠道与二进制托管分开：[Homebrew 自建 Tap](https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap) 存 Cask 等安装描述，星笺已采用；[WinGet 社区仓库](https://learn.microsoft.com/en-us/windows/package-manager/package/repository) 收 YAML 清单并验证 / 审核，安装文件仍需上游 URL，星笺尚未上架。[PyPI 的 wheel / 源码包格式](https://packaging.python.org/en/latest/discussions/package-formats/) 面向 Python 包，不是任意 DMG / EXE 的附件托管；未来 Python SDK / CLI 属另一项待定需求。
-- 早期 Homebrew 预览包沿用 alpha.1 原源码提交 `1fd865372ac66c66f007a30845dc18a740ac5c2d`，只修复其不完整的应用资源签名并重封装；发布为独立 `v0.1.0-alpha.2` prerelease，保留旧附件、不设 latest、不提供稳定更新清单，内部应用版本仍为 0.1.0。不能表述为本地 0.2.0 新功能已上线；本地 ad-hoc 验签不等于 Apple 公证。Cask 无 `zap` / 删除数据脚本、无 `auto_updates`，预览版 livecheck 明确手动维护。验证证据见 [验证记录](../../../../docs/verification.md)。
-- Homebrew 7.0.9 要求 Cask 位于已添加的 Tap，再运行 style / audit；本轮公开下载、校验、独立 `--appdir` 安装、签名与普通卸载通过，未启动测试副本 / 触碰正式数据。最终 online audit 仅有 GitHub prerelease 报告，不能写成全部通过；不要使用已禁用的旧 `--no-signing` 参数。工具自动开启 developer 模式时，验收后恢复原状态。
-- 2026-10-27 用户要求发布后自动同步 Cask，新增独立 `homebrew.yml` / `homebrew-release.mjs`：只接受公开 latest 稳定 `vX.Y.Z`，验证实际 DMG 的大小 / SHA-256 / GitHub digest、只读挂载及签名 / 版本 / 标识 / 架构，再跑 Homebrew style / audit / fetch；最后单文件非强推 Tap。共享队列之外仍做数字版本比较、同版换包拒绝、推送前资产快照复查。人工 Publish 可触发；未来通过 `GITHUB_TOKEN` 自动发布时必须显式 dispatch，不会自动产生下游 release 事件。见 [同步说明](../../../../docs/homebrew-release.md)。
-- 本地 10 项同步脚本回归、完整工作区 Node 94 项、Web 构建、Rust core 73 项（1 项忽略）和 actionlint 通过；在独立临时 Tap 中实际 `brew style --cask` 通过，未安装 / 启动任何包。Homebrew 7.0.9 将 Big Sur 最低版本视为冗余约束，模板沿用 `depends_on :macos`；直接以普通 Ruby 文件检查会套用错误的 frozen-string 规则，应在 Tap 上下文检查。临时 Tap 已移除，自动开启的 developer 模式已恢复关闭。
-- 只写 `cpython666/homebrew-tap` 的专用 deploy key 及主仓 `HOMEBREW_TAP_DEPLOY_KEY` secret 已配置，并通过不改远端 ref 的 SSH push dry run；没有复用本机登录令牌或 Tauri 更新密钥。预发布跳过只证明隔离路径；后续 0.2.2 已完成真实稳定包在线校验与 Cask 推送，见下条最终证据。
-- [PR #1](https://github.com/cpython666/starclip/pull/1) 已于本地时间 2026-10-27 合并到远端 `main`（`fe40fe7`），只部署 Homebrew workflow、helper、版本 helper、10 项测试和独立使用说明；head `22181c0` 的 [CI](https://github.com/cpython666/starclip/actions/runs/40356060862) core / macOS / Windows 全部通过。原工作区其余 0.2.0 功能、签名草稿发布流程未随该 PR 提交；不能将同步自动化上线称为 0.2.0 软件已发布。
-- 合并后的 [alpha.2 dry run](https://github.com/cpython666/starclip/actions/runs/40357536518) 成功输出预发布跳过，Tap job 未运行，当时 Tap main 保持 `e11f8f0`；仅证明触发 / API / skip 路径，后续稳定版完整同步已通过。
+- GitHub Releases 存实际安装包与签名清单，自有 `cpython666/homebrew-tap` 存 Cask；无需独立 Homebrew 账号。已公开 0.2.2 为 Apple Silicon macOS / Windows x64；Tap 仅提供 Apple Silicon，非官方主仓收录。SourceForge / Codeberg 仅是历史候选，未接更新回退；WinGet 未上架，PyPI 不是任意桌面包附件仓库。平台额度会变化，对外建议需重新核查。
+- `scripts/version.mjs` 统一 npm / Cargo / Tauri 六处版本，`CHANGELOG.md` 提供发布说明；`release.yml` 验证双平台构建、CLI / MCP、全新安装及旧版覆盖后上传完整草稿，公开需用户确认。详细步骤见 [发布指南](../../../../docs/releases.md)；验证失败不移动旧 tag 或把未完成附件设为 latest。
+- `homebrew.yml` / `homebrew-release.mjs` 仅接受公开 latest 稳定版，核验实际 DMG 大小 / SHA-256 / GitHub digest、签名、版本、标识与架构，再执行 style / audit / fetch；专用单仓 deploy key 最后非强推 Tap。拒绝降级和同版换包，推送前重查资产；`GITHUB_TOKEN` 发布需显式 dispatch 下游。0.2.2 的 [同步运行](https://github.com/cpython666/starclip/actions/runs/40466604899) 已完成实包验证与远端 Cask 更新，不是单纯 dry run。见 [同步说明](../../../../docs/homebrew-release.md)。
+- Homebrew 检查在 Tap 上下文运行，普通 Ruby 文件会套用错误规则；历史 CI 通过更新 Homebrew、限定信任该 Cask、使用现有只读 `github.token` 解决 style / trust / 匿名 API 限流。没有新增 PAT 或修改本机代理 / 信任。原更新签名私钥与 Tap deploy key 分离；密钥只在仓库外或云端 secret，不将签名资源写入 skill。
+- 程序与数据目录独立，更新保持 `com.starclip.desktop`。无更新器的旧版第一次需覆盖程序，不删除数据；启动仍执行已保存保留规则。schema 2 升级先快照，事务迁移失败回滚；恢复复制到新目录，冻结写入待重启；旧应用副本不是自动二进制降级。流程与格式边界见 [数据安全](data-safety.md)。
+- 下载与安装分开：只下载验签进入同会话 `ready`，用户确认后保存恢复点 / 旧应用，再安装并重启；没有跨进程下载缓存或断点续传。Windows 安装器启动前退出清理后发生失败要保持冻结 / `restart-required`，不能当普通下载失败解冻。独立 NSIS 覆盖升级通过不等于应用内按钮链路通过。
+- 检查更新失败先区分网络、HTTP 状态、发布清单是否存在与格式 / 签名，不能直接归咎 Clash。历史 latest.json 404 是当时无稳定 Release 附件，0.2.2 发布后经原有代理下载已为 200；这不是现在网络状态的永久保证。Tauri updater 的 macOS `system-proxy` 会读系统代理，GUI 未继承 shell 环境不是未走代理的充分证据；按错误枚举生成中文并标明 GitHub，不将丢失的 HTTP 状态猜成 404。
+- 双平台旧版迁移夹具只写旧版共有字段，让应用真正迁移，不在 seed 脚本提前补 schema。macOS accepted socket 曾继承非阻塞状态，broker 已显式恢复阻塞读取并保留超时 / 帧上限；修复用真实分帧测试验证，不能删掉安全约束绕过测试。
+- Worker 出站使用 `redirect: 'manual'` 并拒绝 3xx，运行时不接受 `redirect: 'error'`。`STARCLIP_TELEMETRY_ENDPOINT` 是 Rust 编译期变量，给旧包设置运行时环境变量不会更新地址；供应商 secret 仅在 Worker，其他产品用可配置名称的独立部署隔离。不要为复测触发发布流水线或改付费计划。
 
-- 首次稳定版同步曾被旧 Homebrew 的最低系统版本 style / audit 冲突、自建 Cask 未信任、共享出口匿名 API 限流阻断；最终仅在 CI 更新至 Homebrew 7.0.11，style 通过后只信任 `cpython666/tap/starclip`，并使用现有只读 `github.token` 作为 `HOMEBREW_GITHUB_API_TOKEN`。无新增 PAT，无本机代理 / 信任变更，无发布包修改。[最终运行 40466604899](https://github.com/cpython666/starclip/actions/runs/40466604899) 两个 job 成功，首次公开稳定版 DMG 在线校验与 Cask 推送已完成。
+## 未完成与后续方向
 
-## 0.2.0 升级机制
-
-- 程序和数据独立，保持 `com.starclip.desktop` 标识即可沿用默认目录及 `data-location.json` 指定目录。0.1.0 没有更新器，首次升级需退出、手动覆盖程序并重启；不清理数据目录。启动仍执行用户保存的保留规则。
-- 用户已要求实现四项升级能力及下载后确认安装体验；源码现有官方 `tauri-plugin-updater`、固定 GitHub latest 端点、公钥和 `requireSignedVersion`。`download_starclip_update` 只下载验签，`ready` 缓存同会话包、不冻结数据；原生 `<dialog>` 提示「安装并重启」或稍后，ESC / X / 遮罩不关闭父设置，同 ready 状态不反复弹。`install_starclip_update` 仅接受已下载且确认版本一致的包，再做快照 / 旧应用备份 / 安装；macOS 成功后前端调用重启，Windows 显式 `restart_after_install(true)`。重启失败保留冻结与重试。没有启动自动联网；仅主窗能调用包装命令，不开放插件直接安装 IPC。入口：`updater.rs`、`desktop.rs`、`UpdateSettings.vue`、`update-api.ts`。
-- 两阶段下载缓存只在内存中，重新检查、失败或退出会清除，没有磁盘缓存 / 断点续传；不能称为重启后免下载。安装确认前需保存偏好，旧确认遇新版本必须失效；下载事件与调用响应按 revision 去重。验证边界以 [验证记录](../../../../docs/verification.md) 为准。
-- 两阶段更新本轮验证（2026-10-26）：Node 80、Rust core 73、desktop lib 81 通过（Rust 各 1 项忽略），前端构建与 Apple Silicon 独立 `com.starclip.update-verify` release app / 本地验签通过。真实 Vue 浏览器固定 IPC 夹具验证弹窗、稍后、草稿保护和重启失败；不是线上更新或 Windows 实机验收，未安装正式版 / 发布 0.2.0。
-- 升级机制引入显式结构版本；当前隐私元数据迁移已升至 `user_version=2`，legacy / 旧结构先一致快照再事务迁移，未来结构只读拒绝。恢复点带摘要并存入默认应用数据目录 `recovery/`；恢复前备份当前库、复制到新目录、更新定位并冻结写入等待重启。旧应用副本另存 `application-backups/`；不是自动二进制降级，0.1.0 本身没有新结构拒绝保护。详见数据安全资料。
-- 当前公开稳定版为 [0.2.2](https://github.com/cpython666/starclip/releases/tag/v0.2.2)，发布时 `main` / tag 对应 `8998209aefa812e24e4f47b83d89bf371558e69b`，于 `2026-10-27T06:53:00Z` 公开，非草稿、非预发布。`scripts/version.mjs` 校验 / bump npm、Cargo、Tauri 六处值，`CHANGELOG.md` 提取发布说明；`release.yml` 通过门禁后只上传草稿，由发布操作正式公开。`verify.yml` 无私钥也能检查和打包，两个流程均包含 desktop 与实际 release CLI / MCP 测试。此前 [0.2.1 签名门禁](https://github.com/cpython666/starclip/actions/runs/40460247031) 因 macOS Agent 回环测试失败停止，0.2.1 未公开并保留原 tag，不移动标签掩盖失败。完整步骤见 [发布指南](../../../../docs/releases.md)。
-- 本轮 Node 53 / Rust core 52 / desktop lib 55 项通过（Rust 各 1 项忽略）；macOS 独立标识实测 legacy 迁移、手动快照、修改后恢复到新目录和重启，原目录保留，暂停偏好保持。正式用户数据未用于测试。发布脚本另有真实临时文件签名 / 篡改拒绝核验，两 workflow 的 actionlint 通过。细节以验证记录为准。
-- 最终 Apple Silicon 0.2.0 app / DMG / 签名 updater 归档已构建，app 与 DMG 内 app 的本地 strict/deep 验签及真实更新包 minisign 公钥 / 签名版本 0.2.0 核验通过；产物在忽略的 `artifacts/upgrade-0.2.0/`。本轮未安装到用户正式应用。
-- Tauri 原更新私钥保留在仓库外私有目录；2026-10-27已另配置 GitHub 的 `TAURI_SIGNING_PRIVATE_KEY` 加密 secret，无密码、不变更内置公钥。Homebrew 使用独立 Tap deploy key，两个凭据不混用。源码与本地验签不能替代公开更新源及 Windows/macOS 完整升级验收。
-- 0.2.1 准备阶段已用临时原创文件及标准 Ed25519 校验确认原密钥匹配内置公钥、签名绑定版本且拒绝篡改。Node 97、Rust core 78、desktop 88、CLI / MCP 1 项及 Web / Mac 编译通过；本地 release app、只读挂载 DMG 内应用和 updater 的签名 / 版本已核验，候选保存在忽略的 `artifacts/release-0.2.1-macos/`，未安装或启动这些本地产物。GitHub 恢复连接后源码与签名 secret 已上传；这些是正式 0.2.2 发布前的历史检查，未修改用户代理。
-- `10851cd` 的 [CI](https://github.com/cpython666/starclip/actions/runs/40457517656) 已通过 core、双平台 desktop 构建及实际 release 二进制 CLI / MCP 测试；Windows manifest 入口点、快照句柄和受管路径分隔符修复均已通过 Windows 验证。共享 `installer-smoke.yml` 使用全新 hosted runner 和原创固定数据，Windows 全新安装、真实 0.1.0 覆盖升级及 macOS 全新安装通过；这不是应用内下载、安装并重启按钮链路，也不是 SmartScreen / Gatekeeper 验收。
-- 同轮 macOS 升级曾卡在夹具 seed：公开旧 macOS 0.1.0 没有 `keep_forever` 列。`335d142` 改为只写旧版共有列，让候选应用真实迁移并增加默认值 `0`，不在测试脚本中预先升级旧库。[CI 40459029199](https://github.com/cpython666/starclip/actions/runs/40459029199)（head `335d1425ccb36146cb1c2332926ae08ca3daf019`）全部 7 个 job 通过：core、双平台 desktop（含实际 release CLI / MCP）、Windows 与 macOS 各自的全新安装和真实 0.1.0 覆盖升级。默认暂停、固定数据保留及迁移前恢复点已在这些全新 runner 场景通过；不扩大为应用内更新 GUI 全链路或公证通过。完整过程见 [验证记录](../../../../docs/verification.md)。
-- 0.2.1 签名门禁发现 macOS 的 accepted socket 继承非阻塞状态；`start_ai_broker` 现显式 `set_nonblocking(false)`，保留 2 秒超时、帧上限及授权过滤。真实分帧回归在旧实现确定失败、修复后通过；0.2.1 未公开、不移动 tag，修复发布改用 0.2.2。
-- 0.2.2 的 [PR #3 CI](https://github.com/cpython666/starclip/actions/runs/40462136115) 与[签名发布流水线 40462252460](https://github.com/cpython666/starclip/actions/runs/40462252460) 均成功；后者全部 8 个 job 覆盖 validate、双平台 desktop、macOS / Windows 全新安装和真实 0.1.0 升级、draft。发布前下载全部草稿附件，核验 `SHA256SUMS` 中的 7 项文件摘要，以及两平台 Ed25519 更新签名 / 绑定版本 `0.2.2`，全部通过。[Homebrew 同步 40466604899](https://github.com/cpython666/starclip/actions/runs/40466604899) 的 verify / update-tap 均成功，远端 API 确认 Cask 0.2.2 与已验签 DMG 摘要一致；[bot 提交 5e3ed7d](https://github.com/cpython666/homebrew-tap/commit/5e3ed7db8d459a6f3961b0461816406516add923) 已写入 Tap。
-- Windows updater 在启动安装器之前执行退出清理；安装器若被系统拒绝，必须保持数据冻结并进入 `restart-required`，不可当普通下载失败解冻。独立 NSIS 安装 / 覆盖升级已通过上述 CI，应用内 updater 拉起安装器及异常冻结路径仍待原生验收。源码依据：`desktop.rs` 的 `on_before_exit` 标记和失败分支。
-- 2026-10-27 只读核对已安装 0.2.0：`tauri-plugin-updater 2.14.0` 默认 `system-proxy` → `reqwest 0.13.5` → `hyper-util 0.1.21`，macOS 通过 `SCDynamicStoreCopyProxies` 读取系统代理；当时 HTTP / HTTPS 代理均已启用并指向 `127.0.0.1:7890`。GUI 未继承 shell 环境不是充分故障解释。0.2.2 公开后，经现有 Clash 请求 [latest.json](https://github.com/cpython666/starclip/releases/latest/download/latest.json) 已返回 HTTP 200，字节与发布前核验清单一致，包含两个目标平台；latest API 也确认正式 0.2.2。公开 macOS / Windows 更新包匿名下载也均为 HTTP 200，并与已验签草稿逐字节一致。此前发布端 404 已解决，全程未修改代理；用户 GUI 应用内更新链路仍待验证。
-
-仍待验收：两平台应用内更新 GUI 全链路；Windows 原生剪贴板/托盘/完整目录迁移/手写流程；星伴精确拖动、真实透显、多屏及跨全屏；托盘菜单实际点击；快捷键冲突、休眠恢复、长期资源占用和大量历史性能。各项以 [星伴说明](../../../../docs/starpet.md) 和验证记录中的具体证据为准。
-
-已知未实现/后续方向：文件历史、GIF 动画、富文本、OCR、备注、多片段集合、自动粘贴、云同步/账号/剪贴内容公开链接、代码执行与内置 AI 分析（已有只读外部 AI 接口不等于模型分析）、密码管理器标记识别/来源应用排除、手写组件随包分发。它们不代表排期或已承诺实现；新讨论中的方案标「待定」。0.2.2 已正式公开，但仍无 Apple Developer 公证或 Windows 代码签名；本地 ad-hoc 校验与 Tauri 更新包签名不等于平台代码签名。
+- macOS 诊断包构建、Windows 实际 CI 与新内存对照；应用内更新安装 / 重启及 Windows GUI 完整链路（macOS 检测 / 下载验签 / 稍后安装已有本轮证据）；Windows 本轮新功能原生验收；双机完整环境迁移；星伴精确拖动、透显、多屏 / 跨全屏；托盘实际点击、快捷键冲突、休眠恢复；长期与大规模历史内存性能。
+- GA 长期持续观察与 Windows 原生断网；固定范围 `count` 汇总和 macOS 进程级断网 / 重启 / 恢复联网已验收，不承诺永久存储。23 项字体逐款 GUI、图片 OCR、规则试跑 / 扫描暂停续扫、分享素材 AI / 隐私内容与多语言版本等见产品决策；原 9 项来源展示已按用户确认修正。
+- 文件历史、GIF、富文本、自动粘贴、云同步 / 账号 / 剪贴内容公开链接、代码执行与内置模型分析尚未实现；已有只读 AI 接口不等于内置模型。稳定版提醒已实现，预览通道未开放，不承诺 LTS 维护年限。
+- 无 Apple 公证或 Windows 发行者代码签名；本地 ad-hoc 与 Tauri 更新签名不等于系统发行者认证。待办不代表排期，后续新方案标「待定」。

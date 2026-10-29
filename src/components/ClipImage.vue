@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { errorText, t } from '../i18n';
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { api } from '../api';
 import Icon from './Icon.vue';
@@ -18,12 +19,12 @@ async function load() {
   try {
     const data = await api.imageData(props.id, props.thumbnail);
     if (request !== generation) return;
-    if (!data.startsWith('data:image/png;base64,')) throw new Error('图片格式不可用');
+    if (!data.startsWith('data:image/png;base64,')) throw new Error(t('图片格式不可用'));
     source.value = data;
-  } catch (reason) { if (request === generation) error.value = reason instanceof Error ? reason.message : String(reason); }
+  } catch (reason) { if (request === generation) error.value = errorText(reason); }
   finally { if (request === generation) loading.value = false; }
 }
-function invalidImage() { source.value = ''; error.value = '图片无法显示，请重试。'; }
+function invalidImage() { source.value = ''; error.value = t('图片无法显示，请重试。'); }
 watch([() => props.id, () => props.thumbnail, visible], load);
 onMounted(() => {
   if (typeof IntersectionObserver === 'undefined') { visible.value = true; return; }
@@ -38,9 +39,9 @@ onBeforeUnmount(() => { generation++; observer?.disconnect(); });
     <img v-if="source" :src="source" :alt="alt" decoding="async" draggable="false" @error="invalidImage" />
     <div v-else class="clip-image-placeholder" :role="error ? 'status' : undefined">
       <Icon :name="error ? 'alert' : 'image'" :size="thumbnail ? 21 : 32" />
-      <span>{{ error ? '图片暂不可用' : loading ? '正在读取图片…' : '图片预览' }}</span>
+      <span>{{ error ? t('图片暂不可用') : loading ? t('正在读取图片…') : t('图片预览') }}</span>
       <span v-if="error && !thumbnail" class="clip-image-error">{{ error }}</span>
-      <button v-if="error && !thumbnail" type="button" class="clip-image-retry" :title="error" @click.stop.prevent="load" @dblclick.stop>重试</button>
+      <button v-if="error && !thumbnail" type="button" class="clip-image-retry" :title="error" @click.stop.prevent="load" @dblclick.stop>{{ t('重试') }}</button>
     </div>
   </div>
 </template>

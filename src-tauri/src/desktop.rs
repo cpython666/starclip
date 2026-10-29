@@ -6,8 +6,10 @@ use crate::starpet_growth::{self, GrowthChange, GrowthState};
 use crate::storage::{DataDirectoryPlan, DataLocation, DirectoryMode, RecoveryPoint, Storage};
 use crate::store::{
     starpet_resize_position, CleanupFilter, CleanupPreview, CleanupResult, CleanupSnapshot, Clip,
-    Group, Result, Settings, StarpetPreferencePatch, StarpetPreferences, Store, STALE_CLEANUP,
+    Group, HistoryQuery, HistorySummary, Result, Settings, StarpetPreferencePatch,
+    StarpetPreferences, Store, UpdatePreferences, STALE_CLEANUP,
 };
+use crate::telemetry::{self, Telemetry, TelemetryState};
 use crate::updater::{self, UpdateStatus, Updates};
 use crate::{images, share};
 use arboard::{Clipboard, ImageData};
@@ -38,19 +40,33 @@ struct Context {
     storage: Mutex<Storage>,
     ai: Mutex<AiAccess>,
     store: Mutex<Store>,
+    telemetry: Mutex<Telemetry>,
     reader: Mutex<Reader>,
     clipboard_error: Mutex<Option<String>>,
     shortcut_error: Mutex<Option<String>>,
     window_error: Mutex<Option<String>>,
     cleanup: Mutex<Option<CleanupSnapshot>>,
     starpet_operation: Mutex<()>,
-    tray_pause: OnceLock<MenuItem<tauri::Wry>>,
+    tray_items: OnceLock<TrayItems>,
+    native_language: Mutex<String>,
+}
+struct TrayItems {
+    show: MenuItem<tauri::Wry>,
+    pause: MenuItem<tauri::Wry>,
+    starpet: MenuItem<tauri::Wry>,
+    quit: MenuItem<tauri::Wry>,
 }
 type AppContext<'a> = State<'a, Arc<Context>>;
 fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>> {
     mutex
         .lock()
         .map_err(|_| "应用内部状态异常，请重新启动星笺。".into())
+}
+fn unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
 }
 fn write_guard(context: &Context) -> Result<MutexGuard<'_, Storage>> {
     let storage = lock(&context.storage)?;
@@ -60,21 +76,225 @@ fn write_guard(context: &Context) -> Result<MutexGuard<'_, Storage>> {
 fn changed(app: &AppHandle) {
     let _ = app.emit("clips-changed", ());
 }
+fn telemetry_changed(app: &AppHandle, state: &TelemetryState) {
+    let _ = app.emit_to("main", "starclip-telemetry-state", state);
+}
+fn record_telemetry(app: &AppHandle, context: &Context, name: &str) {
+    if let Ok(mut telemetry) = lock(&context.telemetry) {
+        let before = telemetry.state().revision;
+        if telemetry.record(name).is_ok() {
+            let state = telemetry.state();
+            if state.revision != before {
+                telemetry_changed(app, &state);
+            }
+        }
+    }
+}
+#[tauri::command]
+fn get_telemetry_state(context: AppContext<'_>) -> Result<TelemetryState> {
+    Ok(lock(&context.telemetry)?.state())
+}
+#[tauri::command]
+fn set_telemetry_enabled(
+    app: AppHandle,
+    context: AppContext<'_>,
+    enabled: bool,
+) -> Result<TelemetryState> {
+    // Keep the storage → store → telemetry order. No network under these locks.
+    let storage = lock(&context.storage)?;
+    let store = lock(&context.store)?;
+    let mut telemetry = lock(&context.telemetry)?;
+    if !enabled {
+        telemetry.set_enabled(false);
+        telemetry_changed(&app, &telemetry.state());
+    } else {
+        telemetry.validate_enable()?;
+    }
+    let saved = storage
+        .writable()
+        .and_then(|()| store.set_telemetry_enabled(enabled));
+    if let Err(error) = saved {
+        return Err(if enabled {
+            error
+        } else {
+            "本次运行已停止统计，但关闭偏好未保存；请重试，重启后可能恢复原设置。".into()
+        });
+    }
+    if enabled {
+        telemetry.set_enabled(true);
+    }
+    let state = telemetry.state();
+    telemetry_changed(&app, &state);
+    Ok(state)
+}
+#[tauri::command]
+fn record_usage_event(
+    app: AppHandle,
+    context: AppContext<'_>,
+    name: String,
+) -> Result<TelemetryState> {
+    let mut telemetry = lock(&context.telemetry)?;
+    telemetry.record_frontend(&name)?;
+    let state = telemetry.state();
+    telemetry_changed(&app, &state);
+    Ok(state)
+}
+#[tauri::command]
+fn clear_telemetry_queue(app: AppHandle, context: AppContext<'_>) -> Result<TelemetryState> {
+    let mut telemetry = lock(&context.telemetry)?;
+    let cleared = telemetry.clear_queue();
+    let state = telemetry.state();
+    telemetry_changed(&app, &state);
+    cleared?;
+    Ok(state)
+}
+fn flush_telemetry_with_context(app: &AppHandle, context: &Context) -> Result<TelemetryState> {
+    let batch = {
+        let mut telemetry = lock(&context.telemetry)?;
+        let batch = telemetry.take_batch();
+        telemetry_changed(app, &telemetry.state());
+        batch
+    };
+    if let Some(batch) = batch {
+        let success = telemetry::send(&batch);
+        let mut telemetry = lock(&context.telemetry)?;
+        telemetry.finish(&batch, success);
+        telemetry_changed(app, &telemetry.state());
+    }
+    Ok(lock(&context.telemetry)?.state())
+}
+fn schedule_telemetry_flush(app: &AppHandle, context: &Arc<Context>) {
+    if lock(&context.telemetry).is_ok_and(|mut telemetry| {
+        telemetry.checkpoint();
+        telemetry.ready()
+    }) {
+        let app = app.clone();
+        let context = context.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let _ = flush_telemetry_with_context(&app, &context);
+        });
+    }
+}
+#[tauri::command]
+async fn flush_telemetry(app: AppHandle, context: AppContext<'_>) -> Result<TelemetryState> {
+    let context = context.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || flush_telemetry_with_context(&app, &context))
+        .await
+        .map_err(|_| "统计后台任务暂不可用。".to_string())?
+}
+fn native_is_english(context: &Context) -> bool {
+    lock(&context.native_language)
+        .map(|language| language.starts_with("en"))
+        .unwrap_or(false)
+}
+fn native_is_english_app(app: &AppHandle) -> bool {
+    app.try_state::<Arc<Context>>()
+        .map(|context| native_is_english(context.inner()))
+        .unwrap_or(false)
+}
+fn main_window_title(english: bool) -> &'static str {
+    if english {
+        "Starclip"
+    } else {
+        "星笺 Starclip"
+    }
+}
+fn starpet_window_title(english: bool) -> &'static str {
+    if english {
+        "StarPet · Starclip"
+    } else {
+        "星伴 · Starclip"
+    }
+}
+fn native_dialog_title(english: bool) -> &'static str {
+    if english {
+        "Starclip"
+    } else {
+        "星笺"
+    }
+}
+fn starpet_dialog_title(english: bool) -> &'static str {
+    if english {
+        "StarPet"
+    } else {
+        "星伴"
+    }
+}
+fn tray_labels(english: bool, paused: bool) -> (&'static str, &'static str) {
+    if english {
+        (
+            if paused {
+                "Resume Recording"
+            } else {
+                "Pause Recording"
+            },
+            if paused {
+                "Starclip · Paused"
+            } else {
+                "Starclip · Recording text & images"
+            },
+        )
+    } else {
+        (
+            if paused {
+                "继续记录"
+            } else {
+                "暂停记录"
+            },
+            if paused {
+                "星笺 · 已暂停"
+            } else {
+                "星笺 · 正在记录文字与图片"
+            },
+        )
+    }
+}
+fn apply_window_titles(app: &AppHandle, english: bool) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_title(main_window_title(english));
+    }
+    if let Some(window) = app.get_webview_window("starpet") {
+        let _ = window.set_title(starpet_window_title(english));
+    }
+}
 
 #[derive(Default)]
 struct MainWindowSession {
     operation: Mutex<()>,
-    close_request: Mutex<u64>,
+    close_request: Mutex<MainWindowCloseRequest>,
     geometry: Mutex<Option<MainWindowGeometry>>,
 }
+#[derive(Default)]
+struct MainWindowCloseRequest {
+    id: u64,
+    pending: bool,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MainWindowCloseResult {
+    request_id: u64,
+    pending: bool,
+}
 impl MainWindowSession {
-    fn next_request(&self) -> Result<u64> {
+    fn next_request(&self, pending: bool) -> Result<u64> {
         let mut request = lock(&self.close_request)?;
-        *request = request.wrapping_add(1);
-        Ok(*request)
+        request.id = request.id.wrapping_add(1);
+        request.pending = pending;
+        Ok(request.id)
+    }
+    fn pending_request(&self) -> Result<Option<u64>> {
+        let request = lock(&self.close_request)?;
+        Ok(request.pending.then_some(request.id))
     }
     fn is_current(&self, request: u64) -> Result<bool> {
-        Ok(*lock(&self.close_request)? == request)
+        Ok(self.pending_request()? == Some(request))
+    }
+    fn finish_request(&self, id: u64) -> Result<()> {
+        let mut request = lock(&self.close_request)?;
+        if request.id == id {
+            request.pending = false;
+        }
+        Ok(())
     }
 }
 
@@ -128,6 +348,7 @@ fn show_window_inner(app: &AppHandle) -> Result<()> {
         }
         window
     };
+    let _ = window.set_title(main_window_title(native_is_english_app(app)));
     window
         .show()
         .and_then(|_| window.unminimize())
@@ -137,11 +358,14 @@ fn show_window_inner(app: &AppHandle) -> Result<()> {
 
 fn show_window(app: &AppHandle) {
     // Invalidate a delayed close reply before scheduling the show operation.
-    let _ = app.state::<MainWindowSession>().next_request();
+    let _ = app.state::<MainWindowSession>().next_request(false);
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         if let Err(error) = show_window_inner(&app) {
-            app.dialog().message(error).title("星笺").show(|_| {});
+            app.dialog()
+                .message(error)
+                .title(native_dialog_title(native_is_english_app(&app)))
+                .show(|_| {});
         }
     });
 }
@@ -150,7 +374,7 @@ fn request_main_window_close(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         // Conservatively hide first. Only a live frontend that has checked its
         // drafts and pending work may approve releasing this WebView.
-        if let Ok(request) = app.state::<MainWindowSession>().next_request() {
+        if let Ok(request) = app.state::<MainWindowSession>().next_request(true) {
             let _ = window.hide();
             let _ = app.emit_to(
                 "main",
@@ -192,7 +416,7 @@ fn create_starpet(app: &AppHandle, preferences: &StarpetPreferences) -> Result<W
         "starpet",
         WebviewUrl::App("index.html?view=starpet".into()),
     )
-    .title("星伴 · Starclip")
+    .title(starpet_window_title(native_is_english_app(app)))
     .inner_size(width, height)
     .resizable(false)
     .maximizable(false)
@@ -404,7 +628,10 @@ fn update_starpet(
 }
 
 fn starpet_error(app: &AppHandle, error: String) {
-    app.dialog().message(error).title("星伴").show(|_| {});
+    app.dialog()
+        .message(error)
+        .title(starpet_dialog_title(native_is_english_app(app)))
+        .show(|_| {});
 }
 
 #[tauri::command]
@@ -435,7 +662,7 @@ async fn set_starpet_preferences(
 
 #[tauri::command]
 async fn show_main_window(app: AppHandle) -> Result<()> {
-    app.state::<MainWindowSession>().next_request()?;
+    app.state::<MainWindowSession>().next_request(false)?;
     tauri::async_runtime::spawn_blocking(move || show_window_inner(&app))
         .await
         .map_err(|_| "主窗口创建任务失败，请重试。".to_string())?
@@ -504,8 +731,61 @@ fn interact_starpet(
     app: AppHandle,
     context: AppContext<'_>,
     action: String,
+    animate: Option<bool>,
 ) -> Result<GrowthState> {
-    change_growth(&app, &context, GrowthChange::Interaction(&action))
+    let _write = write_guard(&context)?;
+    let store = lock(&context.store)?;
+    let mut ai = lock(&context.ai)?;
+    let (growth, interaction) =
+        apply_starpet_interaction(&store, &mut ai, &action, animate.unwrap_or(true))?;
+    publish_growth(&app, &growth);
+    if let Some(interaction) = interaction {
+        // Delivery only: never create/show a disabled or absent companion.
+        // An event failure must not report the already-saved interaction as failed.
+        if app.get_webview_window("starpet").is_some() {
+            if app
+                .emit_to("starpet", "starpet-interaction", interaction)
+                .is_err()
+            {
+                let _ = app.emit_to(
+                    "main",
+                    "starpet-growth-error",
+                    "互动已保存，但桌面动作未能播放。请收起并重新开启星伴后重试。",
+                );
+            }
+        }
+    }
+    Ok(growth)
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StarpetInteraction<'a> {
+    action: &'a str,
+    animate: bool,
+    signal_revision: u64,
+}
+
+fn apply_starpet_interaction<'a>(
+    store: &Store,
+    ai: &mut AiAccess,
+    action: &'a str,
+    animate: bool,
+) -> Result<(GrowthState, Option<StarpetInteraction<'a>>)> {
+    let enabled = store.starpet_preferences()?.enabled;
+    // Validate unlocks and commit exactly once before notifying any animation.
+    let growth = store.change_starpet_growth(GrowthChange::Interaction(action))?;
+    let interaction = enabled.then(|| {
+        // A successful local interaction takes over the current Agent signal.
+        // Its revision also prevents a late initial snapshot from restoring it.
+        ai.clear_pet();
+        StarpetInteraction {
+            action,
+            animate,
+            signal_revision: ai.pet_snapshot().revision,
+        }
+    });
+    Ok((growth, interaction))
 }
 
 #[tauri::command]
@@ -576,6 +856,7 @@ async fn export_starpet_growth(app: AppHandle, context: AppContext<'_>) -> Resul
 #[serde(rename_all = "camelCase")]
 struct AppState {
     clips: Vec<Clip>,
+    history: HistorySummary,
     groups: Vec<Group>,
     settings: Settings,
     onboarding_completed: bool,
@@ -584,10 +865,12 @@ struct AppState {
     window_error: Option<String>,
 }
 #[tauri::command]
-fn get_state(context: AppContext<'_>) -> Result<AppState> {
+fn get_state(query: Option<HistoryQuery>, context: AppContext<'_>) -> Result<AppState> {
     let store = lock(&context.store)?;
+    let page = store.history_page(&query.unwrap_or_default())?;
     Ok(AppState {
-        clips: store.clips()?,
+        clips: page.clips,
+        history: page.history,
         groups: store.groups()?,
         settings: store.settings()?,
         onboarding_completed: store.onboarding_completed()?,
@@ -595,6 +878,10 @@ fn get_state(context: AppContext<'_>) -> Result<AppState> {
         shortcut_error: lock(&context.shortcut_error)?.clone(),
         window_error: lock(&context.window_error)?.clone(),
     })
+}
+#[tauri::command]
+fn get_clips(ids: Vec<i64>, context: AppContext<'_>) -> Result<Vec<Clip>> {
+    lock(&context.store)?.clip_details(&ids)
 }
 #[tauri::command]
 fn complete_onboarding(app: AppHandle, context: AppContext<'_>) -> Result<()> {
@@ -1059,7 +1346,12 @@ fn set_theme(app: AppHandle, context: AppContext<'_>, theme: String) -> Result<S
     Ok(settings)
 }
 #[tauri::command]
-fn save_settings(app: AppHandle, context: AppContext<'_>, settings: Settings) -> Result<()> {
+fn save_settings(
+    app: AppHandle,
+    context: AppContext<'_>,
+    mut settings: Settings,
+    expected_pause_revision: Option<u64>,
+) -> Result<()> {
     let _write = write_guard(&context)?;
     settings.validate()?;
     let old = lock(&context.store)?.settings()?;
@@ -1095,7 +1387,8 @@ fn save_settings(app: AppHandle, context: AppContext<'_>, settings: Settings) ->
     let save_result = (|| -> Result<()> {
         // Lock order is reader -> store, also used by the monitor. Pause cannot race with capture.
         let mut reader = lock(&context.reader)?;
-        lock(&context.store)?.save_settings(&settings)?;
+        settings = lock(&context.store)?
+            .save_settings_with_pause_guard(&settings, expected_pause_revision)?;
         if old.paused != settings.paused {
             reader.capture = CaptureState::default();
         }
@@ -1124,8 +1417,20 @@ fn save_settings(app: AppHandle, context: AppContext<'_>, settings: Settings) ->
     }
     *lock(&context.window_error)? = None;
     drop(_write);
-    refresh_tray(&app, &context, settings.paused);
+    refresh_tray(&app, &context, &settings);
+    apply_window_titles(&app, native_is_english(&context));
     changed(&app);
+    Ok(())
+}
+#[tauri::command]
+fn set_native_language(app: AppHandle, context: AppContext<'_>, language: String) -> Result<()> {
+    if !["zh-CN", "en-US"].contains(&language.as_str()) {
+        return Err("不支持的界面语言。".into());
+    }
+    *lock(&context.native_language)? = language;
+    let settings = lock(&context.store)?.settings()?;
+    refresh_tray(&app, &context, &settings);
+    apply_window_titles(&app, native_is_english(&context));
     Ok(())
 }
 #[tauri::command]
@@ -1165,6 +1470,22 @@ async fn preview_cleanup(context: AppContext<'_>, filter: CleanupFilter) -> Resu
     .map_err(|_| "清理预览任务失败。".to_string())?
 }
 #[tauri::command]
+async fn cancel_cleanup(context: AppContext<'_>, token: String) -> Result<()> {
+    let context = context.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut pending = lock(&context.cleanup)?;
+        if pending
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.preview.token == token)
+        {
+            *pending = None;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|_| "无法释放清理预览。".to_string())?
+}
+#[tauri::command]
 async fn execute_cleanup(
     app: AppHandle,
     context: AppContext<'_>,
@@ -1190,11 +1511,15 @@ async fn execute_cleanup(
     .map_err(|_| "清理任务失败，请刷新预览确认当前状态。".to_string())?
 }
 #[tauri::command]
-async fn export_backup(context: AppContext<'_>) -> Result<String> {
+async fn export_backup(app: AppHandle, context: AppContext<'_>) -> Result<String> {
     let context = context.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || lock(&context.store)?.export())
-        .await
-        .map_err(|_| "导出任务失败。".to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let data = lock(&context.store)?.export()?;
+        record_telemetry(&app, &context, "backup_exported");
+        Ok(data)
+    })
+    .await
+    .map_err(|_| "导出任务失败。".to_string())?
 }
 #[tauri::command]
 async fn import_backup(app: AppHandle, context: AppContext<'_>, data: String) -> Result<usize> {
@@ -1204,6 +1529,7 @@ async fn import_backup(app: AppHandle, context: AppContext<'_>, data: String) ->
         let count = lock(&context.store)?.import(&data)?;
         *lock(&context.cleanup)? = None;
         changed(&app);
+        record_telemetry(&app, &context, "backup_imported");
         Ok(count)
     })
     .await
@@ -1264,6 +1590,7 @@ async fn save_backup(app: AppHandle, context: AppContext<'_>) -> Result<Option<S
         let path = file.into_path().map_err(|_| "请选择本地文件路径。")?;
         let _ = app.emit_to("main", "backup-writing", ());
         write_private(&path, data.as_bytes())?;
+        record_telemetry(&app, &context, "backup_exported");
         Ok(Some(path.to_string_lossy().into_owned()))
     })
     .await
@@ -1330,6 +1657,9 @@ async fn save_export(
         };
         let path = file.into_path().map_err(|_| "请选择本地文件路径。")?;
         write_private(&path, &bytes)?;
+        if format == "png" {
+            record_telemetry(&app, &context, "card_exported");
+        }
         if let Ok(_write) = write_guard(&context) {
             reward_creation(&app, &context);
         }
@@ -1339,32 +1669,48 @@ async fn save_export(
     .map_err(|_| "导出任务失败。".to_string())?
 }
 #[tauri::command]
-async fn hide_window(app: AppHandle, release: Option<bool>, request_id: Option<u64>) -> Result<()> {
+fn get_main_window_close_request(app: AppHandle) -> Result<Option<u64>> {
+    app.state::<MainWindowSession>().pending_request()
+}
+
+#[tauri::command]
+async fn hide_window(
+    app: AppHandle,
+    release: Option<bool>,
+    request_id: Option<u64>,
+) -> Result<MainWindowCloseResult> {
     let request = match request_id {
         Some(request) => request,
-        None => app.state::<MainWindowSession>().next_request()?,
+        None => app.state::<MainWindowSession>().next_request(true)?,
     };
     tauri::async_runtime::spawn_blocking(move || {
+        let outcome = |pending| MainWindowCloseResult {
+            request_id: request,
+            pending,
+        };
         let session = app.state::<MainWindowSession>();
         let _operation = lock(&session.operation)?;
         if !session.is_current(request)? {
-            return Ok(());
+            return Ok(outcome(false));
         }
         let Some(window) = app.get_webview_window("main") else {
-            return Ok(());
+            session.finish_request(request)?;
+            return Ok(outcome(false));
         };
         window.hide().map_err(|error| error.to_string())?;
         if !release.unwrap_or(false) || app.state::<Updates>().ensure_idle().is_err() {
-            return Ok(());
+            return Ok(outcome(true));
         }
         let Some(context) = app.try_state::<Arc<Context>>() else {
-            return Ok(());
+            return Ok(outcome(true));
         };
         if lock(&context.storage)?.writable().is_err() {
-            return Ok(());
+            return Ok(outcome(true));
         }
         *lock(&session.geometry)? = MainWindowGeometry::capture(&window).ok();
-        destroy_webview_and_wait(&app, &window)
+        destroy_webview_and_wait(&app, &window)?;
+        session.finish_request(request)?;
+        Ok(outcome(false))
     })
     .await
     .map_err(|_| "收起主窗口失败，请重试。".to_string())?
@@ -1374,41 +1720,50 @@ async fn hide_window(app: AppHandle, release: Option<bool>, request_id: Option<u
 async fn handwriting_assets(
     context: AppContext<'_>,
 ) -> Result<crate::handwriting::HandwritingAssets> {
-    let directory = lock(&context.storage)?.handwriting_directory();
+    let directory = lock(&context.storage)?.current.clone();
     tauri::async_runtime::spawn_blocking(move || crate::handwriting::assets(&directory))
         .await
-        .map_err(|_| "无法读取手写应用素材。".to_string())
+        .map_err(|_| "无法读取手写字体。".to_string())
 }
 #[tauri::command]
-async fn choose_handwriting_app(
+async fn download_handwriting_font(
     app: AppHandle,
     context: AppContext<'_>,
+    id: String,
 ) -> Result<crate::handwriting::HandwritingAssets> {
     let context = context.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let picker = app
-            .dialog()
-            .file()
-            .set_title("选择星笺.app 或 xingjian CLI");
-        #[cfg(windows)]
-        let picker = picker.add_filter("星笺 CLI", &["exe"]);
-        let selected = picker.blocking_pick_file();
+        let directory = write_guard(&context)?.current.clone();
+        // A reopened panel can still show an old catalog while a previous download finishes.
+        // Reuse the verified local file so that retrying also works offline.
+        let installed = crate::handwriting::assets(&directory);
+        let font = installed
+            .fonts
+            .iter()
+            .find(|font| font.id == id)
+            .ok_or("请选择字体列表中的字体。")?;
+        if font.downloaded {
+            return Ok(installed);
+        }
+        // Download without holding the data write gate; clipboard capture stays responsive.
+        let bytes = crate::handwriting::download_font_bytes(&id)?;
         let storage = write_guard(&context)?;
-        let Some(selected) = selected else {
-            return Ok(crate::handwriting::assets(&storage.handwriting_directory()));
-        };
-        let path = selected.into_path().map_err(|_| "请选择本机应用文件。")?;
-        crate::handwriting::select_app(&storage.current, &path)
+        if storage.current != directory {
+            return Err("数据目录已变化，请重新下载字体。".into());
+        }
+        let assets = crate::handwriting::install_font(&directory, &id, bytes)?;
+        record_telemetry(&app, &context, "font_downloaded");
+        Ok(assets)
     })
     .await
-    .map_err(|_| "选择手写应用失败。".to_string())?
+    .map_err(|_| "字体下载任务失败，请重试。".to_string())?
 }
 #[tauri::command]
 async fn render_handwriting(
     context: AppContext<'_>,
     options: crate::handwriting::HandwritingOptions,
 ) -> Result<String> {
-    let directory = lock(&context.storage)?.handwriting_directory();
+    let directory = lock(&context.storage)?.current.clone();
     tauri::async_runtime::spawn_blocking(move || crate::handwriting::render(&directory, options))
         .await
         .map_err(|_| "手写渲染任务失败。".to_string())?
@@ -1565,10 +1920,26 @@ fn get_update_status(app: AppHandle) -> Result<UpdateStatus> {
     app.state::<Updates>().status()
 }
 
-#[tauri::command]
-async fn check_starclip_update(app: AppHandle, context: AppContext<'_>) -> Result<UpdateStatus> {
-    lock(&context.storage)?.writable()?;
-    app.state::<Updates>().begin_check(&app)?;
+async fn check_update_with_context(
+    app: AppHandle,
+    context: Arc<Context>,
+    automatic: bool,
+) -> Result<UpdateStatus> {
+    {
+        let _storage = write_guard(&context)?;
+        let store = lock(&context.store)?;
+        let started = app.state::<Updates>().begin_check(&app, automatic, || {
+            let previous = store.update_preferences()?;
+            let (preferences, started) = store.record_update_check(unix_millis(), automatic)?;
+            if preferences.revision != previous.revision {
+                let _ = app.emit_to("main", "starclip-update-preferences", &preferences);
+            }
+            Ok(started)
+        })?;
+        if !started {
+            return app.state::<Updates>().status();
+        }
+    }
     let before_exit = app.clone();
     let cleanup_started = app.state::<Updates>().cleanup_flag()?;
     let result = async {
@@ -1588,10 +1959,50 @@ async fn check_starclip_update(app: AppHandle, context: AppContext<'_>) -> Resul
         app.state::<Updates>().checked(&app, update)
     }
     .await;
-    if let Err(error) = result {
-        return app.state::<Updates>().failed(&app, error);
+    match result {
+        Ok(()) => {
+            record_telemetry(&app, &context, "update_check_completed");
+            app.state::<Updates>().status()
+        }
+        Err(error) => app.state::<Updates>().failed_check(&app, error, automatic),
     }
-    app.state::<Updates>().status()
+}
+
+#[tauri::command]
+async fn check_starclip_update(app: AppHandle, context: AppContext<'_>) -> Result<UpdateStatus> {
+    check_update_with_context(app, context.inner().clone(), false).await
+}
+
+#[tauri::command]
+fn get_update_preferences(context: AppContext<'_>) -> Result<UpdatePreferences> {
+    lock(&context.store)?.update_preferences()
+}
+
+#[tauri::command]
+fn set_auto_update_check(
+    app: AppHandle,
+    context: AppContext<'_>,
+    enabled: bool,
+) -> Result<UpdatePreferences> {
+    let _storage = write_guard(&context)?;
+    let preferences = lock(&context.store)?.set_auto_update_check(enabled)?;
+    let _ = app.emit_to("main", "starclip-update-preferences", &preferences);
+    Ok(preferences)
+}
+
+#[tauri::command]
+fn skip_update_version(
+    app: AppHandle,
+    context: AppContext<'_>,
+    version: String,
+) -> Result<UpdatePreferences> {
+    let _storage = write_guard(&context)?;
+    let store = lock(&context.store)?;
+    let preferences = app
+        .state::<Updates>()
+        .for_available_version(&version, || store.skip_update_version(&version))?;
+    let _ = app.emit_to("main", "starclip-update-preferences", &preferences);
+    Ok(preferences)
 }
 
 #[tauri::command]
@@ -1631,6 +2042,8 @@ async fn download_starclip_update(
     if let Err(error) = result {
         return app.state::<Updates>().failed(&app, error);
     }
+    record_telemetry(&app, &context, "update_download_completed");
+    schedule_telemetry_flush(&app, context.inner());
     app.state::<Updates>().status()
 }
 
@@ -1661,6 +2074,10 @@ async fn install_starclip_update(
             worker_app
                 .state::<Updates>()
                 .phase(&worker_app, "installing")?;
+            // Count the installation attempt after all prerequisites succeed.
+            // Windows may exit inside install(); never wait on telemetry here.
+            record_telemetry(&worker_app, &worker_context, "update_install_started");
+            schedule_telemetry_flush(&worker_app, &worker_context);
             update
                 .install(bytes)
                 .map_err(|error| format!("安装未完成，旧版应用和数据恢复点已保留：{error}"))?;
@@ -1775,20 +2192,30 @@ fn read_clipboard(
     }
 }
 
-fn refresh_tray(app: &AppHandle, context: &Context, paused: bool) {
-    if let Some(item) = context.tray_pause.get() {
-        let _ = item.set_text(if paused {
-            "继续记录"
+fn refresh_tray(app: &AppHandle, context: &Context, settings: &Settings) {
+    let english = native_is_english(context);
+    if let Some(items) = context.tray_items.get() {
+        let _ = items.show.set_text(if english {
+            "Open Starclip"
         } else {
-            "暂停记录"
+            "打开星笺"
         });
+        let _ = items.starpet.set_text(if english {
+            "Show / Hide StarPet"
+        } else {
+            "显示 / 隐藏星伴"
+        });
+        let _ = items.quit.set_text(if english {
+            "Quit Starclip"
+        } else {
+            "退出星笺"
+        });
+        let (pause_label, _) = tray_labels(english, settings.paused);
+        let _ = items.pause.set_text(pause_label);
     }
     if let Some(tray) = app.tray_by_id("main-tray") {
-        let _ = tray.set_tooltip(Some(if paused {
-            "星笺 · 已暂停"
-        } else {
-            "星笺 · 正在记录文字与图片"
-        }));
+        let (_, tooltip) = tray_labels(english, settings.paused);
+        let _ = tray.set_tooltip(Some(tooltip));
     }
 }
 #[cfg(target_os = "macos")]
@@ -1831,11 +2258,31 @@ fn status_star_icon() -> tauri::image::Image<'static> {
     tauri::image::Image::new_owned(rgba, 36, 36)
 }
 
+fn schedule_auto_update_check(app: &AppHandle, context: &Arc<Context>) {
+    let app = app.clone();
+    let context = context.clone();
+    tauri::async_runtime::spawn(async move {
+        // Re-check the persisted switch and throttle when the task actually
+        // starts. Closing the main WebView neither cancels nor triggers checks.
+        let _ = check_update_with_context(app, context, true).await;
+    });
+}
+
 fn monitor(app: AppHandle, context: Arc<Context>) {
     thread::spawn(move || {
         let mut maintenance_at = Instant::now() + Duration::from_secs(60);
+        let mut update_check_at = Instant::now() + Duration::from_secs(20);
+        let mut telemetry_at = Instant::now() + Duration::from_secs(60);
         loop {
             thread::sleep(Duration::from_millis(700));
+            if Instant::now() >= telemetry_at {
+                telemetry_at = Instant::now() + Duration::from_secs(60);
+                schedule_telemetry_flush(&app, &context);
+            }
+            if Instant::now() >= update_check_at {
+                update_check_at = Instant::now() + Duration::from_secs(60);
+                schedule_auto_update_check(&app, &context);
+            }
             // Every mutation takes this gate before reader/store locks. A completed
             // migration leaves it paused until restart, including scheduled cleanup.
             let Ok(storage) = lock(&context.storage) else {
@@ -2017,6 +2464,10 @@ pub fn run() {
                 })
                 .err();
             let context = Arc::new(Context {
+                telemetry: Mutex::new(
+                    Telemetry::new(store.telemetry_preferences())
+                        .with_cache(default.join("usage-counts.json")),
+                ),
                 storage: Mutex::new(storage),
                 ai: Mutex::new(AiAccess::default()),
                 store: Mutex::new(store),
@@ -2029,7 +2480,8 @@ pub fn run() {
                 window_error: Mutex::new(window_error),
                 cleanup: Mutex::new(None),
                 starpet_operation: Mutex::new(()),
-                tray_pause: OnceLock::new(),
+                tray_items: OnceLock::new(),
+                native_language: Mutex::new("zh-CN".into()),
             });
             let pet_app = app.handle().clone();
             start_ai_broker(&context, move |snapshot| {
@@ -2044,7 +2496,7 @@ pub fn run() {
             });
             app.manage(context.clone());
             let show = MenuItem::with_id(app, "show", "打开星笺", true, None::<&str>)?;
-            let pause = MenuItem::with_id(app, "pause", "暂停 / 继续记录", true, None::<&str>)?;
+            let pause = MenuItem::with_id(app, "pause", "暂停记录", true, None::<&str>)?;
             let starpet = MenuItem::with_id(app, "starpet", "显示 / 隐藏星伴", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出星笺", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &pause, &starpet, &quit])?;
@@ -2058,8 +2510,14 @@ pub fn run() {
                         let context = app.state::<Arc<Context>>();
                         let result = (|| -> Result<()> {
                             let mut settings = lock(&context.store)?.settings()?;
+                            let expected_pause_revision = settings.pause_revision;
                             settings.paused = !settings.paused;
-                            save_settings(app.clone(), context, settings)
+                            save_settings(
+                                app.clone(),
+                                context,
+                                settings,
+                                Some(expected_pause_revision),
+                            )
                         })();
                         if let Err(error) = result {
                             let context = app.state::<Arc<Context>>();
@@ -2088,10 +2546,16 @@ pub fn run() {
             if let Some(icon) = app.default_window_icon() {
                 tray = tray.icon(icon.clone());
             }
-            let _ = context.tray_pause.set(pause);
+            let _ = context.tray_items.set(TrayItems {
+                show,
+                pause,
+                starpet,
+                quit,
+            });
             tray.build(app)?;
-            let paused = lock(&context.store)?.settings()?.paused;
-            refresh_tray(app.handle(), &context, paused);
+            let startup_settings = lock(&context.store)?.settings()?;
+            refresh_tray(app.handle(), &context, &startup_settings);
+            apply_window_titles(app.handle(), native_is_english(&context));
             let pet_app = app.handle().clone();
             let pet_context = context.clone();
             tauri::async_runtime::spawn_blocking(move || {
@@ -2099,6 +2563,7 @@ pub fn run() {
                     starpet_error(&pet_app, error);
                 }
             });
+            record_telemetry(app.handle(), &context, "app_started");
             monitor(app.handle().clone(), context);
             Ok(())
         })
@@ -2126,7 +2591,13 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            get_telemetry_state,
+            set_telemetry_enabled,
+            record_usage_event,
+            flush_telemetry,
+            clear_telemetry_queue,
             get_state,
+            get_clips,
             get_starpet_preferences,
             get_starpet_signal,
             set_starpet_preferences,
@@ -2152,6 +2623,7 @@ pub fn run() {
             create_group,
             delete_group,
             save_settings,
+            set_native_language,
             set_theme,
             get_privacy_rules,
             save_privacy_rules,
@@ -2172,14 +2644,16 @@ pub fn run() {
             clear_history,
             set_keep_forever,
             preview_cleanup,
+            cancel_cleanup,
             execute_cleanup,
             export_backup,
             import_backup,
             save_backup,
             save_export,
             hide_window,
+            get_main_window_close_request,
             handwriting_assets,
-            choose_handwriting_app,
+            download_handwriting_font,
             render_handwriting,
             get_data_location,
             choose_data_directory,
@@ -2187,6 +2661,9 @@ pub fn run() {
             open_data_directory,
             open_project_link,
             get_update_status,
+            get_update_preferences,
+            set_auto_update_check,
+            skip_update_version,
             check_starclip_update,
             download_starclip_update,
             install_starclip_update,
@@ -2213,6 +2690,13 @@ pub fn run() {
                 // restart requests carry an exit code and remain permitted.
                 api.prevent_exit();
             }
+            tauri::RunEvent::Exit => {
+                if let Some(context) = app.try_state::<Arc<Context>>() {
+                    if let Ok(mut telemetry) = lock(&context.telemetry) {
+                        telemetry.checkpoint();
+                    }
+                }
+            }
             _ => {}
         });
 }
@@ -2223,20 +2707,134 @@ mod tests {
     use crate::capture::{CaptureKey, CaptureState};
 
     #[test]
+    fn settings_interactions_notify_only_after_validation_without_double_rewards_or_enabling_pet() {
+        use super::{
+            ai_access, apply_starpet_interaction, AiAccess, CreateConnection, GrowthChange, Store,
+        };
+        use serde_json::json;
+        use std::{
+            fs,
+            path::Path,
+            time::{SystemTime, UNIX_EPOCH},
+        };
+
+        let path = std::env::temp_dir().join(format!(
+            "starclip-action-sync-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&path).unwrap();
+        let store = Store::open(&path.join("fixed-fixture.sqlite3")).unwrap();
+        let mut preferences = store.starpet_preferences().unwrap();
+        preferences.enabled = true;
+        preferences.mood = "reading".into();
+        store.save_starpet_preferences(&preferences).unwrap();
+        store
+            .change_starpet_growth(GrowthChange::Enabled(true))
+            .unwrap();
+        let mut ai = AiAccess::default();
+        ai.port = Some(12345);
+        ai.enable(true).unwrap();
+        let config = ai
+            .create(
+                &store,
+                CreateConnection {
+                    name: "原创动作同步测试".into(),
+                    clip_ids: vec![],
+                    fields: vec![],
+                    max_results: 5,
+                    expires_hours: 1,
+                    allow_pet_control: true,
+                },
+                Path::new("/fixed-fixture/starclip"),
+            )
+            .unwrap();
+        let token = config["config"]["mcp"]["mcpServers"]["starclip"]["env"]["STARCLIP_AI_TOKEN"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(
+            ai.respond(
+                &store,
+                ai_access::Request {
+                    token,
+                    action: "pet_signal".into(),
+                    arguments: json!({"status":"working","message":"原创临时状态"})
+                }
+            )["result"]["accepted"],
+            true
+        );
+        let before = store.starpet_growth().unwrap();
+        let signal_revision = ai.pet_snapshot().revision;
+        for action in ["twirl", "not-an-action"] {
+            assert!(apply_starpet_interaction(&store, &mut ai, action, true).is_err());
+            assert_eq!(store.starpet_growth().unwrap(), before);
+            assert!(
+                ai.pet_snapshot().signal.is_some(),
+                "rejected action must not clear the Agent signal"
+            );
+        }
+        let (greeted, event) = apply_starpet_interaction(&store, &mut ai, "greet", true).unwrap();
+        let event = event.unwrap();
+        assert_eq!(greeted.xp, 10);
+        assert_eq!(event.action, "greet");
+        assert!(event.animate);
+        assert!(event.signal_revision > signal_revision);
+        assert!(ai.pet_snapshot().signal.is_none());
+        let (repeated, again) = apply_starpet_interaction(&store, &mut ai, "greet", true).unwrap();
+        assert_eq!(repeated.xp, greeted.xp);
+        assert_eq!(
+            again.unwrap().action,
+            "greet",
+            "identical actions still produce a fresh playback event"
+        );
+        let (_, touch) = apply_starpet_interaction(&store, &mut ai, "greet", false).unwrap();
+        assert!(!touch.unwrap().animate);
+        assert_eq!(
+            store.starpet_preferences().unwrap(),
+            preferences,
+            "interactions do not change the saved mood or appearance"
+        );
+        preferences.enabled = false;
+        store.save_starpet_preferences(&preferences).unwrap();
+        store
+            .change_starpet_growth(GrowthChange::Enabled(false))
+            .unwrap();
+        let (paused, absent) =
+            apply_starpet_interaction(&store, &mut ai, "highfive", true).unwrap();
+        assert!(absent.is_none());
+        assert_eq!(paused.xp, greeted.xp);
+        assert_eq!(store.starpet_preferences().unwrap(), preferences);
+        drop(store);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn reopening_invalidates_delayed_main_window_release_requests() {
         let session = super::MainWindowSession::default();
-        let close = session.next_request().unwrap();
+        assert_eq!(session.pending_request().unwrap(), None);
+        let close = session.next_request(true).unwrap();
         assert!(session.is_current(close).unwrap());
+        assert_eq!(session.pending_request().unwrap(), Some(close));
 
         // A Dock / tray / shortcut reopen invalidates an old frontend reply
         // before it queues a native show, even when the worker is still busy.
-        let reopen = session.next_request().unwrap();
+        let reopen = session.next_request(false).unwrap();
         assert!(!session.is_current(close).unwrap());
-        assert!(session.is_current(reopen).unwrap());
+        assert!(!session.is_current(reopen).unwrap());
+        assert_eq!(session.pending_request().unwrap(), None);
 
-        let next_close = session.next_request().unwrap();
+        let next_close = session.next_request(true).unwrap();
         assert!(!session.is_current(reopen).unwrap());
         assert!(session.is_current(next_close).unwrap());
+        // A late completion cannot clear a newer pending close.
+        session.finish_request(close).unwrap();
+        assert_eq!(session.pending_request().unwrap(), Some(next_close));
+        session.finish_request(next_close).unwrap();
+        assert_eq!(session.pending_request().unwrap(), None);
     }
 
     #[test]
@@ -2257,6 +2855,7 @@ mod tests {
             .unwrap();
         store.set_clip_tags(clip.id, &["星图".into()]).unwrap();
         let context = Arc::new(Context {
+            telemetry: Mutex::new(Telemetry::new(Ok(Default::default()))),
             storage: Mutex::new(storage),
             store: Mutex::new(store),
             ai: Mutex::new(AiAccess::default()),
@@ -2269,7 +2868,8 @@ mod tests {
             window_error: Mutex::new(None),
             cleanup: Mutex::new(None),
             starpet_operation: Mutex::new(()),
-            tray_pause: OnceLock::new(),
+            tray_items: OnceLock::new(),
+            native_language: Mutex::new("zh-CN".into()),
         });
         let (pet_events, received_pet_events) = std::sync::mpsc::channel();
         start_ai_broker(&context, move |snapshot| {

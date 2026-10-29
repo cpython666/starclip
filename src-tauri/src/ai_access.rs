@@ -166,12 +166,7 @@ impl AiAccess {
             return Err("最多同时保留 20 个连接，请先撤销旧连接。".into());
         }
         let revision = store.privacy_rules()?.revision;
-        if !request.clip_ids.is_empty()
-            && store
-                .clips()?
-                .iter()
-                .any(|c| c.kind != "image" && c.scan_version != revision)
-        {
+        if !request.clip_ids.is_empty() && store.has_pending_ai_history()? {
             return Err("请先在规则与隐私中完成历史扫描，再创建连接。".into());
         }
         let ids: BTreeSet<_> = request.clip_ids.into_iter().collect();
@@ -681,6 +676,54 @@ mod tests {
         let mut preferences = store.starpet_preferences().unwrap();
         preferences.enabled = true;
         store.save_starpet_preferences(&preferences).unwrap();
+    }
+    #[test]
+    fn connection_still_requires_all_text_history_reviewed_but_not_images() {
+        let fixture = Fixture::new();
+        let store = fixture.store();
+        store.add("原创未选旧记录", "旧规则记录", None).unwrap();
+        let mut rules = store.privacy_rules().unwrap();
+        rules.rules.push(crate::privacy::PrivacyRule {
+            id: "fixture-scan-check".into(),
+            name: "原创扫描规则".into(),
+            enabled: true,
+            condition: "keyword".into(),
+            value: "原创不匹配内容".into(),
+            tag: None,
+            mark_private: true,
+        });
+        store.save_privacy_rules(&rules).unwrap();
+        let selected = store.add("原创已按新规则扫描", "本次授权", None).unwrap();
+        let image = crate::images::prepare_rgba(1, 1, &[30, 60, 90, 255]).unwrap();
+        let image = store.add_image(&image, "原创像素", None, false).unwrap();
+        assert_eq!(image.scan_version, 0);
+        let mut ai = AiAccess::default();
+        ai.port = Some(54321);
+        ai.enable(true).unwrap();
+        let create = || CreateConnection {
+            name: "原创审核连接".into(),
+            clip_ids: vec![selected.id],
+            fields: vec!["title".into()],
+            max_results: 5,
+            expires_hours: 1,
+            allow_pet_control: false,
+        };
+        assert_eq!(
+            ai.create(store, create(), Path::new("/fixed/starclip"))
+                .unwrap_err(),
+            "请先在规则与隐私中完成历史扫描，再创建连接。"
+        );
+        assert!(ai.connections.is_empty());
+        let scan = store.privacy_rescan_preview().unwrap();
+        store.privacy_rescan_apply(&scan.token).unwrap();
+        assert!(ai
+            .create(store, create(), Path::new("/fixed/starclip"))
+            .is_ok());
+        assert_eq!(ai.connections[0].record_count, 1);
+        assert_eq!(
+            ai.connections[0].ids.keys().copied().collect::<Vec<_>>(),
+            [selected.id]
+        );
     }
     #[test]
     fn pet_permission_is_separate_and_pet_only_does_not_require_history_scan() {

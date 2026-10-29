@@ -65,18 +65,37 @@ struct Pending {
 }
 
 impl Pending {
-    fn begin_check(&mut self) -> Result<()> {
-        ensure_idle(&self.status)?;
-        self.update = None;
+    fn begin_check(&mut self, automatic: bool) -> Result<()> {
+        self.ensure_checkable(automatic)?;
+        if !automatic {
+            self.update = None;
+            self.status.available = None;
+        }
         self.downloaded_package = None;
         self.cleanup_started = Arc::new(AtomicBool::new(false));
-        self.status.available = None;
         self.status.phase = "checking";
         self.status.error = None;
         self.status.downloaded = 0;
         self.status.total = None;
         self.status.backup_id = None;
         Ok(())
+    }
+
+    fn ensure_checkable(&self, automatic: bool) -> Result<()> {
+        ensure_idle(&self.status)?;
+        if automatic && self.status.phase == "ready" {
+            return Err("已下载的更新等待安装，暂不自动检查。".into());
+        }
+        Ok(())
+    }
+
+    fn failed_check(&mut self, error: String, automatic: bool) {
+        self.status.error = Some(error);
+        self.status.phase = if automatic && self.status.available.is_some() {
+            "available"
+        } else {
+            "error"
+        };
     }
 
     fn downloaded(&mut self, expected: &str, bytes: Vec<u8>) -> Result<()> {
@@ -174,10 +193,41 @@ impl Updates {
             .map(|pending| matches!(pending.status.phase, "backing-up" | "installing"))
             .unwrap_or(true)
     }
-    pub fn begin_check(&self, app: &AppHandle) -> Result<()> {
-        self.change(app, Pending::begin_check)
+    pub fn begin_check(
+        &self,
+        app: &AppHandle,
+        automatic: bool,
+        record_attempt: impl FnOnce() -> Result<bool>,
+    ) -> Result<bool> {
+        let mut pending = self.0.lock().map_err(|_| "更新状态异常，请重启星笺。")?;
+        pending.ensure_checkable(automatic)?;
+        // Persist the attempt only once the updater has reserved this check.
+        // A competing download/install cannot slip in and lose its package.
+        if !record_attempt()? {
+            return Ok(false);
+        }
+        pending.begin_check(automatic)?;
+        pending.status.revision += 1;
+        let _ = app.emit_to("main", "starclip-update-status", &pending.status);
+        Ok(true)
+    }
+    pub fn for_available_version<T>(
+        &self,
+        expected: &str,
+        save: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        let pending = self.0.lock().map_err(|_| "更新状态异常，请重启星笺。")?;
+        let available = pending.status.available.as_ref().ok_or("请先检查更新。")?;
+        validate_expected_version(&available.version, expected)?;
+        save()
     }
     pub fn checked(&self, app: &AppHandle, mut update: Option<Update>) -> Result<()> {
+        if update
+            .as_ref()
+            .is_some_and(|candidate| !is_stable_release(&candidate.version, &candidate.raw_json))
+        {
+            update = None;
+        }
         if let Some(update) = &mut update {
             validate_download_url(update.download_url.as_str())?;
             update.timeout = Some(std::time::Duration::from_secs(600));
@@ -268,11 +318,42 @@ impl Updates {
         })?;
         self.status()
     }
+    pub fn failed_check(
+        &self,
+        app: &AppHandle,
+        error: String,
+        automatic: bool,
+    ) -> Result<UpdateStatus> {
+        self.change(app, |pending| {
+            pending.failed_check(error, automatic);
+            Ok(())
+        })?;
+        self.status()
+    }
     pub fn restart_required(&self, app: &AppHandle, error: String) -> Result<UpdateStatus> {
         self.failed(app, error)?;
         self.phase(app, "restart-required")?;
         self.status()
     }
+}
+
+fn is_stable_release(version: &str, metadata: &serde_json::Value) -> bool {
+    // Missing is allowed for Tauri's canonical static JSON. Any present value
+    // other than false is rejected, including malformed prerelease metadata.
+    if metadata
+        .get("prerelease")
+        .is_some_and(|value| value != &serde_json::Value::Bool(false))
+    {
+        return false;
+    }
+    let parts: Vec<_> = version.split('.').collect();
+    parts.len() == 3
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && (*part == "0" || !part.starts_with('0'))
+                && part.parse::<u64>().is_ok()
+                && part.bytes().all(|byte| byte.is_ascii_digit())
+        })
 }
 
 fn ensure_idle(status: &UpdateStatus) -> Result<()> {
@@ -430,7 +511,7 @@ mod tests {
     fn rechecking_or_failure_discards_ready_bytes_and_rejects_late_downloads() {
         let mut pending = downloading();
         pending.downloaded("0.3.0", vec![1]).unwrap();
-        pending.begin_check().unwrap();
+        pending.begin_check(false).unwrap();
         assert!(pending.downloaded_package.is_none());
         assert!(pending.status.available.is_none());
         assert_eq!(pending.status.downloaded, 0);
@@ -443,6 +524,82 @@ mod tests {
         assert!(pending.downloaded_package.is_none());
         assert_eq!(pending.status.phase, "error");
         assert!(pending.take_downloaded("0.3.0").is_err());
+    }
+
+    #[test]
+    fn automatic_checks_preserve_ready_bytes_and_failed_checks_keep_the_candidate() {
+        let mut pending = downloading();
+        pending.downloaded("0.3.0", vec![1, 2]).unwrap();
+        assert!(pending.begin_check(true).is_err());
+        assert_eq!(pending.status.phase, "ready");
+        assert_eq!(
+            pending.downloaded_package.as_deref(),
+            Some([1, 2].as_slice())
+        );
+        assert_eq!(pending.status.available.as_ref().unwrap().version, "0.3.0");
+        for phase in [
+            "checking",
+            "downloading",
+            "backing-up",
+            "installing",
+            "installed",
+            "restart-required",
+        ] {
+            pending.status.phase = phase;
+            assert!(pending.begin_check(true).is_err());
+        }
+        pending.status.phase = "available";
+        pending.downloaded_package = None;
+        pending.begin_check(true).unwrap();
+        assert_eq!(pending.status.available.as_ref().unwrap().version, "0.3.0");
+        pending.failed_check("固定网络失败".into(), true);
+        assert_eq!(pending.status.phase, "available");
+        assert_eq!(pending.status.available.as_ref().unwrap().version, "0.3.0");
+        assert_eq!(pending.status.error.as_deref(), Some("固定网络失败"));
+    }
+
+    #[test]
+    fn stable_channel_excludes_prereleases_and_ignoring_requires_exact_current_version() {
+        use serde_json::json;
+        assert!(is_stable_release("0.3.0", &json!({})));
+        assert!(is_stable_release("12.23.456", &json!({"prerelease":false})));
+        for version in [
+            "v0.3.0",
+            "0.3.0-beta.1",
+            "0.3.0-rc.1",
+            "0.3.0+build",
+            "01.2.3",
+            "1.2",
+            "1.2.3.4",
+            "+1.2.3",
+            "18446744073709551616.0.0",
+        ] {
+            assert!(!is_stable_release(version, &json!({})), "{version}");
+        }
+        for flag in [json!(true), json!("false"), json!(null)] {
+            assert!(!is_stable_release("0.3.0", &json!({"prerelease":flag})));
+        }
+        let updates = Updates(Mutex::new(downloading()));
+        let mut saved = false;
+        assert!(updates
+            .for_available_version("0.4.0", || {
+                saved = true;
+                Ok(())
+            })
+            .is_err());
+        assert!(!saved);
+        updates
+            .for_available_version("0.3.0", || {
+                saved = true;
+                Ok(())
+            })
+            .unwrap();
+        assert!(saved);
+        assert_eq!(
+            updates.status().unwrap().available.unwrap().version,
+            "0.3.0",
+            "ignoring does not discard the manually downloadable candidate"
+        );
     }
 
     #[test]

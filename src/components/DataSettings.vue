@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { errorText, formatNumber, t } from '../i18n';
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { api, isDesktop } from '../api';
 import type { DataDirectoryMode, DataDirectoryPlan, DataLocation } from '../types';
@@ -13,17 +14,18 @@ const notice = ref('');
 const confirmation = ref<HTMLElement>();
 const pending = computed(() => location.value?.pendingPath || null);
 const blocked = computed(() => operation.value !== null || pending.value !== null);
+const canRelease = computed(() => (!isDesktop || !!location.value) && !blocked.value && !plan.value);
 const warnings = computed(() => [...new Set([...(location.value?.warnings || []), ...(plan.value?.warnings || [])])]);
 watch(blocked, value => emit('busy', value), { immediate: true, flush: 'sync' });
 
-function message(reason: unknown) { return reason instanceof Error ? reason.message : String(reason); }
+function message(reason: unknown) { return errorText(reason); }
 function bytes(value: number) {
-  if (!Number.isFinite(value) || value < 0) return '暂不可用';
+  if (!Number.isFinite(value) || value < 0) return t('暂不可用');
   if (value < 1024) return `${Math.round(value)} B`;
   const units = ['KiB', 'MiB', 'GiB', 'TiB'];
   let amount = value / 1024, unit = 0;
   while (amount >= 1024 && unit < units.length - 1) { amount /= 1024; unit++; }
-  return `${amount.toLocaleString('zh-CN', { maximumFractionDigits: 2 })} ${units[unit]}`;
+  return `${formatNumber(amount, { maximumFractionDigits: 2 })} ${units[unit]}`;
 }
 async function perform(name: NonNullable<typeof operation.value>, action: () => Promise<void>) {
   if (!isDesktop || operation.value || (pending.value && name !== 'restart')) return;
@@ -33,7 +35,7 @@ async function perform(name: NonNullable<typeof operation.value>, action: () => 
 function refresh() {
   return perform('load', async () => { location.value = await api.getDataLocation(); });
 }
-defineExpose({ refresh });
+defineExpose({ refresh, canRelease });
 function openFolder() {
   return perform('open', async () => { await api.openDataDirectory(); });
 }
@@ -41,20 +43,20 @@ function choose(mode: DataDirectoryMode) {
   return perform('choose', async () => {
     plan.value = null;
     const selected = await api.chooseDataDirectory(mode);
-    if (!selected) { notice.value = '已取消选择，数据位置未更改。'; return; }
+    if (!selected) { notice.value = t('已取消选择，数据位置未更改。'); return; }
     plan.value = selected;
     await nextTick(); confirmation.value?.focus();
   });
 }
 function cancel() {
   if (blocked.value) return;
-  plan.value = null; error.value = ''; notice.value = '已取消，数据位置未更改。';
+  plan.value = null; error.value = ''; notice.value = t('已取消，数据位置未更改。');
 }
 function restart() {
   return perform('restart', async () => {
-    notice.value = '正在重启星笺…';
+    notice.value = t('正在重启星笺…');
     try { await api.restartApp(); }
-    catch (reason) { throw new Error(`自动重启未完成，请点击「重启星笺」重试。${message(reason)}`); }
+    catch (reason) { throw new Error(t('自动重启未完成，请点击「重启星笺」重试。{error}', { error: message(reason) })); }
   });
 }
 function apply() {
@@ -70,10 +72,10 @@ function apply() {
       throw reason;
     }
     plan.value = null;
-    notice.value = '数据位置已切换，正在重启星笺…';
+    notice.value = t('数据位置已切换，正在重启星笺…');
     operation.value = 'restart';
     try { await api.restartApp(); }
-    catch (reason) { throw new Error(`数据位置已切换，但自动重启未完成。请点击「重启星笺」继续。${message(reason)}`); }
+    catch (reason) { throw new Error(t('数据位置已切换，但自动重启未完成。请点击「重启星笺」继续。{error}', { error: message(reason) })); }
   });
 }
 onMounted(() => { if (isDesktop) void refresh(); });
@@ -82,66 +84,66 @@ onMounted(() => { if (isDesktop) void refresh(); });
 <template>
   <section class="data-settings" aria-labelledby="data-location-heading" :aria-busy="operation !== null">
     <div class="data-heading">
-      <h3 id="data-location-heading"><Icon name="folder" :size="16" />数据位置</h3>
-      <button v-if="isDesktop" type="button" class="data-refresh" :disabled="blocked" @click="refresh">{{ operation === 'load' ? '读取中…' : '刷新位置' }}</button>
+      <h3 id="data-location-heading"><Icon name="folder" :size="16" />{{ t('数据位置') }}</h3>
+      <button v-if="isDesktop" type="button" class="data-refresh" :disabled="blocked" @click="refresh">{{ operation === 'load' ? t('读取中…') : t('刷新位置') }}</button>
     </div>
     <div v-if="!isDesktop" class="data-demo">
-      <strong>数据位置管理需要桌面版</strong>
-      <p>浏览器演示使用内存中的示例，不持久保存，也没有可迁移的本机数据目录。请在桌面版查看位置、打开文件夹或迁移数据。</p>
+      <strong>{{ t('数据位置管理需要桌面版') }}</strong>
+      <p>{{ t('浏览器演示使用内存中的示例，不持久保存，也没有可迁移的本机数据目录。请在桌面版查看位置、打开文件夹或迁移数据。') }}</p>
     </div>
     <template v-else>
-      <p v-if="operation === 'load' && !location" class="data-hint" role="status">正在读取当前数据位置与占用…</p>
-      <p v-else-if="!location" class="data-hint">暂时无法读取当前位置，请查看下方原因后重试。</p>
+      <p v-if="operation === 'load' && !location" class="data-hint" role="status">{{ t('正在读取当前数据位置与占用…') }}</p>
+      <p v-else-if="!location" class="data-hint">{{ t('暂时无法读取当前位置，请查看下方原因后重试。') }}</p>
       <template v-if="location">
         <div class="data-current">
-          <span class="data-label">当前数据目录</span>
+          <span class="data-label">{{ t('当前数据目录') }}</span>
           <code class="data-path">{{ location.currentPath }}</code>
           <dl class="data-sizes">
-            <div><dt>受管数据</dt><dd>{{ bytes(location.totalBytes) }}</dd></div>
-            <div><dt>其中数据库文件</dt><dd>{{ bytes(location.databaseBytes) }}</dd></div>
+            <div><dt>{{ t('受管数据') }}</dt><dd>{{ bytes(location.totalBytes) }}</dd></div>
+            <div><dt>{{ t('其中数据库文件') }}</dt><dd>{{ bytes(location.databaseBytes) }}</dd></div>
           </dl>
-          <p class="data-size-note">包含数据库及日志、月光笺配置和目录内受管渲染器；不包含系统 WebView 缓存或其他无关文件。</p>
+          <p class="data-size-note">{{ t('包含数据库及日志、月光笺配置和目录内受管渲染器；不包含系统 WebView 缓存或其他无关文件。') }}</p>
         </div>
         <details class="data-details">
-          <summary>默认位置与目录配置</summary>
-          <span class="data-label">默认数据目录</span><code class="data-path">{{ location.defaultPath }}</code>
-          <span class="data-label">位置配置文件</span><code class="data-path">{{ location.configPath }}</code>
+          <summary>{{ t('默认位置与目录配置') }}</summary>
+          <span class="data-label">{{ t('默认数据目录') }}</span><code class="data-path">{{ location.defaultPath }}</code>
+          <span class="data-label">{{ t('位置配置文件') }}</span><code class="data-path">{{ location.configPath }}</code>
         </details>
         <div v-if="pending" class="data-pending" role="status">
-          <strong>位置已切换，重启后继续使用</strong>
-          <span class="data-label">下次启动使用</span><code class="data-path">{{ pending }}</code>
-          <p>当前写入已暂停，旧目录保留。请重启星笺后继续编辑或保存。</p>
-          <button type="button" class="data-button data-primary" :disabled="operation !== null" @click="restart">{{ operation === 'restart' ? '正在重启…' : '重启星笺' }}</button>
+          <strong>{{ t('位置已切换，重启后继续使用') }}</strong>
+          <span class="data-label">{{ t('下次启动使用') }}</span><code class="data-path">{{ pending }}</code>
+          <p>{{ t('当前写入已暂停，旧目录保留。请重启星笺后继续编辑或保存。') }}</p>
+          <button type="button" class="data-button data-primary" :disabled="operation !== null" @click="restart">{{ operation === 'restart' ? t('正在重启…') : t('重启星笺') }}</button>
         </div>
         <template v-else>
           <div class="data-actions">
-            <button type="button" class="data-button" :disabled="blocked" @click="openFolder"><Icon name="folder" :size="14" />打开文件夹</button>
-            <button type="button" class="data-button" :disabled="blocked" @click="choose('move')">选择迁移目标</button>
-            <button type="button" class="data-button" :disabled="blocked" @click="choose('use')">使用已有数据目录</button>
+            <button type="button" class="data-button" :disabled="blocked" @click="openFolder"><Icon name="folder" :size="14" />{{ t('打开文件夹') }}</button>
+            <button type="button" class="data-button" :disabled="blocked" @click="choose('move')">{{ t('选择迁移目标') }}</button>
+            <button type="button" class="data-button" :disabled="blocked" @click="choose('use')">{{ t('使用已有数据目录') }}</button>
           </div>
-          <p class="data-hint">迁移会在所选位置新建专用目录，不覆盖已有目录。包括历史、星标、分组、已保存的偏好和目录内手写组件；旧目录保留。目录外的手写组件不会复制。</p>
-          <p class="data-hint">确认后将立即重启，请先保存其他偏好。JSON 备份包含记录、图片、分组、标签和隐私规则；完整迁移还包含已保存的外观等偏好及受管手写组件。</p>
+          <p class="data-hint">{{ t('迁移会在所选位置新建专用目录，不覆盖已有目录。包括历史、星标、分组、已保存的偏好和目录内手写组件；旧目录保留。目录外的手写组件不会复制。') }}</p>
+          <p class="data-hint">{{ t('确认后将立即重启，请先保存其他偏好。JSON 备份包含记录、图片、分组、标签和隐私规则；完整迁移还包含已保存的外观等偏好及受管手写组件。') }}</p>
         </template>
       </template>
-      <div v-if="plan && !pending" ref="confirmation" class="data-confirmation" tabindex="-1" role="region" aria-label="确认数据目录变更">
-        <h4>{{ plan.mode === 'move' ? '确认迁移到新位置' : '确认使用已有数据' }}</h4>
-        <span class="data-label">{{ plan.mode === 'move' ? '保留的原目录' : '即将停止使用的目录（保留）' }}</span>
+      <div v-if="plan && !pending" ref="confirmation" class="data-confirmation" tabindex="-1" role="region" :aria-label="t('确认数据目录变更')">
+        <h4>{{ plan.mode === 'move' ? t('确认迁移到新位置') : t('确认使用已有数据') }}</h4>
+        <span class="data-label">{{ plan.mode === 'move' ? t('保留的原目录') : t('即将停止使用的目录（保留）') }}</span>
         <code class="data-path">{{ plan.currentPath }}</code>
-        <span class="data-label">{{ plan.mode === 'move' ? '将新建的数据目录' : '将改用的数据目录' }}</span>
+        <span class="data-label">{{ plan.mode === 'move' ? t('将新建的数据目录') : t('将改用的数据目录') }}</span>
         <code class="data-path">{{ plan.targetPath }}</code>
-        <p class="data-plan-size">{{ plan.mode === 'move' ? '预计迁移受管数据' : '目标受管数据' }}：{{ bytes(plan.totalBytes) }}</p>
-        <p v-if="plan.mode === 'move'">确认后复制上述受管数据并切换位置，随后重启。原目录保留，尚未保存的偏好不会自动保存。</p>
-        <p v-else>确认后使用目标目录中的历史、分组与偏好，随后重启。<strong>不会合并当前记录</strong>，当前目录保留，尚未保存的偏好不会自动保存。</p>
-        <ul v-if="warnings.length" class="data-warnings"><li v-for="warning in warnings" :key="warning">{{ warning }}</li></ul>
+        <p class="data-plan-size">{{ plan.mode === 'move' ? t('预计迁移受管数据') : t('目标受管数据') }}: {{ bytes(plan.totalBytes) }}</p>
+        <p v-if="plan.mode === 'move'">{{ t('确认后复制上述受管数据并切换位置，随后重启。原目录保留，尚未保存的偏好不会自动保存。') }}</p>
+        <p v-else>{{ t('确认后使用目标目录中的历史、分组与偏好，随后重启。') }}<strong>{{ t('不会合并当前记录') }}</strong>{{ t('，当前目录保留，尚未保存的偏好不会自动保存。') }}</p>
+        <ul v-if="warnings.length" class="data-warnings"><li v-for="warning in warnings" :key="warning">{{ t(warning) }}</li></ul>
         <div class="data-confirm-actions">
-          <button type="button" class="data-button" :disabled="blocked" @click="cancel">取消</button>
-          <button type="button" class="data-button data-primary" :disabled="blocked" @click="apply">{{ operation === 'apply' ? '正在处理…' : plan.mode === 'move' ? '确认迁移并重启' : '确认切换并重启' }}</button>
+          <button type="button" class="data-button" :disabled="blocked" @click="cancel">{{ t('取消') }}</button>
+          <button type="button" class="data-button data-primary" :disabled="blocked" @click="apply">{{ operation === 'apply' ? t('正在处理…') : plan.mode === 'move' ? t('确认迁移并重启') : t('确认切换并重启') }}</button>
         </div>
       </div>
-      <ul v-if="warnings.length && !plan" class="data-warnings"><li v-for="warning in warnings" :key="warning">{{ warning }}</li></ul>
+      <ul v-if="warnings.length && !plan" class="data-warnings"><li v-for="warning in warnings" :key="warning">{{ t(warning) }}</li></ul>
       <p v-if="error" class="data-error" role="alert">{{ error }}</p>
       <p v-else-if="notice" class="data-notice" role="status">{{ notice }}</p>
-      <p class="data-privacy">数据以明文保存在本机所选目录，星笺不会上传到云端。</p>
+      <p class="data-privacy">{{ t('数据以明文保存在本机所选目录，星笺不会上传到云端。') }}</p>
     </template>
   </section>
 </template>

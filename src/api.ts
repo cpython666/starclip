@@ -1,6 +1,7 @@
-import type { AppState, Clip, CleanupFilter, CleanupPreview, CleanupResult, DataDirectoryMode, DataDirectoryPlan, DataLocation, Group, HandwritingAssets, HandwritingOptions, Settings } from './types';
+import type { AppState, Clip, CleanupFilter, CleanupPreview, CleanupResult, DataDirectoryMode, DataDirectoryPlan, DataLocation, Group, HistoryQuery, HandwritingAssets, HandwritingOptions, Settings } from './types';
 import { download, languages } from './snippets';
-import { analyzeDemoClip, protectedClip } from './privacy';
+import { t } from './i18n/index.ts';
+import { analyzeDemoClip, matchesMetadata, pendingClip, protectedClip } from './privacy';
 import type { PrivacyRules, PrivacyScan } from './privacy';
 
 export const isDesktop = '__TAURI_INTERNALS__' in window;
@@ -8,21 +9,21 @@ export const isDesktop = '__TAURI_INTERNALS__' in window;
 const demoImage = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAUAAAAC0CAIAAABqhmJGAAAEQklEQVR42u3cX3LTZhTG4W8ZJQVaoBRKueoC+JdASiDACnrb6Z66ieyml1kDkwVg4hJCAjiKHUnvd56Z59pCR+eHbNmT9sNPj4BQzQhAwICAAQGDgAEBAwIGvhrwYyCUgEHAwDQB//wYCCVgEDAgYEDAUCjgJ0AoAYOAAQEDAgYBAwEB33oChBIwZAf8FAjVrt16CoQSMAgYEDCXc3R4YAgCJrXeJaMQMKn11mz4/X//LgiYHuot1fAy3eL1LgN+Rq5z9ZY465N6jwMuvQDt2u1nRPtcb43z/aLe8ldfwJ00XLBeAc8o4DoryKbqFfBcAq72JpCN1CvgWQR89jGMZUXAKQF//YsQ+8oF6hWwOzBuv/EBb0/uVL3bcMa3br/HDVcfTpvJv0O9CDg4YBhar4AFjIDTA76zDbO1IuDy8xEwAhYwTBGwhgWMgLMD3oHZWhnwccN15yNgBJwc8NadHZitiwS8UHY+AkbAAoZJAy7bsIDpJOCaDQuYfgIu2HDb+mUH5mxww5WGswj4OczZ0IA/ZVxiOAKm24Yvl3FW/AKm54AHZZx49xYwJRo+n3Qf770FTMWAu/nwLGA0HPzoS8BoOPjBtYDRcPDXTouAX0CWK6g3dRQCpnrD0XNoW3dfQKh1082fgICpmHE35y5gamXc2VkLeLWjwwNDQMCp9S4ZBQJOrVfDzDbgXb7jVL2mwewI+EINGwICBjYd8I93d4FQAobogH/dBUIJGAQMTBTwn0AoAYOAAQEDAgYBAwKmY0eHB4YgYFLrXTKKSQO+9xKGOvOnDgxkKgJm3YaNQsCkNmwIAgYEDAIGBAwIGFgV8B4QSsAgYGCagO/vARvx8Zct4x6xXb+/B6zv5LelYx5UwLDJekduWMCw4XrHbFjAkH0HfgWs71S94x1UwLDJhkc+ooAhmIBBwICAgYEB//YKCCVgyA74NRBKwCDgufr4xbrLjIBD6/3/p22uNAIOrVfDCNgdGATsMzAIGDgJeB8I1a4/2AdCCRgEDAgYGBbwjQf7QCgBg4CBiQJ+A1fnj/2/RlZqvAImslJtC5jOc62QtIAplGt/Sbcbv7+B06oVu6LneV8sASPa4JgFrFiCexawaAmOeRHwWzomrSliHu/6Cli0BMcsYNESHLOARUtwzG2q9+6IlvW7a3P4II5ouVx3bW5P1RAtF++uDX7Rh2+5IlaWod21tV/3HeuwmqwTXbui10W0jKCN8/+EYiEs4Mo9Wyx6C7jjnq0R5QLOrdrSIOBhbj58Nz7LgYABAfPJ83/+HoE5C5iAUFUtYPrMVdICprdi9SxgxVbhogtYtHpGwKIVs4BRrJhnF7BpilbMuRvYTFO0es5dv2aaihVz7gY20xStnnPXr1Wepgz0nL6Brc5Abbmk+9vA1uVYrS/TVj3aGTUXFXIJGAQMCBgQMAgYEDAgYEDAIGBAwICAQcBAog95oc6u5iG0XAAAAABJRU5ErkJggg==';
 const now = Date.now();
 const samples: Array<Pick<Clip, 'title' | 'content' | 'kind' | 'language' | 'groupId' | 'pinned' | 'image'>> = [
-  { title: '让灵感有迹可循', content: '有些灵感像流星，只出现一瞬。\n\n把值得留下的文字、链接与代码，收进自己的小小星系。', kind: 'text', language: null, groupId: 1, pinned: true },
-  { title: '一个温柔的问候', content: 'fn main() {\n    let universe = "你好，星笺";\n    println!("{universe} ✦");\n}', kind: 'code', language: 'rust', groupId: 2, pinned: true },
-  { title: 'Tauri · 小巧的桌面应用', content: 'https://v2.tauri.app/', kind: 'link', language: null, groupId: 2, pinned: false },
-  { title: '下一次灵感，留一点余地', content: '设计不是把每个角落填满，\n而是让重要的东西拥有呼吸的空间。', kind: 'text', language: null, groupId: 1, pinned: false },
-  { title: '星尘金', content: '#E9C98B', kind: 'color', language: null, groupId: 3, pinned: false },
-  { title: '一个轻巧的 debounce', content: 'function debounce(fn, delay = 300) {\n  let timer;\n  return (...args) => {\n    clearTimeout(timer);\n    timer = setTimeout(() => fn(...args), delay);\n  };\n}', kind: 'code', language: 'javascript', groupId: 2, pinned: true },
-  { title: '今晚的待办', content: '☑ 留下一个好点子\n☑ 把常用代码收进收藏\n☐ 早点休息，明天再看星星', kind: 'text', language: null, groupId: null, pinned: false },
-  { title: 'MDN Web 文档', content: 'https://developer.mozilla.org/zh-CN/', kind: 'link', language: null, groupId: 2, pinned: false },
-  { title: '月亮落在山丘上', content: 'starclip-image:original-demo-moon', kind: 'image', language: null, groupId: null, pinned: false, image: { width: 320, height: 180, bytes: 1147 } },
+  { title: t('让灵感有迹可循'), content: t('有些灵感像流星，只出现一瞬。\n\n把值得留下的文字、链接与代码，收进自己的小小星系。'), kind: 'text', language: null, groupId: 1, pinned: true },
+  { title: t('一个温柔的问候'), content: 'fn main() {\n    let universe = "你好，星笺";\n    println!("{universe} ✦");\n}', kind: 'code', language: 'rust', groupId: 2, pinned: true },
+  { title: t('Tauri · 小巧的桌面应用'), content: 'https://v2.tauri.app/', kind: 'link', language: null, groupId: 2, pinned: false },
+  { title: t('下一次灵感，留一点余地'), content: t('设计不是把每个角落填满，\n而是让重要的东西拥有呼吸的空间。'), kind: 'text', language: null, groupId: 1, pinned: false },
+  { title: t('星尘金'), content: '#E9C98B', kind: 'color', language: null, groupId: 3, pinned: false },
+  { title: t('一个轻巧的 debounce'), content: 'function debounce(fn, delay = 300) {\n  let timer;\n  return (...args) => {\n    clearTimeout(timer);\n    timer = setTimeout(() => fn(...args), delay);\n  };\n}', kind: 'code', language: 'javascript', groupId: 2, pinned: true },
+  { title: t('今晚的待办'), content: t('☑ 留下一个好点子\n☑ 把常用代码收进收藏\n☐ 早点休息，明天再看星星'), kind: 'text', language: null, groupId: null, pinned: false },
+  { title: t('MDN Web 文档'), content: 'https://developer.mozilla.org/zh-CN/', kind: 'link', language: null, groupId: 2, pinned: false },
+  { title: t('月亮落在山丘上'), content: 'starclip-image:original-demo-moon', kind: 'image', language: null, groupId: null, pinned: false, image: { width: 320, height: 180, bytes: 1147 } },
 ];
 let demo: AppState = {
   onboardingCompleted: false,
   clips: samples.map((clip, i) => ({ ...clip, keepForever: false, id: i + 1, createdAt: now - i * 1800000, updatedAt: now - i * 1800000, copyCount: i === 1 ? 12 : 0 })),
-  groups: [{ id: 1, name: '灵感碎片', color: '#d9b780' }, { id: 2, name: '开发工具箱', color: '#87bab6' }, { id: 3, name: '设计收藏', color: '#b69bd7' }],
-  settings: { paused: true, showStartup: true, stickerPack: 'auto', theme: 'dark', layout: 'grid', maxHistory: 0, retentionDays: 0, alwaysOnTop: false, shortcut: 'CommandOrControl+Shift+V' },
+  groups: [{ id: 1, name: t('灵感碎片'), color: '#d9b780' }, { id: 2, name: t('开发工具箱'), color: '#87bab6' }, { id: 3, name: t('设计收藏'), color: '#b69bd7' }],
+  settings: { paused: true, pauseRevision: 0, uiLanguage: 'system', showStartup: true, stickerPack: 'auto', theme: 'dark', layout: 'grid', maxHistory: 0, retentionDays: 0, alwaysOnTop: false, shortcut: 'CommandOrControl+Shift+V' },
   clipboardError: null, shortcutError: null, windowError: null,
 };
 // ponytail: browser preview stays in memory; only the native app persists real history.
@@ -52,8 +53,8 @@ function classify(content: string): Clip['kind'] {
   return 'text';
 }
 async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> { return (await import('@tauri-apps/api/core')).invoke<T>(command, args); }
-// The renderer also handles asset discovery and application selection. Keep all
-// three operations serial across panels, including a quick close and reopen.
+// Keep font discovery, downloads and rendering serial across panels, including
+// a quick close and reopen.
 let handwritingQueue: Promise<unknown> = Promise.resolve();
 function handwritingInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   const request = handwritingQueue.then(() => invoke<T>(command, args));
@@ -112,6 +113,10 @@ export const api = {
       matchedCount: clips.length, contentBytes: clips.reduce((sum, c) => sum + contentBytes(c), 0), databaseBytes: 0, reusableBytes: 0,
       items: clips.map(c => ({ id: c.id, title: c.title || (c.kind === 'image' ? '未命名图片' : c.content.slice(0, 44)), kind: c.kind, bytes: contentBytes(c), updatedAt: c.updatedAt })).sort((a, b) => b.bytes - a.bytes || a.id - b.id).slice(0, 100), truncated: clips.length > 100 };
   },
+  async cancelCleanup(token: string): Promise<void> {
+    if (isDesktop) return invoke('cancel_cleanup', { token });
+    if (pendingCleanup?.token === token) pendingCleanup = null;
+  },
   async executeCleanup(token: string, compact: boolean): Promise<CleanupResult> {
     if (isDesktop) return invoke('execute_cleanup', { token, compact });
     const pending = pendingCleanup; pendingCleanup = null;
@@ -146,16 +151,44 @@ export const api = {
     return invoke('restart_app');
   },
   async handwritingAssets(): Promise<HandwritingAssets> {
-    return isDesktop ? handwritingInvoke('handwriting_assets') : { available: false, path: null, fonts: [], backgrounds: [], error: '月光笺的手写效果需要在桌面版中连接本机星笺应用。星码卡可直接在此制作。' };
+    if (isDesktop) return handwritingInvoke('handwriting_assets');
+    // Only the bundled catalog and thumbnail images are read in the browser.
+    // Font files are fetched exclusively by the native, verified installer.
+    const response = await fetch('/handwriting-fonts/catalog.json');
+    if (!response.ok) throw new Error('暂时无法读取字体列表，请重试。');
+    const catalog = await response.json() as Array<Omit<HandwritingAssets['fonts'][number], 'path' | 'downloaded'>>;
+    return { available: true, path: 'builtin', fonts: catalog.map(item => ({ ...item, path: item.id, downloaded: false })), backgrounds: [], error: null };
   },
-  async chooseHandwritingApp(): Promise<HandwritingAssets> {
-    return isDesktop ? handwritingInvoke('choose_handwriting_app') : api.handwritingAssets();
+  async downloadHandwritingFont(id: string): Promise<HandwritingAssets> {
+    if (!isDesktop) throw new Error('请在桌面版下载字体并生成月光笺。');
+    return handwritingInvoke('download_handwriting_font', { id });
   },
   async renderHandwriting(options: HandwritingOptions): Promise<string> {
     if (!isDesktop) throw new Error('请在桌面版中生成月光笺。');
     return handwritingInvoke('render_handwriting', { options });
   },
-  async getState(): Promise<AppState> { return isDesktop ? invoke('get_state') : structuredClone(demo); },
+  async getState(query: HistoryQuery = {}): Promise<AppState> {
+    if (isDesktop) return invoke('get_state', { query });
+    const counts: Record<string, number> = {}, groupCounts: Record<string, number> = {};
+    const inFilter = (clip: Clip, filter = 'all') => filter === 'all' || (filter === 'pinned' && clip.pinned) || (filter === 'kept' && clip.keepForever) || (filter === 'link' ? !!clip.linkHosts?.length || clip.kind === 'link' : filter === clip.kind) || filter === `group-${clip.groupId}`;
+    for (const key of ['all', 'pinned', 'kept', 'text', 'link', 'code', 'color', 'image']) counts[key] = demo.clips.filter(clip => inFilter(clip, key)).length;
+    for (const clip of demo.clips) if (clip.groupId !== null) groupCounts[clip.groupId] = (groupCounts[clip.groupId] ?? 0) + 1;
+    const term = (query.query ?? '').trim().toLocaleLowerCase();
+    const matches = demo.clips.filter(clip => inFilter(clip, query.filter)
+      && matchesMetadata(clip, query.sources ?? [], query.tag ?? '', query.privacy ?? 'all', demoRules.revision)
+      && (!query.aiEligible || (!protectedClip(clip) && !pendingClip(clip, demoRules.revision) && clip.kind !== 'image'))
+      && (!term || `${clip.title}\n${clip.kind === 'image' ? '' : clip.content}${query.aiEligible ? `\n${clip.tags?.join(' ') ?? ''}` : ''}`.toLocaleLowerCase().includes(term)))
+      .sort((a, b) => b.updatedAt - a.updatedAt || b.id - a.id);
+    const pageSize = 50, total = matches.length, page = Math.min(Math.max(1, Math.floor(query.page || 1)), Math.max(1, Math.ceil(total / pageSize)));
+    const facet = (key: 'linkSources' | 'linkHosts' | 'tags') => [...new Set(demo.clips.flatMap(clip => clip[key] ?? []))].sort();
+    return structuredClone({ ...demo, clips: matches.slice((page - 1) * pageSize, page * pageSize), history: { page, pageSize, total, counts, groupCounts, sources: facet('linkSources'), hosts: facet('linkHosts'), tags: facet('tags') } });
+  },
+  async getClips(ids: number[]): Promise<Clip[]> {
+    if (ids.length > 500 || ids.some(id => !Number.isSafeInteger(id) || id <= 0)) throw new Error('每次最多读取 500 条有效记录。');
+    if (isDesktop) return invoke('get_clips', { ids });
+    return structuredClone(demo.clips.filter(clip => ids.includes(clip.id)));
+  },
+  async setNativeLanguage(language: 'zh-CN' | 'en-US'): Promise<void> { if (isDesktop) return invoke('set_native_language', { language }); },
   async imageData(id: number, thumbnail: boolean): Promise<string> {
     if (isDesktop) return invoke('get_clip_image', { id, thumbnail });
     if (requiredClip(id).kind !== 'image') throw new Error('这条记录不是图片');
@@ -204,8 +237,8 @@ export const api = {
     if (!['dark', 'light', 'white', 'forest', 'rose', 'system'].includes(theme)) throw new Error('主题无效，请重新选择。');
     demo.settings.theme = theme; changed(); return { ...demo.settings };
   },
-  async saveSettings(settings: Settings): Promise<void> {
-    if (isDesktop) return invoke('save_settings', { settings });
+  async saveSettings(settings: Settings, expectedPauseRevision = settings.pauseRevision): Promise<void> {
+    if (isDesktop) return invoke('save_settings', { settings, expectedPauseRevision });
     if (typeof settings.paused !== 'boolean' || typeof settings.alwaysOnTop !== 'boolean' || typeof settings.showStartup !== 'boolean'
       || !['dark', 'light', 'white', 'forest', 'rose', 'system'].includes(settings.theme) || !['grid', 'list', 'horizontal'].includes(settings.layout)
       || !['auto', 'none', 'cosmos', 'cats', 'puppies', 'garden'].includes(settings.stickerPack)
@@ -214,7 +247,9 @@ export const api = {
       || typeof settings.shortcut !== 'string' || !settings.shortcut.trim() || settings.shortcut.length > 80) {
       throw new Error('设置无效：请检查布局、历史上限、保留时长与快捷键。');
     }
-    demo.settings = { ...settings }; pruneDemo(); changed();
+    const paused = expectedPauseRevision !== demo.settings.pauseRevision ? demo.settings.paused : settings.paused;
+    const pauseRevision = demo.settings.pauseRevision + Number(paused !== demo.settings.paused);
+    demo.settings = { ...settings, paused, pauseRevision }; pruneDemo(); changed();
   },
   async clearHistory(): Promise<void> { if (isDesktop) return invoke('clear_history'); demo.clips = demo.clips.filter((clip) => clip.pinned || clip.keepForever); pendingCleanup = null; changed(); },
   async exportBackup(): Promise<string> {
@@ -304,8 +339,13 @@ export const api = {
     const blob = format === 'md' ? new Blob([data], { type: 'text/markdown;charset=utf-8' }) : new Blob([Uint8Array.from(atob(data), (c) => c.charCodeAt(0))], { type: 'image/png' });
     download(blob, filename); return true;
   },
-  async hideWindow(release = false, requestId?: number): Promise<void> {
+  async hideWindow(release = false, requestId?: number): Promise<{ requestId: number; pending: boolean }> {
     if (isDesktop) return invoke('hide_window', { release, requestId });
+    return { requestId: requestId ?? 0, pending: false };
+  },
+  async getWindowCloseRequest(): Promise<number | null> {
+    if (isDesktop) return invoke('get_main_window_close_request');
+    return null;
   },
   async onWindowCloseRequested(callback: (requestId: number) => void): Promise<() => void> {
     if (!isDesktop) return () => {};

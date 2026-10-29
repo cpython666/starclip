@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { errorText, t } from '../i18n';
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import hljs from 'highlight.js/lib/core';
 import javascript from 'highlight.js/lib/languages/javascript';
@@ -26,18 +27,18 @@ const props = withDefaults(defineProps<{ clip: Clip | null; groups: Group[]; ini
 const emit = defineEmits<{ saved: []; close: [] }>();
 const dialog = ref<HTMLDialogElement>();
 const mode = ref<'code' | 'handwriting'>(props.initialMode);
-const title = ref(props.clip?.title || (props.initialMode === 'handwriting' ? '写给星空的信' : '一页星码'));
+const title = ref(props.clip?.title || (props.initialMode === 'handwriting' ? t('写给星空的信') : t('一页星码')));
 // Switching modes shares the user's original text; neither tab replaces or rewrites it.
-const content = ref(props.clip?.content ?? (props.initialMode === 'handwriting' ? '让散落的灵感，\n在这里连成星座。' : 'fn main() {\n    println!("Hello, stars. ✦");\n}'));
+const content = ref(props.clip?.content ?? (props.initialMode === 'handwriting' ? t('让散落的灵感，\n在这里连成星座。') : 'fn main() {\n    println!("Hello, stars. ✦");\n}'));
 const language = ref(props.clip?.language || (props.clip || props.initialMode === 'handwriting' ? 'plaintext' : 'rust'));
 const groupId = ref<number | null>(props.clip?.groupId ?? null);
-const languageOptions = computed(() => languages.map(([value, label]) => ({ value, label })));
-const groupOptions = computed(() => [{ value: null, label: '未分组' }, ...props.groups.map(group => ({ value: group.id, label: group.name }))]);
-const codeThemeOptions = [{ value: 'dark', label: '深空 · 深色' }, { value: 'light', label: '晨光 · 浅色' }] as const;
-const paletteOptions = [{ value: 'night', label: '深空蓝' }, { value: 'nebula', label: '星云紫' }, { value: 'solid', label: '自选纯色' }] as const;
-const widthOptions = [{ value: 'auto', label: '自适应正文' }, { value: 'fixed', label: '固定宽度 · 长行软换行' }] as const;
-const windowOptions = [{ value: 'mac', label: 'macOS 三色圆点' }, { value: 'minimal', label: '简洁标题' }] as const;
-const style = reactive({ ...defaultCodeCardStyle });
+const languageOptions = computed(() => languages.map(([value, label]) => ({ value, label: t(label) })));
+const groupOptions = computed(() => [{ value: null, label: t('未分组') }, ...props.groups.map(group => ({ value: group.id, label: group.name }))]);
+const codeThemeOptions = computed(() => [{ value: 'dark', label: t('深空 · 深色') }, { value: 'light', label: t('晨光 · 浅色') }] as const);
+const paletteOptions = computed(() => [{ value: 'night', label: t('深空蓝') }, { value: 'nebula', label: t('星云紫') }, { value: 'solid', label: t('自选纯色') }] as const);
+const widthOptions = computed(() => [{ value: 'auto', label: t('自适应正文') }, { value: 'fixed', label: t('固定宽度 · 长行软换行') }] as const);
+const windowOptions = computed(() => [{ value: 'mac', label: t('macOS 三色圆点') }, { value: 'minimal', label: t('简洁标题') }] as const);
+const style = reactive({ ...defaultCodeCardStyle, watermark: t(defaultCodeCardStyle.watermark) });
 const busy = ref(false);
 const error = ref('');
 const notice = ref('');
@@ -57,7 +58,7 @@ function makePreview() {
     const result = renderCodeCard(title.value, content.value, language.value, highlighted.value, style);
     preview.value = result; previewError.value = '';
     return result;
-  } catch (e) { preview.value = null; previewError.value = String(e instanceof Error ? e.message : e); return null; }
+  } catch (e) { preview.value = null; previewError.value = errorText(e); return null; }
 }
 function schedulePreview() { clearTimeout(previewTimer); previewTimer = setTimeout(makePreview, 160); }
 watch([title, content, language, mode], schedulePreview);
@@ -68,15 +69,15 @@ onUnmounted(() => clearTimeout(previewTimer));
 async function action(fn: () => Promise<void>) {
   if (busy.value) return;
   busy.value = true; error.value = ''; notice.value = '';
-  try { await fn(); } catch (e) { error.value = String(e); } finally { busy.value = false; }
+  try { await fn(); } catch (e) { error.value = errorText(e); } finally { busy.value = false; }
 }
 function save() {
   if (mode.value !== 'code' || !content.value.trim()) return;
   return action(async () => { await api.saveCode(props.clip?.id ?? null, title.value, content.value, language.value, groupId.value); emit('saved'); emit('close'); });
 }
-function format() { try { content.value = formatJson(content.value); error.value = ''; } catch { error.value = 'JSON 格式有误，请检查后再格式化。'; } }
+function format() { try { content.value = formatJson(content.value); error.value = ''; } catch { error.value = t('JSON 格式有误，请检查后再格式化。'); } }
 function exportMarkdown() {
-  return action(async () => { if (await api.saveExport(markdownCode(title.value, content.value, language.value), 'md', `${safeFilename(title.value)}.md`)) notice.value = 'Markdown 已导出'; });
+  return action(async () => { if (await api.saveExport(markdownCode(title.value, content.value, language.value), 'md', `${safeFilename(title.value)}.md`)) notice.value = t('Markdown 已导出'); });
 }
 function insertTab(event: KeyboardEvent) {
   if (event.key !== 'Tab' || mode.value !== 'code') return;
@@ -89,42 +90,42 @@ function insertTab(event: KeyboardEvent) {
 function exportImage() {
   return action(async () => {
     const image = makePreview();
-    if (!image) throw new Error(previewError.value || '暂时无法生成卡片');
-    if (await api.saveExport(image.url.split(',')[1]!, 'png', `${safeFilename(title.value)}.png`)) notice.value = '星码卡已导出，与当前预览一致';
+    if (!image) throw new Error(previewError.value || t('暂时无法生成卡片'));
+    if (await api.saveExport(image.url.split(',')[1]!, 'png', `${safeFilename(title.value)}.png`)) notice.value = t('星码卡已导出，与当前预览一致');
   });
 }
 </script>
 
 <template>
   <dialog ref="dialog" class="code-studio" @cancel.prevent="!busy && emit('close')" @click="event => { if (!busy && event.target === dialog) emit('close'); }" @keydown.meta.s.prevent="save" @keydown.ctrl.s.prevent="save">
-    <div class="studio-heading"><div><span class="studio-eyebrow">A LITTLE PIECE OF YOUR UNIVERSE</span><h2>星绘坊 <span>✦</span></h2><p>让代码有星光，让文字有温度。</p></div><button class="studio-close" aria-label="关闭星绘坊" :disabled="busy" @click="emit('close')">×</button></div>
-    <div class="studio-tabs" role="tablist" aria-label="卡片类型"><button id="code-tab" role="tab" :aria-selected="mode === 'code'" aria-controls="studio-workspace" :class="{ active: mode === 'code' }" :disabled="busy" @click="mode = 'code'"><span aria-hidden="true">〈/〉</span>星码卡<em>代码卡片</em></button><button id="handwriting-tab" role="tab" :aria-selected="mode === 'handwriting'" aria-controls="studio-workspace" :class="{ active: mode === 'handwriting' }" :disabled="busy" @click="mode = 'handwriting'"><span aria-hidden="true">✎</span>月光笺<em>手写纸笺</em></button><small>切换样式，正文保留</small></div>
+    <div class="studio-heading"><div><span class="studio-eyebrow">A LITTLE PIECE OF YOUR UNIVERSE</span><h2>{{ t('星绘坊') }} <span>✦</span></h2><p>{{ t('让代码有星光，让文字有温度。') }}</p></div><button class="studio-close" :aria-label="t('关闭星绘坊')" :disabled="busy" @click="emit('close')">×</button></div>
+    <div class="studio-tabs" role="tablist" :aria-label="t('卡片类型')"><button id="code-tab" role="tab" :aria-selected="mode === 'code'" aria-controls="studio-workspace" :class="{ active: mode === 'code' }" :disabled="busy" @click="mode = 'code'"><span aria-hidden="true">〈/〉</span>{{ t('星码卡') }}<em>{{ t('代码卡片') }}</em></button><button id="handwriting-tab" role="tab" :aria-selected="mode === 'handwriting'" aria-controls="studio-workspace" :class="{ active: mode === 'handwriting' }" :disabled="busy" @click="mode = 'handwriting'"><span aria-hidden="true">✎</span>{{ t('月光笺') }}<em>{{ t('手写纸笺') }}</em></button><small>{{ t('切换样式，正文保留') }}</small></div>
     <div id="studio-workspace" role="tabpanel" :aria-labelledby="mode === 'code' ? 'code-tab' : 'handwriting-tab'">
-      <div class="studio-meta" :class="{ 'handwriting-meta': mode === 'handwriting' }"><label>标题<input v-model="title" maxlength="200" aria-label="卡片标题" /></label><template v-if="mode === 'code'"><div class="studio-field"><span>语言</span><UiSelect v-model="language" :options="languageOptions" label="代码语言" :disabled="busy" /></div><div class="studio-field"><span>分组</span><UiSelect v-model="groupId" :options="groupOptions" label="代码分组" :disabled="busy" /></div></template><p v-else>把文字变成一张纸笺。选择字体与纸张，预览会自动更新。</p></div>
+      <div class="studio-meta" :class="{ 'handwriting-meta': mode === 'handwriting' }"><label>{{ t('标题') }}<input v-model="title" maxlength="200" :aria-label="t('卡片标题')" /></label><template v-if="mode === 'code'"><div class="studio-field"><span>{{ t('语言') }}</span><UiSelect v-model="language" :options="languageOptions" :label="t('代码语言')" :disabled="busy" /></div><div class="studio-field"><span>{{ t('分组') }}</span><UiSelect v-model="groupId" :options="groupOptions" :label="t('代码分组')" :disabled="busy" /></div></template><p v-else>{{ t('把文字变成一张纸笺。选择字体与纸张，预览会自动更新。') }}</p></div>
       <div class="studio-panels" :class="{ 'handwriting-workspace': mode === 'handwriting' }">
-        <section class="studio-editor"><div class="studio-panel-label">{{ mode === 'code' ? '编辑代码' : '纸笺正文' }}<button v-if="mode === 'code' && language === 'json'" @click="format">格式化 JSON</button><span v-else>{{ content.split('\n').length }} 行 · {{ [...content].length }} 字符</span></div><textarea v-model="content" :aria-label="mode === 'code' ? '代码内容' : '纸笺正文'" :class="{ 'handwriting-text': mode === 'handwriting' }" spellcheck="false" autocomplete="off" autocapitalize="off" @keydown="insertTab" /><p class="editor-note">{{ mode === 'code' ? 'Tab 插入两个空格 · 原文只在本机处理' : '切换卡片类型不会改写正文，也不会保存为代码。' }}</p></section>
-        <section v-if="mode === 'code'" class="studio-preview"><div class="studio-panel-label">导出效果预览 <span v-if="preview">{{ preview.width }} × {{ preview.height }}</span></div><div class="canvas-preview"><img v-if="preview" :src="preview.url" :alt="`${title}，星码卡导出预览`" /><div v-else class="preview-placeholder"><span>✦</span><p>{{ previewError || '正在点亮这张卡片…' }}</p></div></div><p class="preview-note">{{ style.widthMode === 'fixed' ? '长行软换行，原文与行号保留 · PNG 以 2 倍分辨率生成' : '预览即导出 · PNG 以 2 倍分辨率生成' }}</p></section>
+        <section class="studio-editor"><div class="studio-panel-label">{{ mode === 'code' ? t('编辑代码') : t('纸笺正文') }}<button v-if="mode === 'code' && language === 'json'" @click="format">{{ t('格式化 JSON') }}</button><span v-else>{{ content.split('\n').length }} {{ t('行 ·') }} {{ [...content].length }} {{ t('字符') }}</span></div><textarea v-model="content" :aria-label="mode === 'code' ? t('代码内容') : t('纸笺正文')" :class="{ 'handwriting-text': mode === 'handwriting' }" spellcheck="false" autocomplete="off" autocapitalize="off" @keydown="insertTab" /><p class="editor-note">{{ mode === 'code' ? t('Tab 插入两个空格 · 原文只在本机处理') : t('切换卡片类型不会改写正文，也不会保存为代码。') }}</p></section>
+        <section v-if="mode === 'code'" class="studio-preview"><div class="studio-panel-label">{{ t('导出效果预览') }} <span v-if="preview">{{ preview.width }} × {{ preview.height }}</span></div><div class="canvas-preview"><img v-if="preview" :src="preview.url" :alt="t('{title}，星码卡导出预览', { title })" /><div v-else class="preview-placeholder"><span>✦</span><p>{{ previewError || t('正在点亮这张卡片…') }}</p></div></div><p class="preview-note">{{ style.widthMode === 'fixed' ? t('长行软换行，原文与行号保留 · PNG 以 2 倍分辨率生成') : t('预览即导出 · PNG 以 2 倍分辨率生成') }}</p></section>
         <section v-else class="handwriting-preview"><HandwritingPanel :text="content" :title="title" /></section>
       </div>
-      <section v-if="mode === 'code'" class="card-controls" aria-label="代码卡片样式">
-        <div class="control-heading"><h3>装点这张卡片</h3><button class="reset-style" @click="Object.assign(style, defaultCodeCardStyle)">恢复默认</button></div>
+      <section v-if="mode === 'code'" class="card-controls" :aria-label="t('代码卡片样式')">
+        <div class="control-heading"><h3>{{ t('装点这张卡片') }}</h3><button class="reset-style" @click="Object.assign(style, defaultCodeCardStyle)">{{ t('恢复默认') }}</button></div>
         <div class="control-grid">
-          <div class="control-field"><span>代码配色</span><UiSelect v-model="style.codeTheme" :options="codeThemeOptions" label="代码配色" :disabled="busy" /></div>
-          <div class="control-field"><span>外层背景</span><UiSelect v-model="style.palette" :options="paletteOptions" label="卡片背景" :disabled="busy" /></div>
-          <div v-if="style.palette === 'solid'" class="control-field"><span>背景颜色</span><UiColor v-model="style.background" label="自选背景颜色" :disabled="busy" /></div>
-          <div class="control-field"><span>卡片宽度</span><UiSelect v-model="style.widthMode" :options="widthOptions" label="卡片宽度模式" :disabled="busy" /></div>
-          <label v-if="style.widthMode === 'fixed'">代码窗宽度 <span>{{ style.fixedWidth }} px</span><input v-model.number="style.fixedWidth" type="range" min="320" max="960" step="16" aria-label="代码窗宽度" /></label>
-          <label>横向留白 <span>{{ style.paddingX }} px</span><input v-model.number="style.paddingX" type="range" min="16" max="96" step="4" aria-label="横向留白" /></label>
-          <label>纵向留白 <span>{{ style.paddingY }} px</span><input v-model.number="style.paddingY" type="range" min="16" max="96" step="4" aria-label="纵向留白" /></label>
-          <div class="control-field"><span>窗头</span><UiSelect v-model="style.windowStyle" :options="windowOptions" label="窗头样式" :disabled="busy" /></div>
-          <div class="control-checks"><label><input v-model="style.lineNumbers" type="checkbox" />显示行号</label><label><input v-model="style.shadow" type="checkbox" />卡片阴影</label></div>
-          <label class="watermark-control">水印 <span>留空即隐藏</span><input v-model="style.watermark" maxlength="80" aria-label="卡片水印" placeholder="写下一句属于你的话" /></label>
-          <label>水印不透明度 <span>{{ Math.round(style.watermarkOpacity * 100) }}%</span><input v-model.number="style.watermarkOpacity" type="range" min="0" max="1" step="0.05" aria-label="水印不透明度" :disabled="!style.watermark.trim()" /></label>
+          <div class="control-field"><span>{{ t('代码配色') }}</span><UiSelect v-model="style.codeTheme" :options="codeThemeOptions" :label="t('代码配色')" :disabled="busy" /></div>
+          <div class="control-field"><span>{{ t('外层背景') }}</span><UiSelect v-model="style.palette" :options="paletteOptions" :label="t('卡片背景')" :disabled="busy" /></div>
+          <div v-if="style.palette === 'solid'" class="control-field"><span>{{ t('背景颜色') }}</span><UiColor v-model="style.background" :label="t('自选背景颜色')" :disabled="busy" /></div>
+          <div class="control-field"><span>{{ t('卡片宽度') }}</span><UiSelect v-model="style.widthMode" :options="widthOptions" :label="t('卡片宽度模式')" :disabled="busy" /></div>
+          <label v-if="style.widthMode === 'fixed'">{{ t('代码窗宽度') }} <span>{{ style.fixedWidth }} px</span><input v-model.number="style.fixedWidth" type="range" min="320" max="960" step="16" :aria-label="t('代码窗宽度')" /></label>
+          <label>{{ t('横向留白') }} <span>{{ style.paddingX }} px</span><input v-model.number="style.paddingX" type="range" min="16" max="96" step="4" :aria-label="t('横向留白')" /></label>
+          <label>{{ t('纵向留白') }} <span>{{ style.paddingY }} px</span><input v-model.number="style.paddingY" type="range" min="16" max="96" step="4" :aria-label="t('纵向留白')" /></label>
+          <div class="control-field"><span>{{ t('窗头') }}</span><UiSelect v-model="style.windowStyle" :options="windowOptions" :label="t('窗头样式')" :disabled="busy" /></div>
+          <div class="control-checks"><label><input v-model="style.lineNumbers" type="checkbox" />{{ t('显示行号') }}</label><label><input v-model="style.shadow" type="checkbox" />{{ t('卡片阴影') }}</label></div>
+          <label class="watermark-control">{{ t('水印') }} <span>{{ t('留空即隐藏') }}</span><input v-model="style.watermark" maxlength="80" :aria-label="t('卡片水印')" :placeholder="t('写下一句属于你的话')" /></label>
+          <label>{{ t('水印不透明度') }} <span>{{ Math.round(style.watermarkOpacity * 100) }}%</span><input v-model.number="style.watermarkOpacity" type="range" min="0" max="1" step="0.05" :aria-label="t('水印不透明度')" :disabled="!style.watermark.trim()" /></label>
         </div>
       </section>
     </div>
-    <div v-if="mode === 'code'" class="studio-message" aria-live="polite"><span v-if="error" class="studio-error">{{ error }}</span><span v-else-if="notice">{{ notice }}</span><span v-else-if="previewError" class="studio-error">{{ previewError }}</span><span v-else>本地保存 · 不上传代码 · 新建片段收入星码集，并自动星标</span></div>
-    <footer v-if="mode === 'code'" class="studio-footer"><div class="studio-export"><button :disabled="busy || !content.trim()" @click="exportMarkdown">导出 Markdown</button><button :disabled="busy || !content.trim() || !!previewError" @click="exportImage">导出星码卡 PNG</button></div><button class="studio-save" :disabled="busy || !content.trim()" @click="save">{{ busy ? '处理中…' : props.clip ? '保存修改' : '收入星码集' }} <kbd>{{ modifier }} S</kbd></button></footer>
+    <div v-if="mode === 'code'" class="studio-message" aria-live="polite"><span v-if="error" class="studio-error">{{ error }}</span><span v-else-if="notice">{{ notice }}</span><span v-else-if="previewError" class="studio-error">{{ previewError }}</span><span v-else>{{ t('本地保存 · 不上传代码 · 新建片段收入星码集，并自动星标') }}</span></div>
+    <footer v-if="mode === 'code'" class="studio-footer"><div class="studio-export"><button :disabled="busy || !content.trim()" @click="exportMarkdown">{{ t('导出 Markdown') }}</button><button :disabled="busy || !content.trim() || !!previewError" @click="exportImage">{{ t('导出星码卡 PNG') }}</button></div><button class="studio-save" :disabled="busy || !content.trim()" @click="save">{{ busy ? t('处理中…') : props.clip ? t('保存修改') : t('收入星码集') }} <kbd>{{ modifier }} S</kbd></button></footer>
   </dialog>
 </template>
 

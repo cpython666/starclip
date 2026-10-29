@@ -1,0 +1,18 @@
+# Deployment name only; change it for each independent product deployment.
+# Clients use the full HTTPS /collect URL configured at build time.
+name = "desktop-usage-relay"
+main = "worker.mjs"
+compatibility_date = "2026-10-28"
+workers_dev = true
+
+# Set these using `wrangler secret put`; never put real values in this file:
+# GA4_MEASUREMENT_ID
+# GA4_API_SECRET
+# Optional only when ENABLE_APPLICATION_INSIGHTS is explicitly "true":
+# APPLICATIONINSIGHTS_CONNECTION_STRING
+
+[vars]
+ENABLE_APPLICATION_INSIGHTS = "false"
+
+[observability]
+enabled = false

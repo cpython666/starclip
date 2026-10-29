@@ -114,6 +114,15 @@ pub struct Metadata {
     pub link_hosts: Vec<String>,
 }
 impl Metadata {
+    pub fn normalize_image_policy(&mut self, kind: &str) {
+        if kind == "image" {
+            // This legacy marker described a missing capability, not a secret
+            // match. Preserve manual protection and every real rule reason.
+            self.privacy_reasons
+                .retain(|reason| reason != "图片尚未进行文字识别");
+            self.scan_version = 0;
+        }
+    }
     pub fn ensure_identity(&mut self) -> Result<()> {
         if self.record_identity.is_empty() {
             let mut bytes = [0u8; 32];
@@ -137,7 +146,7 @@ impl Metadata {
         reviewed: bool,
     ) -> Self {
         let scan = scan(content, title, kind, rules);
-        Self {
+        let mut next = Self {
             record_identity: self.record_identity.clone(),
             privacy_manual: self.privacy_manual,
             privacy_reasons: {
@@ -157,7 +166,9 @@ impl Metadata {
             rule_tags: scan.tags,
             link_sources: scan.sources,
             link_hosts: scan.hosts,
-        }
+        };
+        next.normalize_image_policy(kind);
+        next
     }
 }
 
@@ -315,6 +326,8 @@ fn mnemonic_reason(text: &str) -> Option<&'static str> {
 }
 
 pub fn scan(content: &str, title: &str, kind: &str, rules: &PrivacyRules) -> Scan {
+    // Image content is an internal fingerprint, not recognized image text.
+    let content = if kind == "image" { "" } else { content };
     let mut result = Scan {
         complete: true,
         ..Scan::default()
@@ -325,7 +338,9 @@ pub fn scan(content: &str, title: &str, kind: &str, rules: &PrivacyRules) -> Sca
         return result;
     }
     if kind == "image" {
-        result.reasons.push("图片尚未进行文字识别".into());
+        // No OCR is performed here. An unreadable image is pending review,
+        // not evidence of a secret; otherwise every screenshot would be
+        // hidden before the user has a chance to inspect it.
         result.complete = false;
     }
     let text = format!("{content}\n{title}");
@@ -571,5 +586,15 @@ mod tests {
         let scan = scan("internal note", "", "text", &rules);
         assert_eq!(scan.tags, vec!["工作"]);
         assert!(!scan.reasons.is_empty());
+    }
+    #[test]
+    fn images_are_pending_without_becoming_private_by_default() {
+        let scan = scan("", "游戏截图", "image", &PrivacyRules::default());
+        assert!(!scan.complete);
+        assert!(scan.reasons.is_empty());
+        let metadata =
+            Metadata::default().scanned("", "游戏截图", "image", &PrivacyRules::default(), false);
+        assert!(!metadata.is_private());
+        assert_eq!(metadata.scan_version, 0);
     }
 }

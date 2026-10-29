@@ -7,11 +7,18 @@ test('cleanup previews exact UTF-8 candidates, protects retained records, reject
   Object.assign(globalThis, { window: {} });
   const source = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8')
     .replace("from './privacy'", `from '${new URL('../src/privacy.ts', import.meta.url).href}'`)
-    .replace("from './snippets'", `from '${new URL('../src/snippets.ts', import.meta.url).href}'`);
+    .replace("from './snippets'", `from '${new URL('../src/snippets.ts', import.meta.url).href}'`)
+    .replace("from './i18n/index.ts'", `from '${new URL('../src/i18n/index.ts', import.meta.url).href}'`);
   const code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
   const { api } = await import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'));
-  for (const clip of (await api.getState()).clips) if (clip.kind === 'image') await api.deleteClip(clip.id);
-  const original = await api.getState();
+  // Retention assertions inspect every page; the production IPC stays bounded.
+  const allState = async () => {
+    const first = await api.getState(), clips = [...first.clips];
+    for (let page = 2; page <= Math.ceil(first.history.total / first.history.pageSize); page++) clips.push(...(await api.getState({ page })).clips);
+    return { ...first, clips };
+  };
+  for (const clip of (await allState()).clips) if (clip.kind === 'image') await api.deleteClip(clip.id);
+  const original = await allState();
   assert.equal(original.settings.maxHistory, 0);
   const old = Date.now() - 60 * 86400000;
   const make = (id: number, content: string, extras = {}) => ({ id, title: '月', content, kind: 'text', pinned: false, groupId: null, createdAt: old, updatedAt: old, copyCount: 0, ...extras });
@@ -19,6 +26,15 @@ test('cleanup previews exact UTF-8 candidates, protects retained records, reject
   await api.importBackup(JSON.stringify({ format: 'starclip', version: 1, groups: [{ id: 99, name: '受保护分组', color: '#778899' }], clips: records }));
   const filter = { minBytes: 8, olderThanDays: 30, kind: 'text', includeGrouped: false };
   let preview = await api.previewCleanup(filter);
+  const oldToken = (await api.previewCleanup({ ...filter, minBytes: Number.MAX_SAFE_INTEGER })).token;
+  const replacement = await api.previewCleanup({ ...filter, minBytes: Number.MAX_SAFE_INTEGER });
+  await api.cancelCleanup(oldToken);
+  assert.equal((await api.executeCleanup(replacement.token, false)).deletedCount, 0, 'late cancellation must not clear a newer plan');
+  preview = await api.previewCleanup(filter);
+  const activeToken = preview.token;
+  await api.cancelCleanup(activeToken);
+  await assert.rejects(api.executeCleanup(activeToken, false), /重新预览/);
+  preview = await api.previewCleanup(filter);
   assert.equal(preview.matchedCount, 1);
   assert.equal(preview.contentBytes, 9, 'Chinese bytes include UTF-8 title and body');
   assert.equal((await api.previewCleanup({ ...filter, minBytes: 9 })).matchedCount, 0, 'threshold is strict greater-than');
@@ -27,20 +43,20 @@ test('cleanup previews exact UTF-8 candidates, protects retained records, reject
   preview = await api.previewCleanup(filter);
   await api.setKeepForever(preview.items[0].id, true);
   await assert.rejects(api.executeCleanup(preview.token, true), /重新预览/);
-  assert((await api.getState()).clips.some((c: { content: string }) => c.content === '星星'));
-  const kept = (await api.getState()).clips.find((c: { content: string }) => c.content === '星星');
+  assert((await allState()).clips.some((c: { content: string }) => c.content === '星星'));
+  const kept = (await allState()).clips.find((c: { content: string }) => c.content === '星星');
   await assert.rejects(api.deleteClip(kept.id), /永久保留/);
   await api.addClip(kept.content, '', null);
-  assert((await api.getState()).clips.find((c: { id: number }) => c.id === kept.id).keepForever);
+  assert((await allState()).clips.find((c: { id: number }) => c.id === kept.id).keepForever);
   await api.saveSettings({ ...original.settings, maxHistory: 50, retentionDays: 1 });
-  assert((await api.getState()).clips.some((c: { content: string }) => c.content === '星星甲'), 'permanent marker protects automatic cleanup');
+  assert((await allState()).clips.some((c: { content: string }) => c.content === '星星甲'), 'permanent marker protects automatic cleanup');
   await api.saveSettings({ ...original.settings, maxHistory: 0, retentionDays: 0 });
   const disposable = await api.addClip('临时测试内容', '清理对象', null);
   preview = await api.previewCleanup({ minBytes: 0, olderThanDays: 0, kind: 'all', includeGrouped: false });
   const later = await api.addClip('预览之后才到来的记录', '', null);
   const result = await api.executeCleanup(preview.token, true);
   assert.equal(result.deletedCount, preview.matchedCount);
-  const remaining = (await api.getState()).clips;
+  const remaining = (await allState()).clips;
   assert(!remaining.some((c: { id: number }) => c.id === disposable.id));
   assert(remaining.some((c: { id: number }) => c.id === later.id));
   assert(remaining.some((c: { id: number }) => c.id === kept.id));
@@ -52,22 +68,22 @@ test('cleanup previews exact UTF-8 candidates, protects retained records, reject
   await api.deleteClip(restored.id);
   await api.importBackup(recoveryBackup);
   await assert.rejects(api.executeCleanup(preview.token, true), /重新预览/, 'restoring an identical row cannot revive an earlier cleanup plan');
-  assert((await api.getState()).clips.some((c: { content: string }) => c.content === restored.content));
+  assert((await allState()).clips.some((c: { content: string }) => c.content === restored.content));
   const legacy = JSON.parse(await api.exportBackup());
   for (const c of legacy.clips) delete c.keepForever;
   await api.importBackup(JSON.stringify(legacy));
-  assert((await api.getState()).clips.find((c: { id: number }) => c.id === kept.id).keepForever, 'old backup cannot downgrade protection');
+  assert((await allState()).clips.find((c: { id: number }) => c.id === kept.id).keepForever, 'old backup cannot downgrade protection');
   await api.saveSettings({ ...original.settings, maxHistory: 50, retentionDays: 0 });
   for (let index = 0; index < 50; index++) await api.addClip(`普通容量样例${index}`, '', null);
-  const countBefore = (await api.getState()).clips.length;
+  const countBefore = (await allState()).clips.length;
   await api.addClip('新增永久保留不挤占普通历史', '', null, true);
-  assert.equal((await api.getState()).clips.length, countBefore + 1);
+  assert.equal((await allState()).clips.length, countBefore + 1);
   await api.saveSettings({ ...original.settings, maxHistory: 0, retentionDays: 0 });
   for (let index = 0; index < 55; index++) await api.addClip(`不限容量样例${index}`, '', null);
-  assert.equal((await api.getState()).clips.length, countBefore + 56, 'unlimited means no automatic count pruning');
+  assert.equal((await allState()).clips.length, countBefore + 56, 'unlimited means no automatic count pruning');
   const merged = await api.addClip('相同内容的保护合并', '', null);
   await api.importBackup(JSON.stringify({ format: 'starclip', version: 1, groups: [{ id: 321, name: '合并分组', color: '#778899' }], clips: [make(321, merged.content, { pinned: true, groupId: 321 })] }));
-  const updated = (await api.getState()).clips.find((c: { id: number }) => c.id === merged.id);
+  const updated = (await allState()).clips.find((c: { id: number }) => c.id === merged.id);
   assert(updated.pinned && updated.groupId !== null && updated.title === '月', 'duplicate import preserves merged star/group protection');
   assert(!(await api.previewCleanup({ minBytes: 0, olderThanDays: 0, kind: 'all', includeGrouped: true })).items.some((c: { id: number }) => c.id === merged.id));
 });

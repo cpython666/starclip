@@ -1,4 +1,5 @@
 <script setup lang="ts" generic="T extends string | number | null">
+import { t } from '../i18n';
 import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from 'vue'
 
 const props = withDefaults(defineProps<{
@@ -7,7 +8,7 @@ const props = withDefaults(defineProps<{
   label: string
   disabled?: boolean
   placeholder?: string
-}>(), { disabled: false, placeholder: '请选择' })
+}>(), { disabled: false, placeholder: '' })
 const emit = defineEmits<{ 'update:modelValue': [value: T, origin: { x: number; y: number }] }>()
 const root = ref<HTMLElement>()
 const trigger = ref<HTMLButtonElement>()
@@ -208,7 +209,7 @@ onBeforeUnmount(() => { close(false); removeListeners() })
 <template>
   <div ref="root" class="ui-select" :class="{ 'ui-select-open': opened }">
     <button ref="trigger" class="ui-select-trigger" type="button" role="combobox" aria-haspopup="listbox" :aria-label="label" :aria-expanded="opened" :aria-controls="menuId" :aria-activedescendant="activeId" :disabled="disabled || !options.length" @click="toggle" @keydown="keydown">
-      <span class="ui-select-value" :class="{ 'ui-select-placeholder': !selected }">{{ selected?.label ?? placeholder }}</span>
+      <span class="ui-select-value" :class="{ 'ui-select-placeholder': !selected }">{{ selected?.label ?? (placeholder || t('请选择')) }}</span>
       <svg class="ui-select-chevron" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m4 6 4 4 4-4" stroke-linecap="round" stroke-linejoin="round" /></svg>
     </button>
     <component :is="usePopover ? 'div' : 'dialog'" :id="menuId" ref="popup" class="ui-select-popup" :popover="usePopover ? 'manual' : undefined" :hidden="!opened" role="listbox" :aria-label="label" :aria-activedescendant="activeId" :tabindex="usePopover ? undefined : -1" @keydown="keydown" @click.prevent.stop @toggle="popupToggled" @close.stop="close(false)" @cancel.prevent.stop="close(true)">

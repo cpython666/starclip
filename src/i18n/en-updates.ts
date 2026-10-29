@@ -1,0 +1,16 @@
+export const enUpdates: Record<string, string> = {
+  '更新偏好读取失败：{error}': 'Could not read update preferences: {error}',
+  '当前使用稳定版更新通道。': 'You are using the stable update channel.',
+  '开启后在启动时检查，此后每 24 小时最多自动检查一次；仅连接 GitHub 获取更新信息，不上传剪贴内容。': 'When enabled, checks after startup and at most once every 24 hours. Only GitHub is contacted for update information; clipboard content is never uploaded.',
+  '自动检查稳定版更新': 'Automatically check for stable updates',
+  '立即保存，可随时关闭；当前仅提供稳定版更新，预览通道尚未开放。': 'Saved immediately. Turn it off at any time. Only stable updates are currently available; the preview channel is not open yet.',
+  '也可随时手动检查。更新只提醒，不会自动下载或安装；确认安装时先保存恢复点，再安装并重启，历史、偏好和星伴成长保留在本机。': 'You can also check manually at any time. Updates are only announced, never downloaded or installed automatically. Confirming installation saves a recovery point, installs and restarts. History, preferences and StarPet growth stay on this device.',
+  '暂时无法隐藏提醒，请重试。': 'Could not dismiss this update. Please try again.',
+  '新版 {version} 已准备就绪': 'Version {version} is ready to install',
+  '稳定版 {version} 可更新': 'Stable version {version} is available',
+  '更新包已下载并验证，打开帮助页安装并重启。': 'The update was downloaded and verified. Open Help to install and restart.',
+  '稳定版更新已准备好，打开帮助页查看说明。': 'A stable update is available. Open Help to read the release notes.',
+  '正在处理…': 'Working…',
+  '忽略此版本': 'Skip this version',
+  '查看更新': 'View update',
+};

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { errorText, t } from '../i18n';
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import Icon from './Icon.vue';
 import { copyProductShareImage, copyProductShareText, saveProductShareImage, shareImages, shareImageSize, shareImageSource, shareTexts } from '../product-share';
@@ -12,6 +13,8 @@ const image = computed(() => shareImages.find(item => item.id === selectedImage.
 const text = computed(() => shareTexts.find(item => item.id === selectedText.value)!);
 const operation = ref<'text' | 'image' | 'save' | null>(null);
 const working = computed(() => operation.value !== null);
+const canRelease = computed(() => !working.value);
+defineExpose({ canRelease });
 const blocked = computed(() => props.disabled || working.value);
 const status = ref('');
 const statusFor = ref<'text' | 'image' | 'save' | null>(null);
@@ -23,24 +26,24 @@ async function run(kind: NonNullable<typeof operation.value>, action: () => Prom
   if (disposed || blocked.value) return;
   operation.value = kind; statusFor.value = kind; status.value = ''; error.value = false;
   try { const result = await action(); if (!disposed) status.value = result; }
-  catch (reason) { if (!disposed) { error.value = true; status.value = reason instanceof Error ? reason.message : String(reason); } }
+  catch (reason) { if (!disposed) { error.value = true; status.value = errorText(reason); } }
   finally { if (!disposed) operation.value = null; }
 }
 function copyText() {
   const id = text.value.id;
-  return run('text', async () => { await copyProductShareText(id); return '文案已复制，可以粘贴给朋友。'; });
+  return run('text', async () => { await copyProductShareText(id); return t('文案已复制，可以粘贴给朋友。'); });
 }
 function copyImage() {
   const { id, label } = image.value;
-  return run('image', async () => { await copyProductShareImage(id); return `「${label}」已复制，可粘贴到支持图片的应用。`; });
+  return run('image', async () => { await copyProductShareImage(id); return t('「{name}」已复制，可粘贴到支持图片的应用。', { name: t(label) }); });
 }
 function saveImage() {
   const id = image.value.id;
   return run('save', async () => {
     const result = await saveProductShareImage(id);
-    if (result.kind === 'cancelled') return '已取消保存，没有写入文件。';
-    if (result.kind === 'saved') return `图片已保存：${result.path}`;
-    return `已发起下载：${result.filename}。请在浏览器下载列表查看。`;
+    if (result.kind === 'cancelled') return t('已取消保存，没有写入文件。');
+    if (result.kind === 'saved') return t('图片已保存：{path}', { path: result.path });
+    return t('已发起下载：{name}。请在浏览器下载列表查看。', { name: result.filename });
   });
 }
 function chooseImage(id: string) { if (!blocked.value) { selectedImage.value = id; status.value = ''; } }
@@ -52,35 +55,35 @@ onBeforeUnmount(() => { disposed = true; emit('busy', false); });
   <section class="product-share" :aria-busy="working">
     <button type="button" class="share-entry" :aria-expanded="expanded" aria-controls="product-share-content" :disabled="blocked" @click="expanded = !expanded">
       <span class="share-emblem"><Icon name="spark" :size="23" /></span>
-      <span class="share-entry-copy"><strong>分享星笺</strong><span>文案与产品图片，准备好就能分享</span></span>
+      <span class="share-entry-copy"><strong>{{ t('分享星笺') }}</strong><span>{{ t('文案与产品图片，准备好就能分享') }}</span></span>
       <Icon class="share-entry-arrow" :class="{ expanded }" name="chevron" :size="17" />
     </button>
     <div v-if="expanded" id="product-share-content" class="share-content">
-      <div class="share-section-heading"><h3>把星笺介绍给朋友</h3><span>文案一键复制</span></div>
-      <div class="share-text-options" role="group" aria-label="分享文案">
-        <button v-for="item in shareTexts" :key="item.id" type="button" :aria-pressed="selectedText === item.id" :class="{ chosen: selectedText === item.id }" :disabled="blocked" @click="chooseText(item.id)">{{ item.label }}</button>
+      <div class="share-section-heading"><h3>{{ t('把星笺介绍给朋友') }}</h3><span>{{ t('文案一键复制') }}</span></div>
+      <div class="share-text-options" role="group" :aria-label="t('分享文案')">
+        <button v-for="item in shareTexts" :key="item.id" type="button" :aria-pressed="selectedText === item.id" :class="{ chosen: selectedText === item.id }" :disabled="blocked" @click="chooseText(item.id)">{{ t(item.label) }}</button>
       </div>
-      <p class="share-copy" tabindex="0" aria-label="分享文案内容">{{ text.content }}</p>
-      <button type="button" class="button subtle share-action" :disabled="blocked" @click="copyText"><Icon name="copy" :size="14" />{{ operation === 'text' ? '正在复制…' : '复制文案' }}</button>
+      <p class="share-copy" tabindex="0" :aria-label="t('分享文案内容')">{{ text.content }}</p>
+      <button type="button" class="button subtle share-action" :disabled="blocked" @click="copyText"><Icon name="copy" :size="14" />{{ operation === 'text' ? t('正在复制…') : t('复制文案') }}</button>
       <p v-if="status && statusFor === 'text'" :class="['share-status', { error }]" :role="error ? 'alert' : 'status'">{{ status }}</p>
 
-      <div class="share-section-heading share-image-heading"><h3>选一张产品介绍图</h3><span>已压缩 PNG · {{ shareImages.length }} 张</span></div>
-      <div class="share-image-options" role="group" aria-label="产品介绍图">
-        <button v-for="item in shareImages" :key="item.id" type="button" :aria-pressed="selectedImage === item.id" :aria-label="`选择${item.label}`" :class="{ chosen: selectedImage === item.id }" :disabled="blocked" @click="chooseImage(item.id)">
+      <div class="share-section-heading share-image-heading"><h3>{{ t('选一张产品介绍图') }}</h3><span>{{ t('已压缩 PNG · {count} 张', { count: shareImages.length }) }}</span></div>
+      <div class="share-image-options" role="group" :aria-label="t('产品介绍图')">
+        <button v-for="item in shareImages" :key="item.id" type="button" :aria-pressed="selectedImage === item.id" :aria-label="t('选择{name}', { name: t(item.label) })" :class="{ chosen: selectedImage === item.id }" :disabled="blocked" @click="chooseImage(item.id)">
           <img :src="shareImageSource(item)" alt="" :width="item.width" :height="item.height" loading="lazy" decoding="async" />
-          <span>{{ item.label }}</span>
+          <span>{{ t(item.label) }}</span>
         </button>
       </div>
       <figure class="share-preview">
-        <img :src="shareImageSource(image)" :alt="image.description" :width="image.width" :height="image.height" decoding="async" />
-        <figcaption><span>{{ image.label }}</span><span>{{ image.width }} × {{ image.height }} · {{ shareImageSize(image.bytes) }}</span></figcaption>
+        <img :src="shareImageSource(image)" :alt="t(image.description)" :width="image.width" :height="image.height" decoding="async" />
+        <figcaption><span>{{ t(image.label) }}</span><span>{{ image.width }} × {{ image.height }} · {{ shareImageSize(image.bytes) }}</span></figcaption>
       </figure>
       <div class="share-actions">
-        <button type="button" class="button primary share-action" :disabled="blocked" @click="copyImage"><Icon name="copy" :size="14" />{{ operation === 'image' ? '正在复制…' : '复制图片' }}</button>
-        <button type="button" class="button subtle share-action" :disabled="blocked" @click="saveImage"><Icon name="down" :size="14" />{{ operation === 'save' ? '正在保存…' : '保存图片' }}</button>
+        <button type="button" class="button primary share-action" :disabled="blocked" @click="copyImage"><Icon name="copy" :size="14" />{{ operation === 'image' ? t('正在复制…') : t('复制图片') }}</button>
+        <button type="button" class="button subtle share-action" :disabled="blocked" @click="saveImage"><Icon name="down" :size="14" />{{ operation === 'save' ? t('正在保存…') : t('保存图片') }}</button>
       </div>
       <p v-if="status && statusFor !== 'text'" :class="['share-status', { error }]" :role="error ? 'alert' : 'status'">{{ status }}</p>
-      <p class="share-note">图片使用原创示例，不包含你的剪贴记录。复制或保存后，由你选择分享到哪里。</p>
+      <p class="share-note">{{ t('图片使用原创示例，不包含你的剪贴记录。复制或保存后，由你选择分享到哪里。') }}</p>
     </div>
   </section>
 </template>

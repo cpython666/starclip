@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import ts from 'typescript';
 import { compileScript, parse } from '@vue/compiler-sfc';
 import { createRenderer, markRaw, nextTick } from 'vue';
-import type { RecoveryPoint, UpdateStatus } from '../src/update-api.ts';
+import type { RecoveryPoint, UpdatePreferences, UpdateStatus } from '../src/update-api.ts';
 
 // Render the actual Vue panel in memory; no WebView, clipboard or user data is touched.
 type TestNode = { type: string; text: string; props: Record<string, any>; children: TestNode[]; focus: () => void; open: boolean; showModal: () => void; close: () => void; parent?: TestNode };
@@ -18,23 +18,24 @@ const renderer = createRenderer<TestNode, TestNode>({
   parentNode: node => node.parent || null, nextSibling: node => node.parent?.children[(node.parent?.children.indexOf(node) ?? -1) + 1] || null,
 });
 const base: UpdateStatus = { revision: 0, currentVersion: '0.2.0', configured: true, phase: 'idle', downloaded: 0 };
+const defaultPreferences: UpdatePreferences = { revision: 0, autoCheck: true, skippedVersion: null, lastCheckAt: null };
 const point: RecoveryPoint = { id: 'fixed-test-point', createdAt: 1760000000000, appVersion: '0.2.0', schemaVersion: 3, reason: 'manual', totalBytes: 1024, path: '/test-only/snapshot', warnings: [], compatible: true };
 function nodes(root: TestNode): TestNode[] { return [root, ...root.children.flatMap(nodes)]; }
 function text(root: TestNode): string { return root.type === '#comment' ? '' : root.text + root.children.map(text).join(''); }
 function button(root: TestNode, label: string): TestNode { const found = nodes(root).find(item => item.type === 'button' && text(item) === label); assert(found, `missing button: ${label}`); return found; }
 async function flush() { await new Promise(resolve => setImmediate(resolve)); await nextTick(); }
 let moduleNumber = 0;
-async function mount(mock: Record<string, unknown>, props: Record<string, unknown> = {}) {
+async function mount(mock: Record<string, unknown>, props: Record<string, unknown> = {}, name = 'UpdateSettings') {
   Object.assign(globalThis, { updatePanelMock: mock });
-  const api = `const api = globalThis.updatePanelMock; export const { updateDesktopAvailable, initialUpdateStatus, watchStarclipUpdates, listRecoveryPoints, recoveryPendingPath, createRecoveryPoint, restoreRecoveryPoint, restartAfterUpdate } = api;`;
+  const api = `const api = globalThis.updatePanelMock; export const { updateDesktopAvailable, initialUpdateStatus, initialUpdatePreferences, getUpdatePreferences, setAutoUpdateCheck, skipUpdateVersion, onUpdatePreferencesChanged, watchStarclipUpdates, listRecoveryPoints, recoveryPendingPath, createRecoveryPoint, restoreRecoveryPoint, restartAfterUpdate } = api;`;
   const apiUrl = 'data:text/javascript;base64,' + Buffer.from(api + `\n// ${moduleNumber++}`).toString('base64');
-  const source = fs.readFileSync(new URL('../src/components/UpdateSettings.vue', import.meta.url), 'utf8');
+  const source = fs.readFileSync(new URL(`../src/components/${name}.vue`, import.meta.url), 'utf8');
   const { descriptor } = parse(source);
   const script = compileScript(descriptor, { id: 'update-panel-test', inlineTemplate: true });
   const code = ts.transpileModule(script.content, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText
     .replace(/from (['"])vue\1/g, `from '${import.meta.resolve('vue')}'`)
     .replaceAll("'../update-api'", `'${apiUrl}'`)
-    .replaceAll("'../update-state'", `'${new URL('../src/update-state.ts', import.meta.url).href}'`);
+    .replaceAll("'../update-state'", `'${new URL('../src/update-state.ts', import.meta.url).href}'`).replaceAll("'../i18n'", `'${new URL('../src/i18n/index.ts', import.meta.url).href}'`).replaceAll("'./i18n'", `'${new URL('../src/i18n/index.ts', import.meta.url).href}'`);
   const component = await import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'));
   const root = node('root'); const app = renderer.createApp(component.default, props); app.mount(root); await flush();
   return { root, app };
@@ -42,9 +43,18 @@ async function mount(mock: Record<string, unknown>, props: Record<string, unknow
 function nativeMock(initial: UpdateStatus = base) {
   let receive: (state: UpdateStatus) => void = () => {};
   let state = { ...initial };
+  let preferences = { ...defaultPreferences };
+  let receivePreferences: (value: UpdatePreferences) => void = () => {};
+  const preferenceCalls: string[] = [];
   const calls: string[] = [];
   const mock = {
-    calls, updateDesktopAvailable: true, initialUpdateStatus: () => base,
+    calls, preferenceCalls, updateDesktopAvailable: true, initialUpdateStatus: () => base,
+    initialUpdatePreferences: () => ({ ...defaultPreferences }),
+    async getUpdatePreferences() { return { ...preferences }; },
+    async onUpdatePreferencesChanged(callback: typeof receivePreferences) { receivePreferences = callback; return () => { preferenceCalls.push('dispose'); }; },
+    sendPreferences(next: UpdatePreferences) { preferences = next; receivePreferences(next); },
+    async setAutoUpdateCheck(enabled: boolean) { preferenceCalls.push(`automatic:${enabled}`); preferences = { ...preferences, revision: preferences.revision + 1, autoCheck: enabled }; return { ...preferences }; },
+    async skipUpdateVersion(version: string) { preferenceCalls.push(`skip:${version}`); preferences = { ...preferences, revision: preferences.revision + 1, skippedVersion: version }; return { ...preferences }; },
     send(next: UpdateStatus) { state = next; receive(next); },
     async downloadUpdate(version: string) { calls.push(`download:${version}`); mock.send({ ...base, revision: 3, phase: 'ready', available: { version }, downloaded: 100, total: 100 }); },
     async installUpdate(version: string) { calls.push(`install:${version}`); mock.send({ ...base, revision: 4, phase: 'installed' }); },
@@ -198,4 +208,82 @@ test('installer launch failure keeps editing frozen and requests restart without
   assert.doesNotMatch(text(root), /新版已安装/); assert.equal(button(root, '保存当前恢复点').props.disabled, true);
   await button(root, '重启星笺').props.onClick(); await flush(); assert(mock.calls.includes('restart'));
   app.unmount();
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void, reject!: (reason: Error) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
+}
+function automaticSwitch(root: TestNode) { return nodes(root).find(item => item.props['aria-label'] === '自动检查稳定版更新')!; }
+
+test('automatic preference saves immediately, preserves confirmed value on failure and accepts only current revisions', async () => {
+  const mock = nativeMock(); const busy: boolean[] = [];
+  const saving = deferred<UpdatePreferences>();
+  mock.setAutoUpdateCheck = async enabled => { mock.preferenceCalls.push(`automatic:${enabled}`); return saving.promise; };
+  const { root, app } = await mount(mock, { onBusy: value => busy.push(value) });
+  assert.equal(automaticSwitch(root).props['aria-checked'], true);
+  const toggle = automaticSwitch(root).props.onClick(); await flush();
+  assert.equal(busy.at(-1), true); assert.equal(automaticSwitch(root).props.disabled, true);
+  assert.deepEqual(mock.preferenceCalls, ['automatic:false']);
+  assert.equal(automaticSwitch(root).props['aria-checked'], true, 'switch waits for native confirmation');
+  await automaticSwitch(root).props.onClick(); assert.equal(mock.preferenceCalls.length, 1);
+  saving.reject(new Error('固定测试：保存失败')); await toggle; await flush();
+  assert.equal(busy.at(-1), false); assert.equal(automaticSwitch(root).props['aria-checked'], true);
+  assert.match(text(root), /保存失败/);
+  const delayed = deferred<UpdatePreferences>(); mock.getUpdatePreferences = () => delayed.promise;
+  const refreshing = button(root, '刷新状态').props.onClick(); await flush();
+  mock.sendPreferences({ ...defaultPreferences, revision: 5, autoCheck: false });
+  delayed.resolve({ ...defaultPreferences, revision: 2 }); await refreshing; await flush();
+  assert.equal(automaticSwitch(root).props['aria-checked'], false, 'late read cannot undo an event');
+  app.unmount(); assert.deepEqual(mock.preferenceCalls.slice(-1), ['dispose']);
+});
+
+test('late preference listeners are released after either settings or notice unmounts', async () => {
+  for (const name of ['UpdateSettings', 'UpdateNotice']) {
+    const mock = nativeMock(); const listening = deferred<() => void>(); let stops = 0;
+    mock.onUpdatePreferencesChanged = () => listening.promise;
+    const { app } = await mount(mock, {}, name); app.unmount();
+    listening.resolve(() => { stops++; }); await flush();
+    assert.equal(stops, 1, name); assert.equal(mock.calls.includes('read'), false, 'no read after disposal');
+  }
+});
+
+test('notice only reads local status, skips one version, shows a later version and never auto-installs', async () => {
+  const available: UpdateStatus = { ...base, revision: 1, phase: 'available', available: { version: '0.3.0' } };
+  const mock = nativeMock(available); let opened = 0; const busy: boolean[] = [];
+  const { root, app } = await mount(mock, { onOpenSettings: () => opened++, onBusy: value => busy.push(value) }, 'UpdateNotice');
+  assert.match(text(root), /稳定版 0.3.0 可更新/); assert.deepEqual(mock.calls, ['read']);
+  await button(root, '查看更新').props.onClick(); assert.equal(opened, 1); assert.deepEqual(mock.calls, ['read']);
+  await button(root, '忽略此版本').props.onClick(); await flush();
+  assert.deepEqual(mock.preferenceCalls, ['skip:0.3.0']); assert.equal(nodes(root).some(node => node.type === 'aside'), false);
+  assert.deepEqual(busy, [true, false]);
+  mock.send({ ...available, revision: 2, available: { version: '0.4.0' } }); await flush();
+  assert.match(text(root), /稳定版 0.4.0 可更新/);
+  mock.sendPreferences({ ...defaultPreferences, revision: 0 }); await flush();
+  mock.send({ ...available, revision: 1 }); await flush(); assert.match(text(root), /0.4.0/, 'old states cannot restore skipped version');
+  mock.sendPreferences({ ...defaultPreferences, revision: 3, autoCheck: false }); await flush();
+  assert.equal(nodes(root).some(node => node.type === 'aside'), false);
+  app.unmount(); assert(mock.calls.includes('dispose')); assert(mock.preferenceCalls.includes('dispose'));
+});
+
+test('notice skip failures remain visible and a delayed skip cannot suppress a newer candidate', async () => {
+  const available: UpdateStatus = { ...base, revision: 1, phase: 'available', available: { version: '0.3.0' } };
+  const mock = nativeMock(available); mock.skipUpdateVersion = async () => { throw new Error('fixture failure'); };
+  const { root, app } = await mount(mock, {}, 'UpdateNotice');
+  await button(root, '忽略此版本').props.onClick(); await flush(); assert.match(text(root), /暂时无法隐藏提醒/);
+  const skip = deferred<UpdatePreferences>(); mock.skipUpdateVersion = () => skip.promise;
+  const pending = button(root, '忽略此版本').props.onClick(); await flush();
+  mock.send({ ...available, revision: 2, available: { version: '0.4.0' } });
+  skip.resolve({ ...defaultPreferences, revision: 2, skippedVersion: '0.3.0' }); await pending; await flush();
+  assert.match(text(root), /稳定版 0.4.0/); assert.doesNotMatch(text(root), /暂时无法隐藏提醒/); app.unmount();
+});
+
+test('background errors, blocked UI and browser mode never show an automatic prompt', async () => {
+  const failed = nativeMock({ ...base, revision: 1, phase: 'error', error: 'fixed offline fixture' });
+  const errorView = await mount(failed, {}, 'UpdateNotice'); assert.equal(nodes(errorView.root).some(node => node.type === 'aside'), false); errorView.app.unmount();
+  const available: UpdateStatus = { ...base, revision: 1, phase: 'available', available: { version: '0.3.0' } };
+  const blocked = await mount(nativeMock(available), { blocked: true }, 'UpdateNotice'); assert.equal(nodes(blocked.root).some(node => node.type === 'aside'), false); blocked.app.unmount();
+  const browserMock = nativeMock(available); browserMock.updateDesktopAvailable = false;
+  const browser = await mount(browserMock, {}, 'UpdateNotice'); assert.deepEqual(browserMock.calls, []); assert.deepEqual(browserMock.preferenceCalls, []); browser.app.unmount();
 });

@@ -55,6 +55,8 @@ export const starPetMoods = [
 ] as const satisfies readonly StarPetExpression[];
 
 export type StarPetMoodId = typeof starPetMoods[number]['id'];
+// Routine cycling stays warm or neutral; other moods remain available by explicit choice.
+export const everydayStarPetMoods = starPetMoods.filter(mood => !['puzzled', 'sad', 'crying', 'angry', 'nervous', 'error'].includes(mood.id));
 export function getStarPetMood(id: string) { return starPetMoods.find(mood => mood.id === id) ?? starPetMoods[0]; }
 
 

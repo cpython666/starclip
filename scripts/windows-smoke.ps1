@@ -41,6 +41,15 @@ $database = Join-Path $dataDir 'starclip.sqlite3'
 $script:appProcess = $null
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class StarclipSmokeWindow {
+  [DllImport("user32.dll")]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  public static extern bool IsWindow(IntPtr handle);
+}
+'@
 
 # This script never reads the clipboard. A fixed canary replaces runner contents
 # before any application launch, making a pause regression safe and detectable.
@@ -72,6 +81,10 @@ function Install-Package([string]$Path, [string]$ExpectedVersion, [bool]$Update)
 function Start-And-AssertPaused {
   Set-FixedClipboard
   $script:appProcess = Start-Process -FilePath $exe -PassThru
+  Wait-ForPausedWindow
+}
+
+function Wait-ForPausedWindow {
   $deadline = [DateTime]::UtcNow.AddSeconds(60)
   do {
     $script:appProcess.Refresh()
@@ -80,17 +93,21 @@ function Start-And-AssertPaused {
     if ($handle -ne [IntPtr]::Zero) {
       try {
         $root = [System.Windows.Automation.AutomationElement]::FromHandle($handle)
+        # The historical baseline is Chinese; the candidate follows the runner's
+        # system language. Match the shipped labels without changing preferences.
         $skip = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
-          [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, '跳过教程'))
+          [System.Windows.Automation.OrCondition]::new(
+            [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, '跳过教程'),
+            [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, 'Skip tour')))
         if ($skip -and !$skip.Current.IsOffscreen -and $skip.Current.IsEnabled) {
           $pattern = $null
           if ($skip.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
-            $pattern.Invoke() # The only UI action; never click the capture toggle.
+            $pattern.Invoke() # Never click the capture toggle.
           }
         }
         $nodes = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
         foreach ($node in $nodes) {
-          if (!$node.Current.IsOffscreen -and $node.Current.Name -match '^记录已暂停(?:\s|/|$)') {
+          if (!$node.Current.IsOffscreen -and $node.Current.Name -match '^(?:记录已暂停|Recording paused)(?:\s|/|$)') {
             if (Test-Path -LiteralPath $database -PathType Leaf) {
               Write-Host 'Native window rendered and reports recording paused.'
               return
@@ -106,11 +123,49 @@ function Start-And-AssertPaused {
   throw 'Native window, rendered pause status or database was not ready within one minute.'
 }
 
+function Check-WindowRecreation {
+  # Only the fixed runner-owned database. An enabled pet changes the expected
+  # window lifecycle, so verify the fixture before requesting a normal close.
+  @'
+import json, pathlib, sqlite3, sys
+path = pathlib.Path(sys.argv[1])
+with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True) as db:
+    saved = db.execute("SELECT value FROM preferences WHERE key='starpet_v1'").fetchone()
+    assert saved is None or json.loads(saved[0])['enabled'] is False, 'Window fixture must have the pet disabled'
+'@ | python - $database
+  if ($LASTEXITCODE -ne 0) { throw 'Window lifecycle fixture is not isolated or has an enabled pet.' }
+  $script:appProcess.Refresh()
+  $previous = $script:appProcess.MainWindowHandle
+  if ($previous -eq [IntPtr]::Zero -or !$script:appProcess.CloseMainWindow()) {
+    throw 'Could not request a normal close of the candidate main window.'
+  }
+  $deadline = [DateTime]::UtcNow.AddSeconds(30)
+  while ([StarclipSmokeWindow]::IsWindow($previous)) {
+    $script:appProcess.Refresh()
+    if ($script:appProcess.HasExited) { throw 'Closing the main window exited the application.' }
+    if ([DateTime]::UtcNow -ge $deadline) { throw 'The main window was hidden but its native handle was not destroyed.' }
+    Start-Sleep -Milliseconds 200
+  }
+  $script:appProcess.Refresh()
+  if ($script:appProcess.HasExited) { throw 'The background application exited after releasing its window.' }
+  # A second launch uses the shipped single-instance callback to rebuild/show
+  # the original process's window. No JavaScript injection or product test hook.
+  $second = Start-Process -FilePath $exe -PassThru
+  if (!$second.WaitForExit(10000)) {
+    & taskkill.exe /PID $second.Id /T /F | Out-Null
+    throw 'The second instance did not hand control back to the background application.'
+  }
+  if ($second.ExitCode -ne 0) { throw 'The second instance failed to reopen the main window.' }
+  Wait-ForPausedWindow
+  Check-Database $Scenario 2
+  Write-Host 'Native main window was destroyed and recreated; recording remains paused and fixed data is intact.'
+}
+
 function Stop-OwnedApplication {
   if ($null -ne $script:appProcess) {
     $script:appProcess.Refresh()
     if (!$script:appProcess.HasExited) {
-      # A native close hides to tray. Stop only the process tree launched above.
+      # A native close keeps the app in the tray. Stop only our process tree.
       & taskkill.exe /PID $script:appProcess.Id /T /F | Out-Null
       if (!$script:appProcess.WaitForExit(10000)) { throw 'Smoke application did not stop.' }
     }
@@ -145,10 +200,12 @@ try {
   Start-And-AssertPaused
   Set-FixedClipboard $true
   for ($i = 0; $i -lt 3; $i++) { Start-Sleep -Seconds 1; Check-Database $Scenario 2 }
+  Check-WindowRecreation
   Stop-OwnedApplication
   Check-Database $Scenario 2
   if ($env:GITHUB_STEP_SUMMARY) {
     "- Windows native $Scenario smoke passed: NSIS $Version, rendered pause status, fixed database checks. No capture toggle was enabled." >> $env:GITHUB_STEP_SUMMARY
+    '- Candidate main-window close destroyed the native HWND while the process stayed alive; a second launch recreated the window, restored paused UI and preserved fixed data.' >> $env:GITHUB_STEP_SUMMARY
     if ($Scenario -eq 'upgrade') { '- Real 0.1.0 → candidate upgrade preserved the fixed record, group, preferences and pre-migration recovery copy.' >> $env:GITHUB_STEP_SUMMARY }
     '- This does not verify the in-app update download/dialog flow, SmartScreen, or every Windows environment.' >> $env:GITHUB_STEP_SUMMARY
   }

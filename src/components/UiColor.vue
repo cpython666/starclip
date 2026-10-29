@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n';
 import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from 'vue';
 import { normalizeHex } from '../color';
 import Icon from './Icon.vue';
@@ -137,7 +138,7 @@ onBeforeUnmount(() => { close(false); detach(); });
 <template>
   <span class="ui-color" v-bind="$attrs" @focusout="focusLeft">
     <button ref="trigger" type="button" class="ui-color-trigger" :disabled="props.disabled"
-      :aria-label="`${label}，当前颜色 ${current}`" aria-haspopup="dialog" :aria-expanded="opened"
+      :aria-label="t('{label}，当前颜色 {color}', { label, color: current })" aria-haspopup="dialog" :aria-expanded="opened"
       :aria-controls="`${id}-palette`" @click.stop="toggle" @keydown.stop>
       <span class="ui-color-swatch" :style="{ backgroundColor: current }" aria-hidden="true" />
       <span class="ui-color-value">{{ current.toUpperCase() }}</span>
@@ -147,23 +148,23 @@ onBeforeUnmount(() => { close(false); detach(); });
       class="ui-color-panel" :popover="nativePopover ? 'manual' : undefined" :data-open="opened"
       :style="position" role="dialog" :aria-labelledby="`${id}-title`" :aria-modal="nativePopover ? undefined : true"
       @keydown.stop="keydown" @pointerdown="panelPointerDown" @cancel.prevent.stop="close()" @close="nativeClosed" @toggle="nativeClosed" @click.stop>
-      <div class="ui-color-heading"><strong :id="`${id}-title`">{{ label }}</strong><button type="button" class="ui-color-close" aria-label="关闭颜色选择" @click="close()"><Icon name="close" :size="14" /></button></div>
-      <div class="ui-color-palette" role="group" aria-label="常用颜色">
+      <div class="ui-color-heading"><strong :id="`${id}-title`">{{ label }}</strong><button type="button" class="ui-color-close" :aria-label="t('关闭颜色选择')" @click="close()"><Icon name="close" :size="14" /></button></div>
+      <div class="ui-color-palette" role="group" :aria-label="t('常用颜色')">
         <button v-for="[name, color] in colors" :key="color" type="button" class="ui-color-preset"
-          :style="{ backgroundColor: color }" :aria-label="`${name} ${color}`" :title="`${name} ${color}`"
+          :style="{ backgroundColor: color }" :aria-label="`${t(name)} ${color}`" :title="`${t(name)} ${color}`"
           :aria-pressed="current === color" :disabled="props.disabled" @click="apply(color)">
           <span v-if="current === color" class="ui-color-selected" aria-hidden="true">✓</span>
         </button>
       </div>
-      <label class="ui-color-field" :for="`${id}-hex`">HEX 色值<span>支持任意六位颜色</span></label>
+      <label class="ui-color-field" :for="`${id}-hex`">{{ t('HEX 色值') }}<span>{{ t('支持任意六位颜色') }}</span></label>
       <div class="ui-color-entry">
         <span class="ui-color-preview" :style="{ backgroundColor: validDraft || current }" aria-hidden="true" />
         <input :id="`${id}-hex`" ref="input" v-model="draft" class="ui-color-hex" type="text" inputmode="text"
           autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="#F8F1E3" :disabled="props.disabled"
           :aria-invalid="invalid" :aria-describedby="`${id}-hint`" @input="edited = true" />
       </div>
-      <p :id="`${id}-hint`" class="ui-color-hint" :class="{ invalid }" aria-live="polite">{{ invalid ? '请输入六位十六进制色值，例如 #A3B8D4。' : 'Enter 确认 · Escape 取消' }}</p>
-      <div class="ui-color-actions"><button type="button" class="ui-color-cancel" @click="close()">取消</button><button type="button" class="ui-color-apply" :disabled="props.disabled || !validDraft" @click="apply()">使用颜色</button></div>
+      <p :id="`${id}-hint`" class="ui-color-hint" :class="{ invalid }" aria-live="polite">{{ invalid ? t('请输入六位十六进制色值，例如 #A3B8D4。') : t('Enter 确认 · Escape 取消') }}</p>
+      <div class="ui-color-actions"><button type="button" class="ui-color-cancel" @click="close()">{{ t('取消') }}</button><button type="button" class="ui-color-apply" :disabled="props.disabled || !validDraft" @click="apply()">{{ t('使用颜色') }}</button></div>
     </component>
   </span>
 </template>

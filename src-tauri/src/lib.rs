@@ -11,6 +11,8 @@ pub mod share;
 pub mod starpet_growth;
 pub mod storage;
 pub mod store;
+pub mod telemetry;
+mod telemetry_device;
 #[cfg(feature = "desktop")]
 mod updater;
 #[cfg(feature = "desktop")]
@@ -88,6 +90,11 @@ mod capability_tests {
             "save_appearance",
             "import_appearance_sticker",
             "remove_appearance_sticker",
+            "get_telemetry_state",
+            "set_telemetry_enabled",
+            "record_usage_event",
+            "flush_telemetry",
+            "clear_telemetry_queue",
         ] {
             assert!(main_commands["commands"]["allow"]
                 .as_array()

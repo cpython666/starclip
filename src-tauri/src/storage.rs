@@ -13,6 +13,7 @@ use std::{
 const DATABASE: &str = "starclip.sqlite3";
 const SELECTION: &str = "handwriting-app.json";
 const LOCATOR: &str = "data-location.json";
+const MANAGED_DIRECTORIES: [&str; 2] = ["renderers", "fonts"];
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -285,15 +286,16 @@ fn managed_bytes(directory: &Path, selection: &Path) -> Result<(u64, u64)> {
     for name in [DATABASE, "starclip.sqlite3-wal", "starclip.sqlite3-shm"] {
         database = database.saturating_add(file_bytes(&directory.join(name))?);
     }
-    let total = database
-        .saturating_add(file_bytes(&selection.join(SELECTION))?)
-        .saturating_add(file_bytes(&directory.join("renderers"))?);
+    let mut total = database.saturating_add(file_bytes(&selection.join(SELECTION))?);
+    for name in MANAGED_DIRECTORIES {
+        total = total.saturating_add(file_bytes(&directory.join(name))?);
+    }
     Ok((total, database))
 }
 fn copy_tree(source: &Path, target: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(source).map_err(io_error)?;
     if metadata.file_type().is_symlink() {
-        return Err("renderers 含符号链接，未迁移。请使用普通文件形式的完整渲染器目录。".into());
+        return Err("受管资源含符号链接，未迁移。请使用普通文件形式的字体或渲染器目录。".into());
     }
     if metadata.is_dir() {
         create_private_directory(target)?;
@@ -320,7 +322,7 @@ fn copy_tree(source: &Path, target: &Path) -> Result<()> {
         }
         destination.sync_all().map_err(io_error)?;
     } else {
-        return Err("renderers 只能包含普通文件与目录。".into());
+        return Err("受管资源只能包含普通文件与目录。".into());
     }
     Ok(())
 }
@@ -417,14 +419,14 @@ fn collect_recovery_files(directory: &Path) -> Result<BTreeMap<String, RecoveryF
             if metadata.file_type().is_symlink() {
                 return Err("恢复点含符号链接，已拒绝恢复。".into());
             }
-            if relative != Path::new(DATABASE)
-                && relative != Path::new(SELECTION)
-                && !relative.starts_with("renderers")
-            {
+            let managed = MANAGED_DIRECTORIES
+                .iter()
+                .any(|name| relative.starts_with(name));
+            if relative != Path::new(DATABASE) && relative != Path::new(SELECTION) && !managed {
                 return Err("恢复点含未识别的文件，已拒绝恢复。".into());
             }
             if metadata.is_dir() {
-                if !relative.starts_with("renderers") {
+                if !managed {
                     return Err("恢复点文件类型无效。".into());
                 }
                 visit(root, &path, files)?;
@@ -567,9 +569,11 @@ pub(crate) fn create_recovery_snapshot(
                 warnings.push("此恢复点仅保留外部手写渲染器的路径设置，未复制外部程序。".into());
             }
         }
-        let renderers = current.join("renderers");
-        if fs::symlink_metadata(&renderers).is_ok() {
-            copy_tree(&renderers, &temporary.join("renderers"))?;
+        for name in MANAGED_DIRECTORIES {
+            let source = current.join(name);
+            if fs::symlink_metadata(&source).is_ok() {
+                copy_tree(&source, &temporary.join(name))?;
+            }
         }
         let files = collect_recovery_files(&temporary)
             .map_err(|error| format!("校验恢复点文件失败：{error}"))?;
@@ -617,7 +621,7 @@ fn prepare_recovery(default: &Path, id: &str) -> Result<(PathBuf, RecoveryPoint)
     let target = recovered.join(format!("Starclip-{}", nonce()));
     create_private_directory(&target)?;
     let result = (|| -> Result<()> {
-        for name in [DATABASE, SELECTION, "renderers"] {
+        for name in [DATABASE, SELECTION].into_iter().chain(MANAGED_DIRECTORIES) {
             let source = snapshot.join(name);
             if source.exists() {
                 copy_tree(&source, &target.join(name))?;
@@ -730,6 +734,7 @@ impl Storage {
         self._active_lock.unlock().map_err(io_error)?;
         Ok(())
     }
+    /// Legacy external-renderer selection only. Built-in fonts live under current/fonts.
     pub fn handwriting_directory(&self) -> PathBuf {
         if self.current == self.default
             && !self.current.join(SELECTION).exists()
@@ -844,9 +849,11 @@ impl Storage {
                         .open(&db)
                         .and_then(|file| file.sync_all())
                         .map_err(io_error)?;
-                    let renderers = self.current.join("renderers");
-                    if fs::symlink_metadata(&renderers).is_ok() {
-                        copy_tree(&renderers, &target.join("renderers"))?;
+                    for name in MANAGED_DIRECTORIES {
+                        let source = self.current.join(name);
+                        if fs::symlink_metadata(&source).is_ok() {
+                            copy_tree(&source, &target.join(name))?;
+                        }
                     }
                     if let Some((bytes, _)) =
                         selection_data(&self.current, &self.handwriting_directory())?
@@ -1049,6 +1056,59 @@ mod tests {
         );
         let reopened = Storage::open(&source, &source).unwrap();
         assert_eq!(reopened.current, target);
+    }
+
+    #[test]
+    fn downloaded_fonts_follow_current_directory_migration_and_recovery() {
+        let scratch = Scratch::new();
+        let source = scratch.0.join("source");
+        let legacy = scratch.0.join("legacy");
+        create_private_directory(&legacy).unwrap();
+        fs::write(legacy.join(SELECTION), r#"{"path":"renderers/local"}"#).unwrap();
+        let mut storage = Storage::open(&source, &legacy).unwrap();
+        let store = storage.open_store().unwrap();
+        assert_eq!(storage.handwriting_directory(), legacy);
+        let before = storage.info().unwrap().total_bytes;
+        create_private_directory(&source.join("fonts")).unwrap();
+        let font = b"original synthetic font fixture, never parsed as TTF";
+        fs::write(source.join("fonts/sample.ttf"), font).unwrap();
+        assert_eq!(
+            storage.info().unwrap().total_bytes,
+            before + font.len() as u64
+        );
+        let target = scratch.0.join("migrated");
+        let plan = storage.plan(DirectoryMode::Move, &scratch.0).unwrap();
+        assert_eq!(plan.total_bytes, storage.info().unwrap().total_bytes);
+        storage.apply(&store, DirectoryMode::Move, &target).unwrap();
+        assert_eq!(fs::read(target.join("fonts/sample.ttf")).unwrap(), font);
+        assert_eq!(fs::read(source.join("fonts/sample.ttf")).unwrap(), font);
+        assert!(!legacy.join("fonts").exists());
+        assert!(
+            target.join(SELECTION).is_file(),
+            "legacy config still migrates"
+        );
+        storage.release_for_restart().unwrap();
+        drop(storage);
+        drop(store);
+
+        let mut storage = Storage::open(&source, &legacy).unwrap();
+        let store = storage.open_store().unwrap();
+        assert_eq!(storage.current, target);
+        let point = storage.create_recovery_point(&store, "manual").unwrap();
+        let (snapshot, manifest) =
+            verified_recovery(&storage.recovery_directory(), &point.id).unwrap();
+        assert_eq!(fs::read(snapshot.join("fonts/sample.ttf")).unwrap(), font);
+        assert_eq!(manifest.files["fonts/sample.ttf"].bytes, font.len() as u64);
+        fs::write(target.join("fonts/sample.ttf"), b"changed fixed fixture").unwrap();
+        storage.restore_recovery_point(&store, &point.id).unwrap();
+        let restored = PathBuf::from(storage.pending_path().unwrap());
+        assert_ne!(restored, target);
+        assert_eq!(fs::read(restored.join("fonts/sample.ttf")).unwrap(), font);
+        assert_eq!(
+            fs::read(target.join("fonts/sample.ttf")).unwrap(),
+            b"changed fixed fixture"
+        );
+        assert_eq!(fs::read(source.join("fonts/sample.ttf")).unwrap(), font);
     }
 
     #[test]
@@ -1321,6 +1381,29 @@ mod tests {
             .is_err());
         assert!(!source.join("nested").exists());
     }
+    #[cfg(unix)]
+    #[test]
+    fn font_symlinks_reject_migration_and_recovery_without_switching_data() {
+        for link_directory in [true, false] {
+            let scratch = Scratch::new();
+            let source = scratch.0.join("source");
+            let mut storage = Storage::open(&source, &source).unwrap();
+            let store = storage.open_store().unwrap();
+            if link_directory {
+                std::os::unix::fs::symlink(&scratch.0, source.join("fonts")).unwrap();
+            } else {
+                create_private_directory(&source.join("fonts")).unwrap();
+                std::os::unix::fs::symlink(&scratch.0, source.join("fonts/outside")).unwrap();
+            }
+            let target = scratch.0.join("migrated");
+            assert!(storage.apply(&store, DirectoryMode::Move, &target).is_err());
+            assert!(storage.create_recovery_point(&store, "manual").is_err());
+            assert!(!target.exists());
+            assert!(!source.join(LOCATOR).exists());
+            assert!(storage.writable().is_ok());
+        }
+    }
+
     fn legacy_fixture(path: &Path) {
         let conn = Connection::open(path).unwrap();
         conn.execute_batch("CREATE TABLE groups(id INTEGER PRIMARY KEY,name TEXT NOT NULL UNIQUE,color TEXT NOT NULL);

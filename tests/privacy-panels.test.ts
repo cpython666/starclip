@@ -30,9 +30,27 @@ async function component(name: string, mock: Record<string, unknown>) {
   const script = compileScript(descriptor, { id: 'privacy-panel-test', inlineTemplate: true });
   const source = script.content.replace(/from (['"])vue\1/g, `from '${import.meta.resolve('vue')}'`)
     .replaceAll("'../api'", `'${apiUrl}'`).replaceAll("'../ai-api'", `'${apiUrl}'`).replaceAll("'../privacy'", `'${helperUrl}'`)
-    .replaceAll("'./UiSelect.vue'", "'data:text/javascript,export default {render(){return null}}'");
+    .replaceAll("'./HistoryPagination.vue'", "'data:text/javascript,export default {render(){return null}}'").replaceAll("'./UiSelect.vue'", "'data:text/javascript,export default {render(){return null}}'").replaceAll("'../i18n'", `'${new URL('../src/i18n/index.ts', import.meta.url).href}'`).replaceAll("'./i18n'", `'${new URL('../src/i18n/index.ts', import.meta.url).href}'`);
   return (await import(moduleUrl(source))).default;
 }
+
+test('privacy panel explains named rule evidence and does not call an unrecognized image private', async () => {
+  const item = ref<Clip>({ id: 1, title: '原创截图', content: 'image:fixture', kind: 'image', language: null, pinned: false, keepForever: false, groupId: null, createdAt: 1, updatedAt: 1, copyCount: 0, scanVersion: 0, privacyReasons: [] });
+  const Component = await component('ClipPrivacy', {});
+  const root = node('root'); const app = renderer.createApp({ setup: () => () => h(Component, { clip: item.value, revision: 2 }) });
+  app.mount(root); await flush();
+  try {
+    assert.match(text(root), /图片未识别文字 · 不向 AI 提供/);
+    assert.match(text(root), /标记为隐私/);
+    assert.doesNotMatch(text(root), /隐私 · 不向 AI 提供|复核并尝试解除/);
+    item.value = { ...item.value, isPrivate: true, privacyReasons: ['私钥标记', '自定义规则：原创团队资料'] }; await flush();
+    assert.match(text(root), /保护依据与命中规则/);
+    assert.match(text(root), /PRIVATE KEY 私钥区块标记/);
+    assert.match(text(root), /自定义规则：原创团队资料/);
+    assert.match(text(root), /关键词或域名条件/);
+    assert.equal(button(root, '复核并尝试解除').props.disabled, true);
+  } finally { app.unmount(); }
+});
 
 test('rules panel preserves drafts after failed save, normalizes empty tags, and applies only an explicit successful scan preview', async () => {
   const rules = { revision: 1, rules: [{ id: 'one', name: '原创规则', enabled: true, condition: 'keyword', value: '原创', tag: '资料', markPrivate: true }] };
@@ -64,10 +82,16 @@ test('AI panel excludes protected, unscanned and image records, requires preview
     create(request: unknown) { calls.push(request); return new Promise((_resolve, failure) => { reject = failure; }); },
   });
   const root = node('root'); const app = renderer.createApp({ setup: () => () => h(Component, { clips: clips.value, groups: [], revision: 2 }) }); app.mount(root); await flush();
-  assert.doesNotMatch(text(root), /不可显示私密标题/); assert.match(text(root), /3 条隐私、图片或待扫描/);
+  assert.doesNotMatch(text(root), /不可显示私密标题/); assert.match(text(root), /隐私、图片与待扫描记录不会出现在可授权列表/);
   await button(root, '选择当前结果').props.onClick(); await flush();
   assert.equal(calls.length, 0); await button(root, '预览本次授权').props.onClick(); await flush();
   assert.equal(calls.length, 0); assert.match(text(root), /开放 1 条记录/);
+  assert.equal(nodes(root).some(item => item.type === 'pre'), false, 'collapsed records do not mount full content');
+  const details = nodes(root).find(item => item.type === 'details')!;
+  details.props.onToggle({ target: { open: true } }); await flush();
+  assert.equal(nodes(root).find(item => item.type === 'pre')?.text, base.content);
+  details.props.onToggle({ target: { open: false } }); await flush();
+  assert.equal(nodes(root).some(item => item.type === 'pre'), false, 'closing a record releases its content node');
   const creating = button(root, '确认创建连接').props.onClick(); await flush();
   assert.deepEqual(calls[0].clipIds, [1]); assert.deepEqual(calls[0].fields, ['title', 'content']); assert.equal(calls[0].allowPetControl, false);
   await button(root, '确认创建连接').props.onClick(); assert.equal(calls.length, 1);

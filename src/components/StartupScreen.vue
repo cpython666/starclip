@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n';
 import { onMounted, onUnmounted, ref } from 'vue'
 import Icon from './Icon.vue'
 
@@ -29,9 +30,9 @@ onUnmounted(() => { clearTimeout(timer); dialog.value?.close() })
 <template>
   <dialog ref="dialog" class="startup-screen" aria-labelledby="startup-title" aria-describedby="startup-description" @cancel.prevent="finish">
     <div class="startup-stars" aria-hidden="true"><i v-for="(star, index) in stars" :key="index" :style="star" /><span class="startup-meteor meteor-one" /><span class="startup-meteor meteor-two" /><span class="startup-meteor meteor-three" /></div>
-    <button ref="skipButton" class="startup-skip" @click="finish">跳过 <Icon name="arrow" :size="15" /></button>
-    <div class="startup-center"><div class="startup-emblem" aria-hidden="true"><span /><Icon name="spark" :size="42" /><i>✧</i></div><p class="startup-brand">星笺 <span>STARCLIP</span></p><h1 id="startup-title">拾起每一次<span>灵感</span></h1><p id="startup-description">让散落的灵感，在这里连成星座。</p><div class="startup-rule"><span />YOUR LITTLE UNIVERSE<span /></div></div>
-    <p class="startup-caption"><Icon name="shield" :size="13" />只在本机，安心保存</p>
+    <button ref="skipButton" class="startup-skip" @click="finish">{{ t('跳过') }} <Icon name="arrow" :size="15" /></button>
+    <div class="startup-center"><div class="startup-emblem" aria-hidden="true"><span /><Icon name="spark" :size="42" /><i>✧</i></div><p class="startup-brand">{{ t('星笺') }} <span>STARCLIP</span></p><h1 id="startup-title">{{ t('拾起每一次') }}<span>{{ t('灵感') }}</span></h1><p id="startup-description">{{ t('让散落的灵感，在这里连成星座。') }}</p><div class="startup-rule"><span />YOUR LITTLE UNIVERSE<span /></div></div>
+    <p class="startup-caption"><Icon name="shield" :size="13" />{{ t('只在本机，安心保存') }}</p>
   </dialog>
 </template>
 

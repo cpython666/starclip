@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n';
 import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue';
 import { getStarPetMood, starPetPalette } from '../starpet';
 import { blinkOpenness, starOutline, stepSpring } from '../starpet-motion';
@@ -130,7 +131,7 @@ watch(() => desired.value.id, () => {
 watch(() => props.reaction, () => {
   if (!mounted.value || !props.animated || !visible.value) return;
   clearTimeout(touchTimer);
-  touchMessage.value = context.value === 'sleep' ? '星芽迷迷糊糊地回应了你' : context.value === 'focus' ? '星芽轻轻点头，收到你的摸摸' : '星芽眯着眼睛，收到你的摸摸';
+  touchMessage.value = context.value === 'sleep' ? t('星芽迷迷糊糊地回应了你') : context.value === 'focus' ? t('星芽轻轻点头，收到你的摸摸') : t('星芽眯着眼睛，收到你的摸摸');
   if (running.value) director.touch(context.value, pointer);
   else if (reduced.value) frame.value = { ...still(), smile: .8, squint: .8, wake: context.value === 'sleep' ? .5 : 0 };
   touchTimer = setTimeout(() => { touchMessage.value = ''; if (!running.value) frame.value = still(); }, 1800);
@@ -139,7 +140,7 @@ watch(() => props.actionNonce, () => {
   if (!mounted.value || !props.animated || !visible.value || !props.action) return;
   endAction(); clearTimeout(touchTimer);
   activeAction.value = props.action;
-  touchMessage.value = growthCatalog.actions.find(item => item.id === props.action)?.message ?? '';
+  touchMessage.value = t(growthCatalog.actions.find(item => item.id === props.action)?.message ?? '');
   touchTimer = setTimeout(() => { touchMessage.value = ''; }, actionDuration[props.action] * 1000);
   if (reduced.value) actionTimer = setTimeout(endAction, 1800);
 });
@@ -156,7 +157,7 @@ function look(event: PointerEvent) {
 </script>
 
 <template>
-  <div class="starpet" :class="{ 'starpet-animated': running }" :data-mood="expression.id" :data-action="activeAction || undefined" :data-motion="running ? 'active' : 'still'" :data-behavior="frame.behavior" :style="{ width: `${pixels}px`, '--starpet-accent': expression.accent }" role="img" :aria-label="`星芽，${expression.name}`" @pointerenter="look" @pointermove="look" @pointerleave="pointer.inside = false">
+  <div class="starpet" :class="{ 'starpet-animated': running }" :data-mood="expression.id" :data-action="activeAction || undefined" :data-motion="running ? 'active' : 'still'" :data-behavior="frame.behavior" :style="{ width: `${pixels}px`, '--starpet-accent': expression.accent }" role="img" :aria-label="t('星芽，{name}', { name: t(expression.name) })" @pointerenter="look" @pointermove="look" @pointerleave="pointer.inside = false">
     <svg class="starpet-canvas" viewBox="0 0 240 240" fill="none" aria-hidden="true" focusable="false">
       <defs>
         <radialGradient :id="gradientId" cx=".35" cy=".27" r=".8"><stop :stop-color="palette.light" /><stop offset=".52" :stop-color="palette.middle" /><stop offset=".83" :stop-color="palette.base" /><stop offset="1" :stop-color="palette.shade" /></radialGradient>

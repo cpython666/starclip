@@ -1,6 +1,8 @@
 import { changeDemoGrowth, emptyGrowth, growthArchive, localDay, parseGrowthArchive } from './starpet-growth';
 import type { ActionId, GrowthChange, GrowthState, Slot } from './starpet-growth';
 
+export interface StarPetInteraction { action: ActionId; animate: boolean; signalRevision: number }
+
 const desktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 let demo = emptyGrowth();
 const listeners = new Set<(state: GrowthState) => void>();
@@ -23,8 +25,12 @@ export async function getStarPetGrowth(): Promise<GrowthState> {
 export function setStarPetGrowthEnabled(enabled: boolean): Promise<GrowthState> {
   return change('set_starpet_growth_enabled', { enabled }, { kind: 'enabled', enabled });
 }
-export function interactStarPet(action: ActionId): Promise<GrowthState> {
-  return change('interact_starpet', { action }, { kind: 'action', action });
+export function interactStarPet(action: ActionId, animate = true): Promise<GrowthState> {
+  return change('interact_starpet', { action, animate }, { kind: 'action', action });
+}
+export async function onStarPetInteraction(callback: (interaction: StarPetInteraction) => void): Promise<() => void> {
+  if (!desktop) return () => {};
+  return (await import('@tauri-apps/api/event')).listen<StarPetInteraction>('starpet-interaction', event => callback(event.payload));
 }
 export function equipStarPetItem(slot: Slot, itemId: string | null): Promise<GrowthState> {
   return change('equip_starpet_item', { slot, itemId }, { kind: 'equip', slot, itemId });

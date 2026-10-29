@@ -74,7 +74,7 @@ test('handwriting invalidation, explicit retry and disposal do not leak delayed 
   assert.equal(jobs.length, 3);
 });
 
-test('native handwriting render, asset discovery and application selection share one queue across panels', async t => {
+test('native handwriting render, asset discovery and font download share one queue across panels', async t => {
   const priorWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
   const calls: string[] = [], jobs: ReturnType<typeof deferred<unknown>>[] = [];
   Object.assign(globalThis, {
@@ -89,18 +89,19 @@ test('native handwriting render, asset discovery and application selection share
   const source = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8')
     .replace("from './privacy'", `from '${new URL('../src/privacy.ts', import.meta.url).href}'`)
     .replace("from './snippets'", `from '${new URL('../src/snippets.ts', import.meta.url).href}'`)
+    .replace("from './i18n/index.ts'", `from '${new URL('../src/i18n/index.ts', import.meta.url).href}'`)
     .replace("return (await import('@tauri-apps/api/core')).invoke<T>(command, args);", 'return globalThis.__handwritingInvoke(command, args);');
   const code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
   const { api } = await import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'));
   const oldPanelRender = api.renderHandwriting(options('关闭前的原创样例'));
   const newPanelAssets = api.handwritingAssets();
-  const choose = api.chooseHandwritingApp();
+  const choose = api.downloadHandwritingFont('ma-shan-zheng');
   await flush();
   assert.deepEqual(calls, ['render_handwriting']);
   const rejected = assert.rejects(oldPanelRender, /fixture failure/);
   jobs[0]!.reject(new Error('fixture failure')); await rejected; await flush();
   assert.deepEqual(calls, ['render_handwriting', 'handwriting_assets'], 'failed render must release queue for reopened panel');
   jobs[1]!.resolve({ available: true }); await newPanelAssets; await flush();
-  assert.deepEqual(calls, ['render_handwriting', 'handwriting_assets', 'choose_handwriting_app']);
+  assert.deepEqual(calls, ['render_handwriting', 'handwriting_assets', 'download_handwriting_font']);
   jobs[2]!.resolve({ available: true }); await choose;
 });

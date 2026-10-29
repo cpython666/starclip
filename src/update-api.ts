@@ -14,6 +14,28 @@ export type UpdateStatus = {
   error?: string | null;
   backupId?: string | null;
 };
+export type UpdatePreferences = {
+  revision: number;
+  autoCheck: boolean;
+  skippedVersion: string | null;
+  lastCheckAt: number | null;
+};
+export function initialUpdatePreferences(): UpdatePreferences {
+  return { revision: 0, autoCheck: true, skippedVersion: null, lastCheckAt: null };
+}
+export function getUpdatePreferences(): Promise<UpdatePreferences> {
+  return updateDesktopAvailable ? invoke('get_update_preferences') : Promise.resolve(initialUpdatePreferences());
+}
+export function setAutoUpdateCheck(enabled: boolean): Promise<UpdatePreferences> {
+  return invoke('set_auto_update_check', { enabled });
+}
+export function skipUpdateVersion(version: string): Promise<UpdatePreferences> {
+  return invoke('skip_update_version', { version });
+}
+export async function onUpdatePreferencesChanged(callback: (value: UpdatePreferences) => void): Promise<() => void> {
+  if (!updateDesktopAvailable) return () => {};
+  return (await import('@tauri-apps/api/event')).listen<UpdatePreferences>('starclip-update-preferences', event => callback(event.payload));
+}
 export type RecoveryPoint = {
   id: string;
   createdAt: number;

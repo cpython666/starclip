@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import Icon from './Icon.vue'
 import StickerScene from './StickerScene.vue'
@@ -70,27 +71,27 @@ onBeforeUnmount(() => dialog.value?.close())
   <dialog ref="dialog" class="onboarding-guide" aria-labelledby="onboarding-title" :aria-busy="busy" @cancel.prevent="finish">
     <div class="onboarding-shell">
       <header class="onboarding-header">
-        <div><p class="onboarding-eyebrow"><Icon name="spark" :size="13" /> A LITTLE HELLO</p><h2 id="onboarding-title">初见星笺<span>四步，认识你的小小星系</span></h2></div>
-        <button type="button" class="onboarding-skip" :disabled="busy" @click="finish">跳过教程<Icon name="close" :size="14" /></button>
+        <div><p class="onboarding-eyebrow"><Icon name="spark" :size="13" /> A LITTLE HELLO</p><h2 id="onboarding-title">{{ t('初见星笺') }}<span>{{ t('四步，认识你的小小星系') }}</span></h2></div>
+        <button type="button" class="onboarding-skip" :disabled="busy" @click="finish">{{ t('跳过教程') }}<Icon name="close" :size="14" /></button>
       </header>
-      <nav class="onboarding-progress" aria-label="教程步骤">
-        <ol><li v-for="(item, index) in steps" :key="item.label"><button type="button" :class="{ current: index === step, visited: index < step }" :aria-current="index === step ? 'step' : undefined" :aria-label="`第 ${index + 1} 步：${item.label}`" :disabled="busy" @click="goTo(index)"><span class="onboarding-step-number"><Icon v-if="index < step" name="check" :size="12" /><template v-else>{{ index + 1 }}</template></span><span>{{ item.label }}</span></button></li></ol>
+      <nav class="onboarding-progress" :aria-label="t('教程步骤')">
+        <ol><li v-for="(item, index) in steps" :key="item.label"><button type="button" :class="{ current: index === step, visited: index < step }" :aria-current="index === step ? 'step' : undefined" :aria-label="t('第 {step} 步：{label}', { step: index + 1, label: t(item.label) })" :disabled="busy" @click="goTo(index)"><span class="onboarding-step-number"><Icon v-if="index < step" name="check" :size="12" /><template v-else>{{ index + 1 }}</template></span><span>{{ t(item.label) }}</span></button></li></ol>
       </nav>
       <div class="onboarding-body">
-        <aside class="onboarding-art" aria-hidden="true"><span class="onboarding-orbit" /><StickerScene :pack="current.pack" :theme="theme" placement="preview" /><span class="onboarding-art-label"><Icon :name="current.icon" :size="12" />{{ current.badge }}</span><span class="onboarding-art-stars">✧ · ✦</span></aside>
+        <aside class="onboarding-art" aria-hidden="true"><span class="onboarding-orbit" /><StickerScene :pack="current.pack" :theme="theme" placement="preview" /><span class="onboarding-art-label"><Icon :name="current.icon" :size="12" />{{ t(current.badge) }}</span><span class="onboarding-art-stars">✧ · ✦</span></aside>
         <section class="onboarding-copy" :aria-labelledby="`onboarding-step-${step}`">
           <p class="onboarding-counter">{{ String(step + 1).padStart(2, '0') }} <span>/ 04</span></p>
-          <h3 :id="`onboarding-step-${step}`" ref="heading" tabindex="-1">{{ current.title }}</h3>
-          <p class="onboarding-intro">{{ current.intro }}</p>
-          <ul class="onboarding-points"><li v-for="point in current.points" :key="point.title"><span class="onboarding-point-icon"><Icon :name="point.icon" :size="17" /></span><div><h4>{{ point.title }}</h4><p>{{ point.text }}</p></div></li></ul>
-          <p class="onboarding-note"><Icon name="shield" :size="14" /><span>{{ current.note }}</span></p>
+          <h3 :id="`onboarding-step-${step}`" ref="heading" tabindex="-1">{{ t(current.title) }}</h3>
+          <p class="onboarding-intro">{{ t(current.intro) }}</p>
+          <ul class="onboarding-points"><li v-for="point in current.points" :key="point.title"><span class="onboarding-point-icon"><Icon :name="point.icon" :size="17" /></span><div><h4>{{ t(point.title) }}</h4><p>{{ t(point.text) }}</p></div></li></ul>
+          <p class="onboarding-note"><Icon name="shield" :size="14" /><span>{{ t(current.note) }}</span></p>
         </section>
       </div>
-      <div v-if="error" class="onboarding-error" role="alert"><Icon name="alert" :size="15" /><div><p>暂时没能保存教程状态，请重试。<span>{{ error }}</span></p><button type="button" class="onboarding-dismiss" :disabled="busy" @click="dismiss">暂时关闭，下次再提醒</button></div></div>
+      <div v-if="error" class="onboarding-error" role="alert"><Icon name="alert" :size="15" /><div><p>{{ t('暂时没能保存教程状态，请重试。') }}<span>{{ error }}</span></p><button type="button" class="onboarding-dismiss" :disabled="busy" @click="dismiss">{{ t('暂时关闭，下次再提醒') }}</button></div></div>
       <footer class="onboarding-footer">
-        <span class="onboarding-footer-note" role="status">{{ busy ? '正在记下这次相遇…' : '按自己的节奏，慢慢熟悉。' }}</span>
-        <button v-if="step > 0" type="button" class="onboarding-button onboarding-previous" :disabled="busy" @click="goTo(step - 1)"><Icon name="chevron" :size="14" />上一步</button>
-        <button type="button" class="onboarding-button onboarding-next" :disabled="busy" @click="advance">{{ busy ? '正在保存…' : error ? '重试结束教程' : step === steps.length - 1 ? '完成教程' : '下一步' }}<Icon :name="step === steps.length - 1 || error ? 'check' : 'arrow'" :size="15" /></button>
+        <span class="onboarding-footer-note" role="status">{{ busy ? t('正在记下这次相遇…') : t('按自己的节奏，慢慢熟悉。') }}</span>
+        <button v-if="step > 0" type="button" class="onboarding-button onboarding-previous" :disabled="busy" @click="goTo(step - 1)"><Icon name="chevron" :size="14" />{{ t('上一步') }}</button>
+        <button type="button" class="onboarding-button onboarding-next" :disabled="busy" @click="advance">{{ busy ? t('正在保存…') : error ? t('重试结束教程') : step === steps.length - 1 ? t('完成教程') : t('下一步') }}<Icon :name="step === steps.length - 1 || error ? 'check' : 'arrow'" :size="15" /></button>
       </footer>
     </div>
   </dialog>

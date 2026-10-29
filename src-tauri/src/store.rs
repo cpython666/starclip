@@ -2,12 +2,13 @@ use crate::appearance::{self, Appearance};
 use crate::images::{self, ImageMetadata, PreparedImage};
 use crate::privacy::{self, Metadata, PrivacyRescan, PrivacyRules};
 use crate::starpet_growth::{GrowthChange, GrowthState, MAX_REVISION};
+use crate::telemetry::TelemetryPreferences;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     path::Path,
     sync::atomic::{AtomicU64, Ordering},
@@ -40,6 +41,49 @@ fn check_backup_image_limits(clips: &[Clip]) -> Result<()> {
         return Err("JSON 备份中的图片累计不能超过 2.56 亿像素；请使用数据设置中的完整数据目录迁移，无需删除记录。".into());
     }
     Ok(())
+}
+
+pub const HISTORY_PAGE_SIZE: u32 = 50;
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct HistoryQuery {
+    pub page: u32,
+    pub filter: String,
+    pub query: String,
+    pub sources: Vec<String>,
+    pub tag: String,
+    pub privacy: String,
+    pub ai_eligible: bool,
+}
+impl Default for HistoryQuery {
+    fn default() -> Self {
+        Self {
+            page: 1,
+            filter: "all".into(),
+            query: String::new(),
+            sources: vec![],
+            tag: String::new(),
+            privacy: "all".into(),
+            ai_eligible: false,
+        }
+    }
+}
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistorySummary {
+    pub page: u32,
+    pub page_size: u32,
+    pub total: u64,
+    pub counts: BTreeMap<String, u64>,
+    pub group_counts: BTreeMap<i64, u64>,
+    pub sources: Vec<String>,
+    pub hosts: Vec<String>,
+    pub tags: Vec<String>,
+}
+pub struct HistoryPage {
+    pub clips: Vec<Clip>,
+    pub history: HistorySummary,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,6 +136,10 @@ pub struct Group {
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub paused: bool,
+    #[serde(default)]
+    pub pause_revision: u64,
+    #[serde(default = "default_ui_language")]
+    pub ui_language: String,
     pub theme: String,
     pub layout: String,
     pub max_history: usize,
@@ -106,6 +154,33 @@ pub struct Settings {
     pub sticker_pack: String,
 }
 
+/// Preferences for the low-frequency stable update check. Kept separate from
+/// ordinary settings so toggling updates never runs retention or changes
+/// clipboard behavior.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdatePreferences {
+    pub revision: u64,
+    pub auto_check: bool,
+    pub skipped_version: Option<String>,
+    pub last_check_at: Option<u64>,
+}
+
+impl Default for UpdatePreferences {
+    fn default() -> Self {
+        Self {
+            revision: 0,
+            auto_check: true,
+            skipped_version: None,
+            last_check_at: None,
+        }
+    }
+}
+const AUTO_UPDATE_INTERVAL_MS: u64 = 24 * 60 * 60 * 1000;
+
+fn default_ui_language() -> String {
+    "system".into()
+}
 fn default_show_startup() -> bool {
     true
 }
@@ -117,6 +192,8 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             paused: true,
+            pause_revision: 0,
+            ui_language: default_ui_language(),
             theme: "dark".into(),
             layout: "grid".into(),
             max_history: 0,
@@ -138,6 +215,9 @@ impl Settings {
             || self.shortcut.len() > 80
         {
             return Err("设置无效：历史上限可选不限条数（0）或 50–10000 条。".into());
+        }
+        if !["system", "zh-CN", "en-US"].contains(&self.ui_language.as_str()) {
+            return Err("不支持的界面语言。".into());
         }
         if !["auto", "none", "cosmos", "cats", "puppies", "garden"]
             .contains(&self.sticker_pack.as_str())
@@ -310,7 +390,11 @@ pub struct CleanupResult {
 }
 pub struct CleanupSnapshot {
     pub preview: CleanupPreview,
-    candidates: Vec<Clip>,
+    candidates: Vec<CleanupCandidate>,
+}
+struct CleanupCandidate {
+    id: i64,
+    fingerprint: [u8; 32],
 }
 pub const STALE_CLEANUP: &str = "清理预览已过期，请重新预览后确认。";
 static CLEANUP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -320,18 +404,23 @@ fn clip_bytes(clip: &Clip) -> u64 {
         .map_or(clip.content.len() as u64, |image| image.bytes)
         + clip.title.len() as u64
 }
-fn same_cleanup_record(before: &Clip, current: &Clip) -> bool {
-    before.id == current.id
-        && before.content == current.content
-        && before.title == current.title
-        && before.kind == current.kind
-        && before.language == current.language
-        && before.image == current.image
-        && before.updated_at == current.updated_at
-        && before.created_at == current.created_at
-        && before.group_id == current.group_id
-        && before.pinned == current.pinned
-        && before.keep_forever == current.keep_forever
+fn cleanup_fingerprint(clip: &Clip) -> Result<[u8; 32]> {
+    // Keep the same stale-plan fields without retaining every candidate's body.
+    // Copy count and privacy-only changes do not change the deletion target.
+    let fields = (
+        &clip.id,
+        &clip.content,
+        &clip.title,
+        &clip.kind,
+        &clip.language,
+        &clip.image,
+        &clip.updated_at,
+        &clip.created_at,
+        &clip.group_id,
+        &clip.pinned,
+        &clip.keep_forever,
+    );
+    Ok(Sha256::digest(serde_json::to_vec(&fields).map_err(|e| e.to_string())?).into())
 }
 
 #[derive(Serialize, Deserialize)]
@@ -371,13 +460,15 @@ fn now() -> i64 {
         .as_millis() as i64
 }
 fn clip_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Clip> {
-    let metadata = metadata_from_json(row.get(14)?)?;
+    let mut metadata = metadata_from_json(row.get(14)?)?;
+    let kind: String = row.get(3)?;
+    metadata.normalize_image_policy(&kind);
     Ok(Clip {
         record_identity: metadata.record_identity.clone(),
         id: row.get(0)?,
         content: row.get(1)?,
         title: row.get(2)?,
-        kind: row.get(3)?,
+        kind,
         pinned: row.get(4)?,
         group_id: row.get(5)?,
         created_at: row.get(6)?,
@@ -413,15 +504,22 @@ fn metadata_from_json(json: Option<String>) -> rusqlite::Result<Metadata> {
     }
 }
 fn read_metadata(conn: &Connection, id: i64) -> Result<Metadata> {
-    let json: Option<String> = conn
+    let saved: Option<(String, String)> = conn
         .query_row(
-            "SELECT metadata FROM clip_privacy WHERE clip_id=?1",
+            "SELECT p.metadata,c.kind FROM clip_privacy p JOIN clips c ON c.id=p.clip_id WHERE p.clip_id=?1",
             [id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
         .map_err(sql_error)?;
-    metadata_from_json(json).map_err(sql_error)
+    match saved {
+        Some((json, kind)) => {
+            let mut metadata = metadata_from_json(Some(json)).map_err(sql_error)?;
+            metadata.normalize_image_policy(&kind);
+            Ok(metadata)
+        }
+        None => Ok(Metadata::default()),
+    }
 }
 fn put_metadata(conn: &Connection, id: i64, metadata: &Metadata) -> Result<()> {
     validate_backup_tags(&metadata.tags())?;
@@ -689,6 +787,20 @@ impl Store {
     }
 
     fn from_connection(conn: Connection) -> Result<Self> {
+        // SQLite lower() folds ASCII only; keep Unicode search consistent with the UI.
+        conn.create_scalar_function(
+            "starclip_contains",
+            2,
+            rusqlite::functions::FunctionFlags::SQLITE_UTF8
+                | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
+            |context| {
+                Ok(context
+                    .get::<String>(0)?
+                    .to_lowercase()
+                    .contains(&context.get::<String>(1)?))
+            },
+        )
+        .map_err(sql_error)?;
         conn.busy_timeout(std::time::Duration::from_secs(3))
             .map_err(sql_error)?;
         let version = Self::check_schema_version(&conn)?;
@@ -835,6 +947,131 @@ impl Store {
             }
             None => Ok(Settings::default()),
         }
+    }
+
+    pub fn telemetry_preferences(&self) -> Result<TelemetryPreferences> {
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM preferences WHERE key='telemetry_preferences_v1'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error)?;
+        match json {
+            Some(json) => {
+                let preferences: TelemetryPreferences = serde_json::from_str(&json)
+                    .map_err(|_| "统计偏好损坏，请重新设置。".to_string())?;
+                if preferences.revision > MAX_REVISION {
+                    return Err("统计偏好损坏，请重新设置。".into());
+                }
+                Ok(preferences)
+            }
+            None => Ok(TelemetryPreferences::default()),
+        }
+    }
+
+    pub fn set_telemetry_enabled(&self, enabled: bool) -> Result<TelemetryPreferences> {
+        // Only an explicit local choice can replace damaged preferences. This
+        // never touches ordinary settings or retention.
+        let mut preferences = TelemetryPreferences {
+            revision: self
+                .telemetry_preferences()
+                .map(|value| value.revision)
+                .unwrap_or(0),
+            enabled,
+        };
+        preferences.revision = preferences
+            .revision
+            .checked_add(1)
+            .filter(|revision| *revision <= MAX_REVISION)
+            .ok_or("统计偏好修订已达上限。")?;
+        let json = serde_json::to_string(&preferences).map_err(|error| error.to_string())?;
+        self.conn.execute(
+            "INSERT INTO preferences(key,value) VALUES('telemetry_preferences_v1',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [json],
+        ).map_err(sql_error)?;
+        Ok(preferences)
+    }
+
+    pub fn update_preferences(&self) -> Result<UpdatePreferences> {
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM preferences WHERE key='update_preferences_v1'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error)?;
+        match json {
+            Some(json) => {
+                serde_json::from_str(&json).map_err(|_| "更新偏好损坏，请重新启动星笺。".into())
+            }
+            None => Ok(UpdatePreferences::default()),
+        }
+    }
+
+    fn save_update_preferences(&self, preferences: &mut UpdatePreferences) -> Result<()> {
+        preferences.revision = preferences
+            .revision
+            .checked_add(1)
+            .filter(|revision| *revision <= MAX_REVISION)
+            .ok_or("更新偏好修订已达上限。")?;
+        let json = serde_json::to_string(preferences).map_err(|error| error.to_string())?;
+        self.conn
+            .execute(
+                "INSERT INTO preferences(key,value) VALUES('update_preferences_v1',?1)
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [json],
+            )
+            .map_err(sql_error)?;
+        Ok(())
+    }
+
+    pub fn set_auto_update_check(&self, enabled: bool) -> Result<UpdatePreferences> {
+        let mut preferences = self.update_preferences()?;
+        if preferences.auto_check != enabled {
+            preferences.auto_check = enabled;
+            self.save_update_preferences(&mut preferences)?;
+        }
+        Ok(preferences)
+    }
+
+    pub fn skip_update_version(&self, version: &str) -> Result<UpdatePreferences> {
+        let mut preferences = self.update_preferences()?;
+        preferences.skipped_version = Some(version.to_owned());
+        self.save_update_preferences(&mut preferences)?;
+        Ok(preferences)
+    }
+
+    // The caller holds the storage/store/updater locks in that order. Persist
+    // before requesting; both a failed request and a restart consume the interval.
+    pub fn record_update_check(
+        &self,
+        now: u64,
+        automatic: bool,
+    ) -> Result<(UpdatePreferences, bool)> {
+        let mut preferences = self.update_preferences()?;
+        if automatic {
+            if !preferences.auto_check {
+                return Ok((preferences, false));
+            }
+            if let Some(last) = preferences.last_check_at {
+                if now < last {
+                    preferences.last_check_at = Some(now);
+                    self.save_update_preferences(&mut preferences)?;
+                    return Ok((preferences, false));
+                }
+                if now - last < AUTO_UPDATE_INTERVAL_MS {
+                    return Ok((preferences, false));
+                }
+            }
+        }
+        preferences.last_check_at = Some(now);
+        self.save_update_preferences(&mut preferences)?;
+        Ok((preferences, true))
     }
 
     pub fn onboarding_completed(&self) -> Result<bool> {
@@ -1030,12 +1267,38 @@ impl Store {
     }
 
     pub fn save_settings(&self, settings: &Settings) -> Result<()> {
+        self.save_settings_with_pause_guard(settings, None)
+            .map(|_| ())
+    }
+
+    pub fn save_settings_with_pause_guard(
+        &self,
+        settings: &Settings,
+        expected_pause_revision: Option<u64>,
+    ) -> Result<Settings> {
         settings.validate()?;
-        let json = serde_json::to_string(settings).map_err(|e| e.to_string())?;
         let tx = self.conn.unchecked_transaction().map_err(sql_error)?;
+        let mut settings = settings.clone();
+        // Read and write on this transaction. The version detects even an
+        // unseen pause -> resume -> pause round trip while a draft is open.
+        let current = self.settings()?;
+        if expected_pause_revision.is_some_and(|expected| expected != current.pause_revision) {
+            settings.paused = current.paused;
+        }
+        // The store owns this version; never persist a caller-supplied value.
+        settings.pause_revision = if settings.paused != current.paused {
+            current
+                .pause_revision
+                .checked_add(1)
+                .ok_or("采集设置版本已达上限，偏好设置未保存。")?
+        } else {
+            current.pause_revision
+        };
+        let json = serde_json::to_string(&settings).map_err(|e| e.to_string())?;
         tx.execute("INSERT INTO preferences(key,value) VALUES('settings',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [json]).map_err(sql_error)?;
-        Self::prune_with_settings(&tx, settings, now())?;
-        tx.commit().map_err(sql_error)
+        Self::prune_with_settings(&tx, &settings, now())?;
+        tx.commit().map_err(sql_error)?;
+        Ok(settings)
     }
 
     pub fn privacy_rules(&self) -> Result<PrivacyRules> {
@@ -1101,18 +1364,26 @@ impl Store {
 
     fn privacy_rescan_plan(&self) -> Result<(PrivacyRescan, Vec<(i64, Metadata)>)> {
         let rules = self.privacy_rules()?;
-        let clips = self.clips()?;
+        let mut statement = self
+            .conn
+            .prepare(&format!(
+                "{CLIP_SELECT} ORDER BY c.updated_at DESC,c.id DESC"
+            ))
+            .map_err(sql_error)?;
+        let clips = statement.query_map([], clip_from_row).map_err(sql_error)?;
         let mut digest = Sha256::new();
         digest.update(serde_json::to_vec(&rules).map_err(|e| e.to_string())?);
         let mut report = PrivacyRescan {
             token: String::new(),
-            total: clips.len(),
+            total: 0,
             private_count: 0,
             newly_private_count: 0,
             changed_count: 0,
         };
         let mut changes = Vec::new();
         for clip in clips {
+            let clip = clip.map_err(sql_error)?;
+            report.total += 1;
             let old = read_metadata(&self.conn, clip.id)?;
             digest.update(serde_json::to_vec(&clip).map_err(|e| e.to_string())?);
             digest.update(serde_json::to_vec(&old).map_err(|e| e.to_string())?);
@@ -1146,6 +1417,178 @@ impl Store {
         Ok(report)
     }
 
+    /// Read only one page of content. Counts/facets come from the whole database.
+    pub fn history_page(&self, query: &HistoryQuery) -> Result<HistoryPage> {
+        if query.query.len() > MAX_CONTENT_BYTES
+            || query.sources.len() > 100
+            || query.sources.iter().any(|source| source.len() > 512)
+            || query.tag.len() > 160
+        {
+            return Err("历史筛选条件过长。".into());
+        }
+        let revision = self.privacy_rules()?.revision;
+        let mut predicates = vec!["1=1".to_owned()];
+        let mut values: Vec<rusqlite::types::Value> = vec![];
+        match query.filter.as_str() {
+            "all" => {}
+            "pinned" => predicates.push("c.pinned=1".into()),
+            "kept" => predicates.push("c.keep_forever=1".into()),
+            "link" => predicates
+                .push("(c.kind='link' OR json_array_length(p.metadata,'$.linkHosts')>0)".into()),
+            "text" | "code" | "color" | "image" => {
+                predicates.push("c.kind=?".into());
+                values.push(query.filter.clone().into());
+            }
+            group if group.starts_with("group-") => {
+                let id = group[6..].parse::<i64>().map_err(|_| "分组编号无效。")?;
+                predicates.push("c.group_id=?".into());
+                values.push(id.into());
+            }
+            _ => return Err("历史分类无效。".into()),
+        }
+        let search = query.query.trim().to_lowercase();
+        if !search.is_empty() {
+            let tags = if query.ai_eligible {
+                " || COALESCE(json_extract(p.metadata,'$.manualTags'),'') || COALESCE(json_extract(p.metadata,'$.ruleTags'),'')"
+            } else {
+                ""
+            };
+            predicates.push(format!("starclip_contains(c.title || char(10) || CASE WHEN c.kind='image' THEN '' ELSE c.content END{tags},?)"));
+            values.push(search.into());
+        }
+        if !query.sources.is_empty() {
+            let mut sources = vec![];
+            for source in &query.sources {
+                let (path, value) = match source.strip_prefix("host:") {
+                    Some(host) => ("linkHosts", host),
+                    None => ("linkSources", source.as_str()),
+                };
+                sources.push(format!(
+                    "EXISTS(SELECT 1 FROM json_each(p.metadata,'$.{path}') WHERE value=?)"
+                ));
+                values.push(value.to_owned().into());
+            }
+            predicates.push(format!("({})", sources.join(" OR ")));
+        }
+        if !query.tag.is_empty() {
+            predicates.push("(EXISTS(SELECT 1 FROM json_each(p.metadata,'$.manualTags') WHERE value=?) OR EXISTS(SELECT 1 FROM json_each(p.metadata,'$.ruleTags') WHERE value=?))".into());
+            values.extend([query.tag.clone().into(), query.tag.clone().into()]);
+        }
+        // A legacy image capability marker is not a privacy match; image pixels
+        // remain unscanned and can never become AI-eligible via this query.
+        let private = "(COALESCE(json_extract(p.metadata,'$.privacyManual'),0)=1 OR EXISTS(SELECT 1 FROM json_each(p.metadata,'$.privacyReasons') WHERE c.kind!='image' OR value!='图片尚未进行文字识别'))";
+        let pending = format!(
+            "(c.kind='image' OR COALESCE(json_extract(p.metadata,'$.scanVersion'),0)!={revision})"
+        );
+        match query.privacy.as_str() {
+            "all" => {}
+            "private" => predicates.push(private.into()),
+            "pending" => predicates.push(pending.clone()),
+            "ordinary" => predicates.push(format!("NOT {private} AND NOT {pending}")),
+            _ => return Err("隐私筛选无效。".into()),
+        }
+        if query.ai_eligible {
+            predicates.push(format!(
+                "c.kind!='image' AND NOT {private} AND NOT {pending}"
+            ));
+        }
+        let from = "FROM clips c LEFT JOIN clip_privacy p ON p.clip_id=c.id";
+        let where_sql = predicates.join(" AND ");
+        let total: u64 = self
+            .conn
+            .query_row(
+                &format!("SELECT COUNT(*) {from} WHERE {where_sql}"),
+                rusqlite::params_from_iter(values.iter()),
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        let last = total
+            .div_ceil(u64::from(HISTORY_PAGE_SIZE))
+            .max(1)
+            .min(u64::from(u32::MAX)) as u32;
+        let page = query.page.max(1).min(last);
+        let offset = u64::from(page - 1) * u64::from(HISTORY_PAGE_SIZE);
+        let mut statement = self.conn.prepare(&format!("{CLIP_SELECT} WHERE {where_sql} ORDER BY c.updated_at DESC,c.id DESC LIMIT {HISTORY_PAGE_SIZE} OFFSET {offset}")).map_err(sql_error)?;
+        let clips = statement
+            .query_map(rusqlite::params_from_iter(values.iter()), clip_from_row)
+            .map_err(sql_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sql_error)?;
+        let mut counts = BTreeMap::new();
+        let mut statement = self
+            .conn
+            .prepare("SELECT kind,COUNT(*) FROM clips GROUP BY kind")
+            .map_err(sql_error)?;
+        for item in statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
+            })
+            .map_err(sql_error)?
+        {
+            let (kind, count) = item.map_err(sql_error)?;
+            counts.insert(kind, count);
+        }
+        counts.insert("all".into(), counts.values().sum());
+        for (key, predicate) in [
+            ("pinned", "c.pinned=1"),
+            ("kept", "c.keep_forever=1"),
+            (
+                "link",
+                "c.kind='link' OR json_array_length(p.metadata,'$.linkHosts')>0",
+            ),
+        ] {
+            counts.insert(
+                key.into(),
+                self.conn
+                    .query_row(
+                        &format!("SELECT COUNT(*) {from} WHERE {predicate}"),
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(sql_error)?,
+            );
+        }
+        let mut statement = self
+            .conn
+            .prepare(
+                "SELECT group_id,COUNT(*) FROM clips WHERE group_id IS NOT NULL GROUP BY group_id",
+            )
+            .map_err(sql_error)?;
+        let group_counts = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(sql_error)?
+            .collect::<rusqlite::Result<BTreeMap<_, _>>>()
+            .map_err(sql_error)?;
+        let facets = |paths: &[&str]| -> Result<Vec<String>> {
+            let sql = paths.iter().map(|path| format!("SELECT value FROM clip_privacy,json_each(metadata,'$.{path}') WHERE type='text'")).collect::<Vec<_>>().join(" UNION ");
+            let mut statement = self
+                .conn
+                .prepare(&format!(
+                    "SELECT DISTINCT value FROM ({sql}) ORDER BY value"
+                ))
+                .map_err(sql_error)?;
+            let values = statement
+                .query_map([], |row| row.get(0))
+                .map_err(sql_error)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(sql_error)?;
+            Ok(values)
+        };
+        Ok(HistoryPage {
+            clips,
+            history: HistorySummary {
+                page,
+                page_size: HISTORY_PAGE_SIZE,
+                total,
+                counts,
+                group_counts,
+                sources: facets(&["linkSources"])?,
+                hosts: facets(&["linkHosts"])?,
+                tags: facets(&["manualTags", "ruleTags"])?,
+            },
+        })
+    }
+
     pub fn clips(&self) -> Result<Vec<Clip>> {
         let mut stmt = self
             .conn
@@ -1174,6 +1617,35 @@ impl Store {
             .map_err(sql_error)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(sql_error)
+    }
+
+    /// Refresh explicitly selected details without loading the entire history.
+    /// Missing IDs are omitted so callers can discard deleted selections.
+    pub fn clip_details(&self, ids: &[i64]) -> Result<Vec<Clip>> {
+        if ids.len() > 500 || ids.iter().any(|id| *id <= 0) {
+            return Err("每次最多读取 500 条有效记录。".into());
+        }
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let placeholders = vec!["?"; ids.len()].join(",");
+        let mut statement = self
+            .conn
+            .prepare(&format!(
+                "{CLIP_SELECT} WHERE c.id IN ({placeholders}) ORDER BY c.id"
+            ))
+            .map_err(sql_error)?;
+        let clips = statement
+            .query_map(rusqlite::params_from_iter(ids.iter()), clip_from_row)
+            .map_err(sql_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sql_error)?;
+        Ok(clips)
+    }
+
+    pub fn has_pending_ai_history(&self) -> Result<bool> {
+        let revision = self.privacy_rules()?.revision;
+        self.conn.query_row("SELECT EXISTS(SELECT 1 FROM clips c LEFT JOIN clip_privacy p ON p.clip_id=c.id WHERE c.kind!='image' AND COALESCE(json_extract(p.metadata,'$.scanVersion'),0) != ?1)", [revision], |row| row.get(0)).map_err(sql_error)
     }
 
     pub fn clip(&self, id: i64) -> Result<Clip> {
@@ -1384,6 +1856,7 @@ impl Store {
         let mut protected_count = 0;
         let mut content_bytes = 0;
         let mut candidates = Vec::new();
+        let mut items: Vec<CleanupItem> = Vec::new();
         let mut stmt = self.conn.prepare(CLIP_SELECT).map_err(sql_error)?;
         for row in stmt.query_map([], clip_from_row).map_err(sql_error)? {
             let clip = row.map_err(sql_error)?;
@@ -1399,30 +1872,33 @@ impl Store {
                 && (filter.include_grouped || clip.group_id.is_none())
             {
                 content_bytes += bytes;
-                candidates.push(clip);
+                candidates.push(CleanupCandidate {
+                    id: clip.id,
+                    fingerprint: cleanup_fingerprint(&clip)?,
+                });
+                // Only the largest 100 display rows need titles. All candidates
+                // retain just an ID and digest for the transactional recheck.
+                let position =
+                    items.partition_point(|item| (item.bytes, item.id) > (bytes, clip.id));
+                if position < 100 {
+                    items.insert(
+                        position,
+                        CleanupItem {
+                            id: clip.id,
+                            title: if clip.is_private {
+                                "隐私记录".into()
+                            } else {
+                                clip.title
+                            },
+                            kind: clip.kind,
+                            bytes,
+                            updated_at: clip.updated_at,
+                        },
+                    );
+                    items.truncate(100);
+                }
             }
         }
-        // One exact in-memory snapshot avoids persistent preview tables and trusts no client IDs.
-        candidates.sort_by(|a, b| {
-            clip_bytes(b)
-                .cmp(&clip_bytes(a))
-                .then_with(|| b.id.cmp(&a.id))
-        });
-        let items = candidates
-            .iter()
-            .take(100)
-            .map(|clip| CleanupItem {
-                id: clip.id,
-                title: if clip.is_private {
-                    "隐私记录".into()
-                } else {
-                    clip.title.clone()
-                },
-                kind: clip.kind.clone(),
-                bytes: clip_bytes(clip),
-                updated_at: clip.updated_at,
-            })
-            .collect();
         let page_size: u64 = self
             .conn
             .query_row("PRAGMA page_size", [], |row| row.get(0))
@@ -1487,9 +1963,11 @@ impl Store {
                 )
                 .optional()
                 .map_err(sql_error)?;
-            if current.as_ref().is_none_or(|current| {
-                !same_cleanup_record(expected, current) || current.keep_forever || current.pinned
-            }) {
+            let current = current.ok_or(STALE_CLEANUP)?;
+            if current.keep_forever
+                || current.pinned
+                || cleanup_fingerprint(&current)? != expected.fingerprint
+            {
                 return Err(STALE_CLEANUP.into());
             }
         }
@@ -1849,6 +2327,191 @@ mod tests {
     fn store() -> Store {
         Store::from_connection(Connection::open_in_memory().unwrap()).unwrap()
     }
+    #[test]
+    fn history_selected_details_are_bounded_fresh_and_omit_deleted_ids() {
+        let store = store();
+        let first = store.add("原创详情一", "旧标题", None).unwrap();
+        let second = store.add("原创详情二", "待删除", None).unwrap();
+        store.update(first.id, "新标题", None, true).unwrap();
+        store.set_clip_privacy(first.id, true, false).unwrap();
+        store
+            .conn
+            .execute("DELETE FROM clips WHERE id=?1", [second.id])
+            .unwrap();
+        let details = store
+            .clip_details(&[second.id, first.id, first.id])
+            .unwrap();
+        assert_eq!(details.len(), 1);
+        assert_eq!(details[0].title, "新标题");
+        assert!(details[0].is_private);
+        assert!(store.clip_details(&[]).unwrap().is_empty());
+        assert!(store.clip_details(&[0]).is_err());
+        assert!(store.clip_details(&vec![first.id; 501]).is_err());
+    }
+
+    #[test]
+    fn history_page_bounds_content_and_searches_the_entire_store() {
+        let store = store();
+        let mut first_id = 0;
+        for index in 0..123 {
+            let clip = store
+                .add(
+                    &format!("分页原创内容 {index}"),
+                    if index == 0 {
+                        "ÉTOILE 100%_"
+                    } else {
+                        "原创固定样例"
+                    },
+                    None,
+                )
+                .unwrap();
+            if index == 0 {
+                first_id = clip.id;
+            }
+        }
+        store
+            .conn
+            .execute("UPDATE clips SET updated_at=100", [])
+            .unwrap();
+        let first = store.history_page(&HistoryQuery::default()).unwrap();
+        assert_eq!(first.clips.len(), 50);
+        assert_eq!(first.history.total, 123);
+        assert_eq!(first.history.counts["all"], 123);
+        assert!(first.clips.windows(2).all(|pair| pair[0].id > pair[1].id));
+        let last = store
+            .history_page(&HistoryQuery {
+                page: u32::MAX,
+                ..HistoryQuery::default()
+            })
+            .unwrap();
+        assert_eq!(last.history.page, 3);
+        assert_eq!(last.clips.len(), 23);
+        assert!(!first
+            .clips
+            .iter()
+            .any(|clip| last.clips.iter().any(|other| other.id == clip.id)));
+        let search = store
+            .history_page(&HistoryQuery {
+                query: "étoile 100%_".into(),
+                page: 3,
+                ..HistoryQuery::default()
+            })
+            .unwrap();
+        assert_eq!(search.history.page, 1);
+        assert_eq!(search.history.total, 1);
+        assert_eq!(search.clips[0].id, first_id);
+        let empty = store
+            .history_page(&HistoryQuery {
+                query: "并不存在的原创文字".into(),
+                ..HistoryQuery::default()
+            })
+            .unwrap();
+        assert_eq!((empty.history.page, empty.history.total), (1, 0));
+        assert_eq!(
+            store.clips().unwrap().len(),
+            123,
+            "paging never prunes retained history"
+        );
+        store
+            .conn
+            .execute(
+                "DELETE FROM clips WHERE id IN (SELECT id FROM clips ORDER BY id LIMIT 23)",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .history_page(&HistoryQuery {
+                    page: 3,
+                    ..HistoryQuery::default()
+                })
+                .unwrap()
+                .history
+                .page,
+            2,
+            "deletion clamps an emptied last page"
+        );
+    }
+
+    #[test]
+    fn history_page_keeps_global_counts_facets_and_privacy_filters() {
+        let store = store();
+        let group = store.create_group("原创分页分组", "#778899").unwrap();
+        let ordinary = store
+            .add(
+                "https://linux.do/original-page-fixture",
+                "原创链接",
+                Some(group.id),
+            )
+            .unwrap();
+        store
+            .set_clip_tags(ordinary.id, &["原创标签".into()])
+            .unwrap();
+        store
+            .update(ordinary.id, "原创链接", Some(group.id), true)
+            .unwrap();
+        let private = store.add("测试普通内容", "人工保护样例", None).unwrap();
+        store.set_clip_privacy(private.id, true, false).unwrap();
+        let image = store
+            .add_image(&image_fixture(44), "原创像素", None, false)
+            .unwrap();
+        let mut legacy = read_metadata(&store.conn, image.id).unwrap();
+        legacy.privacy_reasons = vec!["图片尚未进行文字识别".into()];
+        put_metadata(&store.conn, image.id, &legacy).unwrap();
+        let query = HistoryQuery {
+            filter: format!("group-{}", group.id),
+            sources: vec!["host:linux.do".into()],
+            tag: "原创标签".into(),
+            privacy: "ordinary".into(),
+            ..HistoryQuery::default()
+        };
+        let result = store.history_page(&query).unwrap();
+        assert_eq!(result.clips.len(), 1);
+        assert_eq!(result.clips[0].id, ordinary.id);
+        assert_eq!(result.history.counts["all"], 3);
+        assert_eq!(result.history.counts["pinned"], 1);
+        assert_eq!(result.history.counts["link"], 1);
+        assert_eq!(result.history.group_counts[&group.id], 1);
+        assert!(result.history.tags.contains(&"原创标签".into()));
+        assert!(result.history.hosts.contains(&"linux.do".into()));
+        assert!(result.history.sources.contains(&"linuxdo".into()));
+        let protected = store
+            .history_page(&HistoryQuery {
+                privacy: "private".into(),
+                ..HistoryQuery::default()
+            })
+            .unwrap();
+        assert_eq!(
+            protected
+                .clips
+                .iter()
+                .map(|clip| clip.id)
+                .collect::<Vec<_>>(),
+            [private.id]
+        );
+        let ai = store
+            .history_page(&HistoryQuery {
+                ai_eligible: true,
+                query: "原创标签".into(),
+                ..HistoryQuery::default()
+            })
+            .unwrap();
+        assert_eq!(
+            ai.clips.iter().map(|clip| clip.id).collect::<Vec<_>>(),
+            [ordinary.id]
+        );
+        let pending = store
+            .history_page(&HistoryQuery {
+                privacy: "pending".into(),
+                ..HistoryQuery::default()
+            })
+            .unwrap();
+        assert_eq!(
+            pending.clips.iter().map(|clip| clip.id).collect::<Vec<_>>(),
+            [image.id]
+        );
+    }
+
     fn all_cleanup() -> CleanupFilter {
         CleanupFilter {
             min_bytes: 0,
@@ -1973,6 +2636,69 @@ mod tests {
                 .unwrap()
                 .is_private
         );
+    }
+
+    #[test]
+    fn legacy_image_pending_marker_is_not_privacy_but_actual_protection_survives() {
+        let db = store();
+        let image = db
+            .add_image(&image_fixture(21), "原创截图", None, false)
+            .unwrap();
+        assert!(!image.is_private);
+        assert_eq!(image.scan_version, 0);
+        let mut metadata = read_metadata(&db.conn, image.id).unwrap();
+        metadata.privacy_reasons = vec!["图片尚未进行文字识别".into()];
+        put_metadata(&db.conn, image.id, &metadata).unwrap();
+        let old_json: String = db
+            .conn
+            .query_row(
+                "SELECT metadata FROM clip_privacy WHERE clip_id=?1",
+                [image.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let visible = db.clip(image.id).unwrap();
+        assert!(!visible.is_private);
+        assert!(visible.privacy_reasons.is_empty());
+        assert_eq!(
+            old_json,
+            db.conn
+                .query_row::<String, _, _>(
+                    "SELECT metadata FROM clip_privacy WHERE clip_id=?1",
+                    [image.id],
+                    |row| row.get(0)
+                )
+                .unwrap(),
+            "reading does not rewrite user data"
+        );
+        let mut imported = store();
+        let mut old_backup: serde_json::Value =
+            serde_json::from_str(&db.export().unwrap()).unwrap();
+        old_backup["clips"][0]["isPrivate"] = true.into();
+        old_backup["clips"][0]["privacyReasons"] = serde_json::json!(["图片尚未进行文字识别"]);
+        imported.import(&old_backup.to_string()).unwrap();
+        assert!(!imported.clips().unwrap()[0].is_private);
+        old_backup["clips"][0]["privacyManual"] = true.into();
+        imported.import(&old_backup.to_string()).unwrap();
+        assert!(imported.clips().unwrap()[0].privacy_manual);
+        metadata.privacy_manual = true;
+        put_metadata(&db.conn, image.id, &metadata).unwrap();
+        assert!(db.clip(image.id).unwrap().is_private);
+        metadata.privacy_manual = false;
+        metadata.privacy_reasons.push("自定义规则：原创规则".into());
+        put_metadata(&db.conn, image.id, &metadata).unwrap();
+        assert_eq!(
+            db.clip(image.id).unwrap().privacy_reasons,
+            vec!["自定义规则：原创规则"]
+        );
+        assert!(db.clip(image.id).unwrap().is_private);
+        db.update(image.id, "api_key=original-fixture-only", None, false)
+            .unwrap();
+        assert!(db
+            .clip(image.id)
+            .unwrap()
+            .privacy_reasons
+            .contains(&"凭据字段".into()));
     }
 
     #[test]
@@ -2660,6 +3386,186 @@ mod tests {
     }
 
     #[test]
+    fn telemetry_preferences_persist_without_retention_or_other_preferences() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("telemetry-fixture.sqlite3");
+        let db = Store::open(&path).unwrap();
+        assert_eq!(
+            db.telemetry_preferences().unwrap(),
+            TelemetryPreferences::default()
+        );
+        let enabled = db.set_telemetry_enabled(true).unwrap();
+        assert!(enabled.enabled);
+        drop(db);
+        let db = Store::open(&path).unwrap();
+        assert_eq!(db.telemetry_preferences().unwrap(), enabled);
+        let ordinary = r#"{"paused":false,"theme":"dark","layout":"grid","maxHistory":50,"shortcut":"CommandOrControl+Shift+V","retentionDays":1}"#;
+        db.conn
+            .execute(
+                "INSERT INTO preferences(key,value) VALUES('settings',?1)",
+                [ordinary],
+            )
+            .unwrap();
+        db.conn.execute("INSERT INTO clips(content,kind,created_at,updated_at) VALUES('统计偏好原创超期夹具','text',0,0)", []).unwrap();
+        db.conn.execute_batch("CREATE TRIGGER forbid_telemetry_prune BEFORE DELETE ON clips BEGIN SELECT RAISE(ABORT, 'telemetry must not prune'); END;").unwrap();
+        let disabled = db.set_telemetry_enabled(false).unwrap();
+        assert!(!disabled.enabled);
+        assert!(disabled.revision > enabled.revision);
+        let saved: String = db
+            .conn
+            .query_row(
+                "SELECT value FROM preferences WHERE key='settings'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(saved, ordinary);
+        assert_eq!(db.clips().unwrap().len(), 1);
+        assert_eq!(db.starpet_growth().unwrap(), GrowthState::default());
+        assert_eq!(
+            db.update_preferences().unwrap(),
+            UpdatePreferences::default()
+        );
+        let saved: String = db
+            .conn
+            .query_row(
+                "SELECT value FROM preferences WHERE key='telemetry_preferences_v1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        assert_eq!(
+            json.as_object().unwrap().len(),
+            2,
+            "no session ID or event queue persisted"
+        );
+        db.conn.execute_batch("CREATE TRIGGER fail_telemetry_preferences BEFORE UPDATE ON preferences WHEN NEW.key='telemetry_preferences_v1' BEGIN SELECT RAISE(ABORT, 'fixture write failure'); END;").unwrap();
+        assert!(db.set_telemetry_enabled(true).is_err());
+        assert_eq!(db.telemetry_preferences().unwrap(), disabled);
+    }
+
+    #[test]
+    fn telemetry_default_only_applies_to_missing_preferences_not_opt_out_or_corruption() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("telemetry-default-fixture.sqlite3");
+        let db = Store::open(&path).unwrap();
+        assert!(db.telemetry_preferences().unwrap().enabled);
+        let opted_out = db.set_telemetry_enabled(false).unwrap();
+        drop(db);
+        let db = Store::open(&path).unwrap();
+        assert_eq!(db.telemetry_preferences().unwrap(), opted_out);
+        assert!(!db.telemetry_preferences().unwrap().enabled);
+        for json in [
+            "broken",
+            r#"{"enabled":true}"#,
+            r#"{"revision":0,"enabled":"true"}"#,
+            r#"{"revision":18446744073709551615,"enabled":true}"#,
+        ] {
+            db.conn
+                .execute(
+                    "UPDATE preferences SET value=?1 WHERE key='telemetry_preferences_v1'",
+                    [json],
+                )
+                .unwrap();
+            assert!(
+                db.telemetry_preferences().is_err(),
+                "corruption must not act like a missing preference"
+            );
+        }
+        assert!(
+            !db.set_telemetry_enabled(false).unwrap().enabled,
+            "explicit local choice can repair damaged preferences"
+        );
+        db.conn.execute_batch("DROP TABLE preferences").unwrap();
+        assert!(
+            db.telemetry_preferences().is_err(),
+            "database read failures must not use the default"
+        );
+    }
+
+    #[test]
+    fn update_preferences_are_independent_persistent_and_daily_attempts_survive_failures() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("update-fixture.sqlite3");
+        let db = Store::open(&path).unwrap();
+        assert_eq!(
+            db.update_preferences().unwrap(),
+            UpdatePreferences::default()
+        );
+        let now = 1_000_000;
+        let (attempt, started) = db.record_update_check(now, true).unwrap();
+        assert!(started);
+        assert_eq!(attempt.last_check_at, Some(now));
+        assert!(attempt.revision > 0);
+        // No completion is recorded: failure and app exit still throttle retries.
+        drop(db);
+        let db = Store::open(&path).unwrap();
+        assert_eq!(
+            db.record_update_check(now + 1, true).unwrap(),
+            (attempt.clone(), false)
+        );
+        assert!(
+            db.record_update_check(now + AUTO_UPDATE_INTERVAL_MS, true)
+                .unwrap()
+                .1
+        );
+        let last = db.update_preferences().unwrap();
+        let (rebased, started) = db.record_update_check(now, true).unwrap();
+        assert!(!started);
+        assert!(rebased.revision > last.revision);
+        assert_eq!(rebased.last_check_at, Some(now));
+        assert!(!db.record_update_check(now + 1, true).unwrap().1);
+
+        let disabled = db.set_auto_update_check(false).unwrap();
+        assert!(!disabled.auto_check);
+        assert_eq!(
+            db.record_update_check(now + 2 * AUTO_UPDATE_INTERVAL_MS, true)
+                .unwrap(),
+            (disabled, false)
+        );
+        assert!(
+            db.record_update_check(now + 2, false).unwrap().1,
+            "manual checks ignore auto setting and interval"
+        );
+        let skipped = db.skip_update_version("0.3.0").unwrap();
+        assert_eq!(skipped.skipped_version.as_deref(), Some("0.3.0"));
+        assert!(!skipped.auto_check);
+        drop(db);
+        let db = Store::open(&path).unwrap();
+        assert_eq!(db.update_preferences().unwrap(), skipped);
+
+        let ordinary = r#"{"paused":false,"theme":"dark","layout":"grid","maxHistory":50,"shortcut":"CommandOrControl+Shift+V","retentionDays":1}"#;
+        db.conn
+            .execute(
+                "INSERT INTO preferences(key,value) VALUES('settings',?1)",
+                [ordinary],
+            )
+            .unwrap();
+        db.conn.execute("INSERT INTO clips(content,kind,created_at,updated_at) VALUES('更新偏好原创超期夹具','text',0,0)", []).unwrap();
+        db.conn.execute_batch("CREATE TRIGGER forbid_update_prune BEFORE DELETE ON clips BEGIN SELECT RAISE(ABORT, 'updates must not prune'); END;").unwrap();
+        db.set_auto_update_check(true).unwrap();
+        db.skip_update_version("0.4.0").unwrap();
+        db.record_update_check(now + 3, false).unwrap();
+        let saved: String = db
+            .conn
+            .query_row(
+                "SELECT value FROM preferences WHERE key='settings'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(saved, ordinary);
+        assert_eq!(db.clips().unwrap().len(), 1);
+        assert_eq!(db.starpet_growth().unwrap(), GrowthState::default());
+        let before = db.update_preferences().unwrap();
+        db.conn.execute_batch("CREATE TRIGGER fail_update_preferences BEFORE UPDATE ON preferences WHEN NEW.key='update_preferences_v1' BEGIN SELECT RAISE(ABORT, 'fixture write failure'); END;").unwrap();
+        assert!(db.set_auto_update_check(false).is_err());
+        assert!(db.record_update_check(now + 4, false).is_err());
+        assert_eq!(db.update_preferences().unwrap(), before);
+    }
+
+    #[test]
     fn immediate_theme_change_preserves_legacy_preferences_and_never_prunes() {
         let scratch = Scratch::new();
         let path = scratch.0.join("theme.sqlite3");
@@ -2953,6 +3859,40 @@ mod tests {
     }
 
     #[test]
+    fn cleanup_preview_keeps_only_compact_candidates_and_top_100_titles() {
+        let mut db = store();
+        for index in 0..125 {
+            db.add(
+                &format!("原创清理样例{index:03}{}", "星".repeat(index)),
+                "",
+                None,
+            )
+            .unwrap();
+        }
+        let snapshot = db.preview_cleanup(&all_cleanup()).unwrap();
+        assert_eq!(snapshot.candidates.len(), 125);
+        assert!(std::mem::size_of::<CleanupCandidate>() <= 48);
+        assert_eq!(snapshot.preview.items.len(), 100);
+        assert!(snapshot.preview.truncated);
+        assert!(snapshot
+            .preview
+            .items
+            .windows(2)
+            .all(|rows| (rows[0].bytes, rows[0].id) >= (rows[1].bytes, rows[1].id)));
+        let maximum = db
+            .clips()
+            .unwrap()
+            .into_iter()
+            .max_by_key(|clip| (clip_bytes(clip), clip.id))
+            .unwrap();
+        assert_eq!(snapshot.preview.items[0].id, maximum.id);
+        assert_eq!(
+            db.execute_cleanup(snapshot, false).unwrap().deleted_count,
+            125
+        );
+    }
+
+    #[test]
     fn stale_cleanup_checks_all_sensitive_fields_and_rolls_back() {
         for change in [
             "content='变更正文'",
@@ -2962,6 +3902,8 @@ mod tests {
             "pinned=1",
             "keep_forever=1",
             "kind='code'",
+            "language='rust'",
+            "created_at=created_at+1",
         ] {
             let mut db = store();
             db.create_group("备选分组", "#ffffff").unwrap();
@@ -3201,6 +4143,102 @@ mod tests {
     }
 
     #[test]
+    fn stale_preference_draft_preserves_newer_capture_choice_atomically() {
+        let db = store();
+        let mut opened = db.settings().unwrap();
+        opened.paused = false;
+        db.save_settings(&opened).unwrap();
+        opened = db.settings().unwrap();
+        let observed_revision = opened.pause_revision;
+        let mut draft = opened.clone();
+        draft.layout = "list".into();
+        draft.always_on_top = true;
+
+        // The tray pauses after the UI read, before its save reaches the store.
+        let mut tray = opened;
+        tray.paused = true;
+        db.save_settings(&tray).unwrap();
+        let saved = db
+            .save_settings_with_pause_guard(&draft, Some(observed_revision))
+            .unwrap();
+        assert!(
+            saved.paused,
+            "an unrelated preference save cannot resume capture"
+        );
+        assert_eq!(saved.layout, "list");
+        assert!(saved.always_on_top);
+        assert_eq!(saved.pause_revision, observed_revision + 1);
+        assert_eq!(db.settings().unwrap(), saved);
+
+        // A deliberate resume based on the current saved pause still works.
+        draft = saved;
+        draft.paused = false;
+        let resumed = db
+            .save_settings_with_pause_guard(&draft, Some(draft.pause_revision))
+            .unwrap();
+        assert!(!resumed.paused);
+        assert_eq!(resumed.pause_revision, draft.pause_revision + 1);
+        assert_eq!(db.settings().unwrap(), resumed);
+
+        // Invalid unrelated fields cannot partially commit either preference.
+        draft.layout = "invalid".into();
+        draft.paused = true;
+        assert!(db
+            .save_settings_with_pause_guard(&draft, Some(resumed.pause_revision))
+            .is_err());
+        assert_eq!(db.settings().unwrap(), resumed);
+    }
+
+    #[test]
+    fn pause_revision_blocks_aba_and_is_owned_by_the_store() {
+        let db = store();
+        let opened = db.settings().unwrap();
+        assert!(opened.paused);
+        assert_eq!(opened.pause_revision, 0);
+        let mut stale_resume = opened.clone();
+        stale_resume.paused = false;
+        stale_resume.layout = "list".into();
+
+        // Internal / tray writes must increment even when no guard was supplied.
+        let mut tray = opened.clone();
+        tray.paused = false;
+        tray.pause_revision = u64::MAX;
+        db.save_settings(&tray).unwrap();
+        assert_eq!(db.settings().unwrap().pause_revision, 1);
+        tray.paused = true;
+        db.save_settings(&tray).unwrap();
+        let paused = db.settings().unwrap();
+        assert!(paused.paused);
+        assert_eq!(paused.pause_revision, 2);
+
+        // The boolean is back to its old value, but the old resume is stale.
+        let saved = db
+            .save_settings_with_pause_guard(&stale_resume, Some(opened.pause_revision))
+            .unwrap();
+        assert!(saved.paused);
+        assert_eq!(saved.pause_revision, 2);
+        assert_eq!(saved.layout, "list");
+
+        // A current explicit resume works; an arbitrary payload version cannot win.
+        let mut fresh_resume = saved.clone();
+        fresh_resume.paused = false;
+        fresh_resume.pause_revision = u64::MAX;
+        let resumed = db
+            .save_settings_with_pause_guard(&fresh_resume, Some(saved.pause_revision))
+            .unwrap();
+        assert!(!resumed.paused);
+        assert_eq!(resumed.pause_revision, 3);
+        assert_eq!(db.settings().unwrap(), resumed);
+        db.save_settings(&fresh_resume).unwrap();
+        assert_eq!(
+            db.settings().unwrap().pause_revision,
+            3,
+            "unchanged capture does not advance the version"
+        );
+        assert_eq!(db.set_theme("forest").unwrap().pause_revision, 3);
+    }
+
+    #[test]
     fn legacy_settings_and_backup_keep_their_meaning() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("CREATE TABLE clips (
@@ -3217,6 +4255,10 @@ mod tests {
         .unwrap();
         let db = Store::from_connection(conn).unwrap();
         let settings = db.settings().unwrap();
+        assert_eq!(
+            settings.pause_revision, 0,
+            "old stored settings need no migration write"
+        );
         assert!(!settings.always_on_top);
         assert!(settings.show_startup);
         assert_eq!(settings.sticker_pack, "auto");
@@ -3657,5 +4699,39 @@ mod tests {
         assert_eq!(classify("#a1b2c3"), "color");
         assert_eq!(classify("https://example.com\nhello"), "text");
         assert!(db.clips().unwrap().is_empty());
+    }
+    #[test]
+    fn ui_language_defaults_to_system_persists_and_survives_theme_writes() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("language.sqlite3");
+        let db = Store::open(&path).unwrap();
+        assert_eq!(db.settings().unwrap().ui_language, "system");
+
+        // A preference written before the language field existed keeps working.
+        let legacy = r#"{"paused":true,"theme":"dark","layout":"grid","maxHistory":0,"shortcut":"CommandOrControl+Shift+V"}"#;
+        db.conn
+            .execute(
+                "INSERT INTO preferences(key,value) VALUES('settings',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [legacy],
+            )
+            .unwrap();
+        assert_eq!(db.settings().unwrap().ui_language, "system");
+
+        let mut settings = db.settings().unwrap();
+        settings.ui_language = "en-US".into();
+        db.save_settings(&settings).unwrap();
+        assert_eq!(db.settings().unwrap().ui_language, "en-US");
+
+        // The immediate theme write must preserve other stored preferences.
+        db.set_theme("forest").unwrap();
+        let saved = db.settings().unwrap();
+        assert_eq!(saved.ui_language, "en-US");
+        assert_eq!(saved.theme, "forest");
+
+        let unsupported = Settings {
+            ui_language: "fr".into(),
+            ..Settings::default()
+        };
+        assert!(unsupported.validate().is_err());
     }
 }

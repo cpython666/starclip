@@ -29,7 +29,7 @@ async function mount(mock: Record<string, unknown>, props: Record<string, unknow
   const code = ts.transpileModule(script.content, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText
     .replace(/from (['"])vue\1/g, `from '${import.meta.resolve('vue')}'`)
     .replaceAll("'../product-share'", `'${apiUrl}'`)
-    .replaceAll("'./Icon.vue'", "'data:text/javascript,export default {render(){return null}}'");
+    .replaceAll("'./Icon.vue'", "'data:text/javascript,export default {render(){return null}}'").replaceAll("'../i18n'", `'${new URL('../src/i18n/index.ts', import.meta.url).href}'`).replaceAll("'./i18n'", `'${new URL('../src/i18n/index.ts', import.meta.url).href}'`);
   const component = await import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'));
   const root = node('root'); const app = renderer.createApp(component.default, props); app.mount(root); await flush();
   return { root, app };

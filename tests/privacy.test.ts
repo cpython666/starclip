@@ -2,9 +2,23 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import ts from 'typescript';
-import { analyzeDemoClip, matchesMetadata, pendingClip, protectedClip } from '../src/privacy.ts';
+import { analyzeDemoClip, matchesMetadata, pendingClip, privacyReasonExplanation, protectedClip } from '../src/privacy.ts';
 import type { Clip } from '../src/types.ts';
 const clip = (content: string, extra: Partial<Clip> = {}): Clip => ({ id: 1, title: '', content, kind: 'text', language: null, pinned: false, keepForever: false, groupId: null, createdAt: 1, updatedAt: 1, copyCount: 0, ...extra });
+
+test('images remain visible without OCR while manual protection and named rule evidence survive', () => {
+  const original = clip('api_key=internal-image-identifier', { kind: 'image', isPrivate: true, privacyReasons: ['图片尚未进行文字识别'] });
+  const image = analyzeDemoClip(original, { revision: 1, rules: [] });
+  assert.equal(protectedClip(image), false);
+  assert.equal(pendingClip(image, 1), true);
+  assert.equal(matchesMetadata(image, [], '', 'private', 1), false);
+  assert.equal(protectedClip(analyzeDemoClip({ ...original, privacyManual: true }, { revision: 1, rules: [] })), true);
+  const protectedImage = analyzeDemoClip({ ...image, title: '原创内部资料' }, { revision: 2, rules: [{ id: 'work', name: '内部资料', enabled: true, condition: 'keyword', value: '内部', tag: null, markPrivate: true }] });
+  assert.deepEqual(protectedImage.privacyReasons, ['自定义规则：内部资料']);
+  assert.equal(protectedClip(protectedImage), true);
+  assert.match(privacyReasonExplanation('自定义规则：内部资料'), /关键词或域名/);
+  assert.match(privacyReasonExplanation('私钥标记'), /PRIVATE KEY/);
+});
 
 test('source filters use metadata, combine source OR with tag/privacy AND, and stale scans stay unavailable', () => {
   const item = clip('original text', { linkSources: ['wechat', 'bilibili'], linkHosts: ['mp.weixin.qq.com'], tags: ['工作'], scanVersion: 2 });
@@ -35,6 +49,7 @@ test('browser privacy changes, scan tokens and v3 backup import cannot erase man
   Object.assign(globalThis, { window: {} });
   const source = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8')
     .replace("from './snippets'", `from '${new URL('../src/snippets.ts', import.meta.url).href}'`)
+    .replace("from './i18n/index.ts'", `from '${new URL('../src/i18n/index.ts', import.meta.url).href}'`)
     .replace("from './privacy'", `from '${new URL('../src/privacy.ts', import.meta.url).href}'`);
   const code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
   const { api } = await import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'));

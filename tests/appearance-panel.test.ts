@@ -38,7 +38,7 @@ test('appearance panel saves only confirmed edits, blocks duplicates, preserves 
   const source = script.content.replace(/from (['"])vue\1/g, `from '${import.meta.resolve('vue')}'`)
     .replaceAll("'../appearance-api'", `'${apiUrl}'`).replaceAll("'../appearance'", `'${helperUrl}'`)
     .replaceAll("'./UiColor.vue'", "'data:text/javascript,export default {render(){return null}}'")
-    .replaceAll("'./UiSelect.vue'", "'data:text/javascript,export default {render(){return null}}'");
+    .replaceAll("'./UiSelect.vue'", "'data:text/javascript,export default {render(){return null}}'").replaceAll("'../i18n'", `'${new URL('../src/i18n/index.ts', import.meta.url).href}'`).replaceAll("'./i18n'", `'${new URL('../src/i18n/index.ts', import.meta.url).href}'`);
   const component = await import(moduleUrl(source));
   const root = node('root');
   const app = renderer.createApp({ setup: () => () => h(component.default, { value: current.value, onChange(value: Appearance) { changes.push(value); current.value = value; }, onBusy(value: boolean) { busy.push(value); } }) });

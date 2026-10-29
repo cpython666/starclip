@@ -30,6 +30,7 @@ test('native backup returns the chosen path or cancellation and releases its wri
   const source = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8')
     .replace("from './privacy'", `from '${new URL('../src/privacy.ts', import.meta.url).href}'`)
     .replace("from './snippets'", `from '${new URL('../src/snippets.ts', import.meta.url).href}'`)
+    .replace("from './i18n/index.ts'", `from '${new URL('../src/i18n/index.ts', import.meta.url).href}'`)
     .replaceAll("import('@tauri-apps/api/core')", 'Promise.resolve(globalThis.backupTestCore)')
     .replaceAll("import('@tauri-apps/api/event')", 'Promise.resolve(globalThis.backupTestEvents)');
   const code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;

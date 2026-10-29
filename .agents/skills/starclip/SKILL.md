@@ -5,7 +5,7 @@ description: 星笺 Starclip 项目共享知识库。处理本仓库的功能开
 
 # 星笺 Starclip
 
-独立、本地优先的桌面剪贴板与代码收藏工作台，技术栈为 Rust / Tauri 2 / SQLite / Vue 3 / TypeScript / Vite。核心流程是复制、搜索、星标或分组，再进入星绘坊制作本地分享图片；无账户、云端后端或遥测。
+独立、本地优先的桌面剪贴板与代码收藏工作台，技术栈为 Rust / Tauri 2 / SQLite / Vue 3 / TypeScript / Vite。核心流程是复制、搜索、星标或分组，再进入星绘坊制作本地分享图片；无需账户、剪贴内容本地保存；当前未发布源码含默认开启、可随时关闭、未配置时不采集的可选功能统计，见 [接入说明](../../../docs/telemetry.md)。
 
 ## 关键约定
 
@@ -13,6 +13,13 @@ description: 星笺 Starclip 项目共享知识库。处理本仓库的功能开
 - 中文、星空主题、清晰用途说明。使用星码集、星绘坊、星码卡、月光笺、流星栏、星尘整理、星伴这些产品名称；第三方名称只在参考出处出现。
 - 不用真实剪贴板、正式历史或个人数据做测试与截图，不将数据库、备份、日志或凭据入 Git。新安装为空且暂停记录，升级保留用户偏好。
 - 区分源码实现、自动检查、浏览器演示、平台构建和原生实测。历史验收只证明对应版本与场景；当前范围以代码及 [README](../../../README.md)、[产品范围](../../../docs/product.md) 核对。
+- 用户说明与当前实现不一致时分别记录，不能把代码里的现有值倒写成用户要求。原九款手写字体由用户本人创作；2026-10-29 已确认界面作者字段统一显示「来源于互联网」，具体展示、许可和验证边界见产品决策。
+
+## 当前交接（截至 2026-10-29）
+
+- 公开版与本机正式安装仍为 0.2.2；同版本号的隔离测试包包含更多未发布修改，不能仅凭版本文字判断已更新。后台释放、历史分页等新修复尚未替换正式安装。
+- 用户要求埋点验收完成后，仍等其明确确认再发布。当前仅采用免费 GA4 + Cloudflare Workers，Azure 开通已取消；云端配置授权不等于软件发布授权。
+- 最新源码与原生证据入口为 [开发验证](references/development.md)；动画星伴仍未达到用户期望的几十 MiB。更新 skill 只维护知识，不顺带安装、发版或操作云服务。
 
 ## 按需阅读
 
@@ -22,11 +29,15 @@ description: 星笺 Starclip 项目共享知识库。处理本仓库的功能开
 | --- | --- |
 | 找代码入口、改前后端协议或窗口权限 | [架构与实现入口](references/architecture.md) |
 | 改界面、偏好、卡片或星伴，保留已确认体验 | [产品与交互约定](references/product-decisions.md) |
+| 改界面文案、语言切换或新增翻译 | [架构与实现入口](references/architecture.md)、[产品与交互约定](references/product-decisions.md) |
 | 修改产品分享入口、文案或宣传图 | [分享素材说明](../../../docs/product-share.md)、[架构与实现入口](references/architecture.md) |
 | 自定义主题色、渐变方向或本地 PNG 贴纸 | [自定义外观](../../../docs/appearance.md)、[产品与交互约定](references/product-decisions.md) |
 | 数据开放、隐私规则、域名筛选或 AI 接入 | [隐私与来源规则](../../../docs/privacy-ai.md)、[AI 接入说明](../../../docs/ai-access.md)、[数据与隐私边界](references/data-safety.md)；[早期设计与待办](../../../docs/open-data-ai-plan.md) 不等于完整实现 |
 | 规划星伴养成、检查贴纸来源与授权边界 | [养成规划与素材核对](references/growth-and-artwork.md) |
 | 改采集、图片、保留策略、备份或迁移 | [数据与隐私边界](references/data-safety.md) |
+| 内存过大、隐藏窗口、历史规模与分页 | [架构与实现入口](references/architecture.md)、[开发验证与测量方法](references/development.md)、[数据与隐私边界](references/data-safety.md) |
+| 静默埋点、离线补报、设备字段、GA4 / Worker | [数据与隐私边界](references/data-safety.md)、[开发验证](references/development.md)、[接入说明](../../../docs/telemetry.md) |
+| 内置手写渲染、字体预览 / 按需下载及署名 | [产品与交互约定](references/product-decisions.md)、[架构与实现入口](references/architecture.md) |
 | 实施升级、恢复与签名发布 | [数据与隐私边界](references/data-safety.md)、[开发验证](references/development.md)、[发布指南](../../../docs/releases.md) |
 | GitHub Release 发布后自动同步 Homebrew | [Homebrew 自动化](../../../docs/homebrew-release.md)、[开发验证](references/development.md) |
 | 选检查命令、做桌面验收、理解踩坑与待办 | [开发验证与已知限制](references/development.md) |

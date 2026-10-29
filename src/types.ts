@@ -21,8 +21,11 @@ export interface Clip {
   linkHosts?: string[];
 }
 export interface Group { id: number; name: string; color: string }
+export type UILanguage = 'system' | 'zh-CN' | 'en-US';
 export interface Settings {
   paused: boolean;
+  pauseRevision: number;
+  uiLanguage: UILanguage;
   theme: 'dark' | 'light' | 'white' | 'forest' | 'rose' | 'system';
   showStartup: boolean;
   stickerPack: 'auto' | 'none' | 'cosmos' | 'cats' | 'puppies' | 'garden';
@@ -32,19 +35,52 @@ export interface Settings {
   alwaysOnTop: boolean;
   shortcut: string;
 }
+export interface HistoryQuery {
+  page?: number;
+  filter?: string;
+  query?: string;
+  sources?: string[];
+  tag?: string;
+  privacy?: string;
+  aiEligible?: boolean;
+}
+export interface HistorySummary {
+  page: number;
+  pageSize: number;
+  total: number;
+  counts: Record<string, number>;
+  groupCounts: Record<string, number>;
+  sources: string[];
+  hosts: string[];
+  tags: string[];
+}
 export interface AppState {
   onboardingCompleted: boolean;
   clips: Clip[];
+  history?: HistorySummary;
   groups: Group[];
   settings: Settings;
   clipboardError: string | null;
   shortcutError: string | null;
   windowError: string | null;
 }
+export interface HandwritingFont {
+  id: string;
+  name: string;
+  author: string;
+  tags: string[];
+  path: string;
+  downloaded: boolean;
+  bytes: number;
+  previewUrl: string;
+  license: string;
+  licenseUrl?: string;
+  sourceUrl: string;
+}
 export interface HandwritingAssets {
   available: boolean;
   path: string | null;
-  fonts: Array<{ name: string; path: string }>;
+  fonts: HandwritingFont[];
   backgrounds: Array<{ name: string; path: string }>;
   error: string | null;
 }

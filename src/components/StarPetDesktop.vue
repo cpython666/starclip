@@ -1,13 +1,15 @@
 <script setup lang="ts">
+import { errorText, t } from '../i18n';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import StarPet from './StarPet.vue';
 import Icon from './Icon.vue';
-import { getStarPetMood, starPetMoods } from '../starpet';
+import { everydayStarPetMoods, getStarPetMood } from '../starpet';
 import { dragStarPet, getStarPetPreferences, onStarPetChanged, onStarPetWindowBlur, setStarPetPreferences, showStarPetMainWindow } from '../starpet-api';
 import type { StarPetPreferencePatch, StarPetPreferences } from '../starpet-api';
 import { emptyGrowth, growthCatalog, levelForXp } from '../starpet-growth';
 import type { ActionId, GrowthState } from '../starpet-growth';
-import { getStarPetGrowth, interactStarPet, onStarPetGrowthChanged } from '../starpet-growth-api';
+import { getStarPetGrowth, interactStarPet, onStarPetGrowthChanged, onStarPetInteraction } from '../starpet-growth-api';
+import type { StarPetInteraction } from '../starpet-growth-api';
 import { getStarPetSignal, onStarPetSignal, petStatusLabel, petStatusMood } from '../starpet-signal-api';
 import type { PetSignal, PetSnapshot } from '../starpet-signal-api';
 
@@ -25,11 +27,12 @@ const level = computed(() => levelForXp(growth.value.xp));
 const petSize = computed(() => 180 * preferences.value.size / 100);
 const agentSignal = ref<PetSignal | null>(null);
 const mood = computed(() => getStarPetMood(agentSignal.value?.status ? petStatusMood[agentSignal.value.status] : preferences.value.mood));
-const agentText = computed(() => agentSignal.value?.message || growthCatalog.actions.find(item => item.id === agentSignal.value?.action)?.message || '');
+const agentText = computed(() => agentSignal.value?.message || (agentSignal.value?.action ? t(growthCatalog.actions.find(item => item.id === agentSignal.value?.action)?.message ?? '') : ''));
 let unsubscribe: (() => void) | undefined;
 let unsubscribeGrowth: (() => void) | undefined;
 let unsubscribeBlur: (() => void) | undefined;
 let unsubscribeSignal: (() => void) | undefined;
+let unsubscribeInteraction: (() => void) | undefined;
 let signalTimer: ReturnType<typeof setTimeout> | undefined;
 let signalRevision = -1;
 let growthLoading = false;
@@ -41,6 +44,16 @@ function outsideMenu(event: Event) {
   if (menuOpen.value && target && !menu.value?.contains(target) && !menuButton.value?.contains(target)) dismissMenu();
 }
 function dismissSignal() { clearTimeout(signalTimer); signalTimer = undefined; agentSignal.value = null; }
+function acceptInteraction(interaction: StarPetInteraction) {
+  if (disposed || interaction.signalRevision < signalRevision) return;
+  signalRevision = interaction.signalRevision;
+  dismissSignal();
+  if (!visible.value || !preferences.value.enabled) return;
+  if (interaction.animate) { activeAction.value = interaction.action; actionNonce.value++; }
+  const response = t(growthCatalog.actions.find(item => item.id === interaction.action)?.message ?? '');
+  notice.value = growth.value.enabled ? `Lv.${level.value} · ${response}` : response;
+  clearTimeout(noticeTimer); noticeTimer = setTimeout(() => { notice.value = ''; }, 2600);
+}
 function acceptSignal(snapshot: PetSnapshot, animate = true) {
   if (disposed || snapshot.revision <= signalRevision) return;
   signalRevision = snapshot.revision;
@@ -58,7 +71,7 @@ async function loadSignal() {
     // An initial snapshot restores the caption, but never replays an old action.
     const snapshot = await getStarPetSignal();
     acceptSignal(snapshot, false);
-  } catch (reason) { if (!disposed) error.value = `Agent 提示暂不可用：${String(reason)}`; }
+  } catch (reason) { if (!disposed) error.value = t('Agent 提示暂不可用：{error}', { error: errorText(reason) }); }
 }
 function visibility() { visible.value = !document.hidden; if (!visible.value) { dismissMenu(); clearTimeout(noticeTimer); notice.value = ''; dismissSignal(); } }
 function acceptGrowth(value: GrowthState) { if (!disposed && value.revision >= growth.value.revision) growth.value = value; }
@@ -71,8 +84,8 @@ async function loadGrowth() {
       if (disposed) { unsubscribeGrowth(); return; }
     }
     acceptGrowth(await getStarPetGrowth());
-    if (!disposed) { growthReady.value = true; if (error.value.startsWith('成长状态未能读取：')) error.value = ''; }
-  } catch (reason) { if (!disposed) error.value = `成长状态未能读取：${String(reason)}`; }
+    if (!disposed) { growthReady.value = true; if (error.value.startsWith(t('成长状态未能读取：'))) error.value = ''; }
+  } catch (reason) { if (!disposed) error.value = t('成长状态未能读取：{error}', { error: errorText(reason) }); }
   finally { growthLoading = false; }
 }
 onMounted(async () => {
@@ -86,17 +99,20 @@ onMounted(async () => {
   }).catch(() => {});
   void loadGrowth();
   void loadSignal();
+  void onStarPetInteraction(acceptInteraction).then(stop => {
+    if (disposed) stop(); else unsubscribeInteraction = stop;
+  }).catch(() => { if (!disposed) error.value = t('动作同步暂不可用，请收起并重新开启星伴后重试。'); });
   try {
     unsubscribe = await onStarPetChanged(value => { preferenceRevision++; preferences.value = value; });
     if (disposed) { unsubscribe(); return; }
     const revision = preferenceRevision;
     const value = await getStarPetPreferences();
     if (!disposed && revision === preferenceRevision) preferences.value = value;
-  } catch (reason) { if (!disposed) error.value = String(reason); }
+  } catch (reason) { if (!disposed) error.value = errorText(reason); }
   finally { if (!disposed) loading.value = false; }
 });
 onBeforeUnmount(() => {
-  disposed = true; unsubscribe?.(); unsubscribeGrowth?.(); unsubscribeBlur?.(); unsubscribeSignal?.(); clearTimeout(noticeTimer); dismissSignal();
+  disposed = true; unsubscribe?.(); unsubscribeGrowth?.(); unsubscribeBlur?.(); unsubscribeSignal?.(); unsubscribeInteraction?.(); clearTimeout(noticeTimer); dismissSignal();
   document.removeEventListener('visibilitychange', visibility);
   document.removeEventListener('pointerdown', outsideMenu, true);
   document.removeEventListener('focusin', outsideMenu);
@@ -115,16 +131,13 @@ async function interact(id: ActionId, animate = true) {
   dismissSignal();
   growthBusy.value = true; error.value = '';
   try {
-    const value = await interactStarPet(id);
+    const value = await interactStarPet(id, animate);
     if (disposed) return;
     acceptGrowth(value); growthReady.value = true;
     if (!unsubscribeGrowth) void loadGrowth();
-    if (!visible.value) return;
-    if (animate) { activeAction.value = id; actionNonce.value++; }
-    const response = growthCatalog.actions.find(item => item.id === id)?.message ?? '';
-    notice.value = growth.value.enabled ? `Lv.${level.value} · ${response}` : response;
-    clearTimeout(noticeTimer); noticeTimer = setTimeout(() => { notice.value = ''; }, 2600);
-  } catch (reason) { if (!disposed) error.value = String(reason); }
+    // The validated interaction event animates once, regardless of which window
+    // initiated it. The response only updates growth; it never replays an action.
+  } catch (reason) { if (!disposed) error.value = errorText(reason); }
   finally { if (!disposed) growthBusy.value = false; }
 }
 async function toggleMenu() {
@@ -139,7 +152,7 @@ async function action(work: () => Promise<unknown>) {
   dismissMenu();
   if (busy.value || loading.value) return;
   busy.value = true; error.value = '';
-  try { await work(); } catch (reason) { if (!disposed) error.value = String(reason); }
+  try { await work(); } catch (reason) { if (!disposed) error.value = errorText(reason); }
   finally { if (!disposed) busy.value = false; }
 }
 async function save(preferencesToSave: StarPetPreferencePatch) {
@@ -150,8 +163,8 @@ async function save(preferencesToSave: StarPetPreferencePatch) {
 }
 function nextMood() {
   dismissSignal();
-  const index = starPetMoods.findIndex(item => item.id === preferences.value.mood);
-  return action(() => save({ enabled: true, mood: starPetMoods[(index + 1) % starPetMoods.length]!.id }));
+  const index = everydayStarPetMoods.findIndex(item => item.id === preferences.value.mood);
+  return action(() => save({ enabled: true, mood: everydayStarPetMoods[(index + 1) % everydayStarPetMoods.length]!.id }));
 }
 function hide() { return action(() => save({ enabled: false })); }
 function drag(event: PointerEvent) { if (event.button === 0) void action(dragStarPet); }
@@ -166,19 +179,19 @@ function grab(event: PointerEvent) {
 </script>
 
 <template>
-  <main class="desktop-starpet" :class="{ 'menu-open': menuOpen }" aria-label="星伴 · 星芽" :style="{ '--pet-size': `${petSize}px` }" @keydown.esc.stop="closeMenu">
-    <button type="button" class="pet-drag" :disabled="busy || loading" aria-label="拖动星芽" title="拖动星芽" @pointerdown.prevent="drag"><span aria-hidden="true">⠿</span></button>
-    <button type="button" class="pet-body" :disabled="loading" :aria-label="`摸摸或拖动星芽，现在${mood.name}`" title="轻点摸摸，按住拖动" @pointerdown.prevent="grab" @click="$event.detail === 0 && touch()"><StarPet :mood="mood.id" :color="preferences.color" :size="petSize" :reaction="touchCount" :equipment="growth.equipment" :action="activeAction" :action-nonce="actionNonce" :animated="preferences.enabled && visible" /></button>
-    <span class="pet-caption" role="status" :title="notice || mood.name">{{ notice || `${growth.enabled ? `Lv.${level} · ` : ''}${mood.name}` }}</span>
-    <aside v-if="agentSignal" class="pet-agent-message" role="status" aria-label="Agent 星伴提示"><div class="pet-agent-heading"><strong :title="`${agentSignal.source}${agentSignal.status ? ` · ${petStatusLabel[agentSignal.status]}` : ''}`">{{ agentSignal.source }}{{ agentSignal.status ? ` · ${petStatusLabel[agentSignal.status]}` : '' }}</strong><button type="button" aria-label="收起 Agent 提示" @click="dismissSignal">×</button></div><span v-if="agentText" class="pet-agent-text" tabindex="0" aria-label="Agent 消息正文">{{ agentText }}</span></aside>
-    <nav class="pet-actions" aria-label="星伴操作"><button type="button" :disabled="busy || loading" title="打开星笺" aria-label="打开星笺" @click="action(showStarPetMainWindow)"><Icon name="grid" :size="14" /></button><button type="button" :disabled="busy || loading" title="换个心情" aria-label="换个心情" @click="nextMood"><Icon name="spark" :size="14" /></button><button ref="menuButton" type="button" :disabled="loading" title="和星芽互动" aria-label="和星芽互动" :aria-expanded="menuOpen" aria-controls="pet-interactions" @click="toggleMenu"><Icon name="star" :size="14" /></button><button type="button" :disabled="busy || loading" title="收起星伴" aria-label="收起星伴" @click="hide"><Icon name="close" :size="14" /></button></nav>
-    <section v-if="menuOpen" id="pet-interactions" ref="menu" class="pet-menu" aria-label="和星芽互动">
-      <div class="pet-menu-heading"><strong>陪星芽玩一会</strong><button type="button" aria-label="关闭互动菜单" @click="closeMenu">×</button></div>
-      <div class="pet-menu-grid"><button v-for="item in growthCatalog.actions" :key="item.id" type="button" :disabled="growthBusy || !growthReady || item.level > level" @click="interact(item.id)">{{ item.name }}<small v-if="item.level > level">Lv.{{ item.level }} 解锁</small></button></div>
-      <button v-if="!growthReady" type="button" class="pet-menu-retry" @click="loadGrowth">重新读取成长状态</button>
-      <p>{{ growth.enabled ? '奖励每天各记一次，互动一直有回应。' : '在偏好设置 → 星伴开启养成。' }}</p>
+  <main class="desktop-starpet" :class="{ 'menu-open': menuOpen }" :aria-label="t('星伴 · 星芽')" :style="{ '--pet-size': `${petSize}px` }" @keydown.esc.stop="closeMenu">
+    <button type="button" class="pet-drag" :disabled="busy || loading" :aria-label="t('拖动星芽')" :title="t('拖动星芽')" @pointerdown.prevent="drag"><span aria-hidden="true">⠿</span></button>
+    <button type="button" class="pet-body" :disabled="loading" :aria-label="t('摸摸或拖动星芽，现在{mood}', { mood: t(mood.name) })" :title="t('轻点摸摸，按住拖动')" @pointerdown.prevent="grab" @click="$event.detail === 0 && touch()"><StarPet :mood="mood.id" :color="preferences.color" :size="petSize" :reaction="touchCount" :equipment="growth.equipment" :action="activeAction" :action-nonce="actionNonce" :animated="preferences.enabled && visible" /></button>
+    <span class="pet-caption" role="status" :title="notice || t(mood.name)">{{ notice || `${growth.enabled ? `Lv.${level} · ` : ''}${t(mood.name)}` }}</span>
+    <aside v-if="agentSignal" class="pet-agent-message" role="status" :aria-label="t('Agent 星伴提示')"><div class="pet-agent-heading"><strong :title="`${agentSignal.source}${agentSignal.status ? ` · ${t(petStatusLabel[agentSignal.status]!)}` : ''}`">{{ agentSignal.source }}{{ agentSignal.status ? ` · ${t(petStatusLabel[agentSignal.status]!)}` : '' }}</strong><button type="button" :aria-label="t('收起 Agent 提示')" @click="dismissSignal">×</button></div><span v-if="agentText" class="pet-agent-text" tabindex="0" :aria-label="t('Agent 消息正文')">{{ agentText }}</span></aside>
+    <nav class="pet-actions" :aria-label="t('星伴操作')"><button type="button" :disabled="busy || loading" :title="t('打开星笺')" :aria-label="t('打开星笺')" @click="action(showStarPetMainWindow)"><Icon name="grid" :size="14" /></button><button type="button" :disabled="busy || loading" :title="t('换个心情')" :aria-label="t('换个心情')" @click="nextMood"><Icon name="spark" :size="14" /></button><button ref="menuButton" type="button" :disabled="loading" :title="t('和星芽互动')" :aria-label="t('和星芽互动')" :aria-expanded="menuOpen" aria-controls="pet-interactions" @click="toggleMenu"><Icon name="star" :size="14" /></button><button type="button" :disabled="busy || loading" :title="t('收起星伴')" :aria-label="t('收起星伴')" @click="hide"><Icon name="close" :size="14" /></button></nav>
+    <section v-if="menuOpen" id="pet-interactions" ref="menu" class="pet-menu" :aria-label="t('和星芽互动')">
+      <div class="pet-menu-heading"><strong>{{ t('陪星芽玩一会') }}</strong><button type="button" :aria-label="t('关闭互动菜单')" @click="closeMenu">×</button></div>
+      <div class="pet-menu-grid"><button v-for="item in growthCatalog.actions" :key="item.id" type="button" :disabled="growthBusy || !growthReady || item.level > level" @click="interact(item.id)">{{ t(item.name) }}<small v-if="item.level > level">Lv.{{ item.level }} {{ t('解锁') }}</small></button></div>
+      <button v-if="!growthReady" type="button" class="pet-menu-retry" @click="loadGrowth">{{ t('重新读取成长状态') }}</button>
+      <p>{{ growth.enabled ? t('奖励每天各记一次，互动一直有回应。') : t('在偏好设置 → 星伴开启养成。') }}</p>
     </section>
-    <p v-if="error" class="pet-error" role="alert">{{ error }}<button type="button" aria-label="关闭错误提示" @click="error = ''">×</button></p>
+    <p v-if="error" class="pet-error" role="alert">{{ error }}<button type="button" :aria-label="t('关闭错误提示')" @click="error = ''">×</button></p>
   </main>
 </template>
 

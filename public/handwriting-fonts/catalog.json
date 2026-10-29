@@ -1,0 +1,373 @@
+[
+  {
+    "id": "original-hand",
+    "name": "手写体",
+    "author": "来源于互联网",
+    "tags": [
+      "手写体"
+    ],
+    "file": "hand.ttf",
+    "bytes": 3525284,
+    "sha256": "d692975b7847a001e5b41c59ca8eda14d337fe21fc319676ac4a5820c8157ed7",
+    "url": "https://raw.githubusercontent.com/cpython666/HandwritingGenerator/00160ae98e9512529f0180a8036fbf4c3ecd3bc7/fonts/hand.ttf",
+    "previewUrl": "/handwriting-fonts/original-hand.png",
+    "license": "作者授权（Starclip 按需提供）",
+    "licenseUrl": "/handwriting-fonts/ORIGINAL-FONTS-AUTHORIZATION.txt",
+    "sourceUrl": "https://github.com/cpython666/HandwritingGenerator/blob/00160ae98e9512529f0180a8036fbf4c3ecd3bc7/fonts/hand.ttf"
+  },
+  {
+    "id": "original-shang-shou-hong-zhi",
+    "name": "上首鸿志手写体",
+    "author": "来源于互联网",
+    "tags": [
+      "手写体"
+    ],
+    "file": "上首鸿志手写体.ttf",
+    "bytes": 6915220,
+    "sha256": "7b0fd465df311eced4963d3ceca36b7068b4005deecf19b421469e90212e2d8d",
+    "url": "https://raw.githubusercontent.com/cpython666/HandwritingGenerator/00160ae98e9512529f0180a8036fbf4c3ecd3bc7/fonts/%E4%B8%8A%E9%A6%96%E9%B8%BF%E5%BF%97%E6%89%8B%E5%86%99%E4%BD%93.ttf",
+    "previewUrl": "/handwriting-fonts/original-shang-shou-hong-zhi.png",
+    "license": "作者授权（Starclip 按需提供）",
+    "licenseUrl": "/handwriting-fonts/ORIGINAL-FONTS-AUTHORIZATION.txt",
+    "sourceUrl": "https://github.com/cpython666/HandwritingGenerator/blob/00160ae98e9512529f0180a8036fbf4c3ecd3bc7/fonts/%E4%B8%8A%E9%A6%96%E9%B8%BF%E5%BF%97%E6%89%8B%E5%86%99%E4%BD%93.ttf"
+  },
+  {
+    "id": "original-pin-ru",
+    "name": "品如手写体",
+    "author": "来源于互联网",
+    "tags": [
+      "手写体"
+    ],
+    "file": "品如手写体.ttf",
+    "bytes": 6053612,
+    "sha256": "6149bf41d856a6d20874d20b1910698e299685bb630f3806c3e91bef0b2b779d",
+    "url": "https://raw.githubusercontent.com/cpython666/HandwritingGenerator/00160ae98e9512529f0180a8036fbf4c3ecd3bc7/fonts/%E5%93%81%E5%A6%82%E6%89%8B%E5%86%99%E4%BD%93.ttf",
+    "previewUrl": "/handwriting-fonts/original-pin-ru.png",
+    "license": "作者授权（Starclip 按需提供）",
+    "licenseUrl": "/handwriting-fonts/ORIGINAL-FONTS-AUTHORIZATION.txt",
+    "sourceUrl": "https://github.com/cpython666/HandwritingGenerator/blob/00160ae98e9512529f0180a8036fbf4c3ecd3bc7/fonts/%E5%93%81%E5%A6%82%E6%89%8B%E5%86%99%E4%BD%93.ttf"
+  },
+  {
+    "id": "original-zhang-wei-jing",
+    "name": "张维镜手写楷书",
+    "author": "来源于互联网",
+    "tags": [
+      "手写体"
+    ],
+    "file": "张维镜手写楷书.ttf",
+    "bytes": 9584288,
+    "sha256": "1d1f9c31213ce5e7e5119dce10adfe790bd4fd93aa6965b226f48d2b8d5f1d67",
+    "url": "https://raw.githubusercontent.com/cpython666/HandwritingGenerator/00160ae98e9512529f0180a8036fbf4c3ecd3bc7/fonts/%E5%BC%A0%E7%BB%B4%E9%95%9C%E6%89%8B%E5%86%99%E6%A5%B7%E4%B9%A6.ttf",
+    "previewUrl": "/handwriting-fonts/original-zhang-wei-jing.png",
+    "license": "作者授权（Starclip 按需提供）",
+    "licenseUrl": "/handwriting-fonts/ORIGINAL-FONTS-AUTHORIZATION.txt",
+    "sourceUrl": "https://github.com/cpython666/HandwritingGenerator/blob/00160ae98e9512529f0180a8036fbf4c3ecd3bc7/fonts/%E5%BC%A0%E7%BB%B4%E9%95%9C%E6%89%8B%E5%86%99%E6%A5%B7%E4%B9%A6.ttf"
+  },
+  {
+    "id": "original-da-xiang",
+    "name": "手写大象体",
+    "author": "来源于互联网",
+    "tags": [
+      "手写体"
+    ],
+    "file": "手写大象体.ttf",
+    "bytes": 3999996,
+    "sha256": "3a9ce79ada8b426411171017aa0fb57c140f57a74303d70e153ae54150013d8d",
+    "url": "https://raw.githubusercontent.com/cpython666/HandwritingGenerator/00160ae98e9512529f0180a8036fbf4c3ecd3bc7/fonts/%E6%89%8B%E5%86%99%E5%A4%A7%E8%B1%A1%E4%BD%93.ttf",
+    "previewUrl": "/handwriting-fonts/original-da-xiang.png",
+    "license": "作者授权（Starclip 按需提供）",
+    "licenseUrl": "/handwriting-fonts/ORIGINAL-FONTS-AUTHORIZATION.txt",
+    "sourceUrl": "https://github.com/cpython666/HandwritingGenerator/blob/00160ae98e9512529f0180a8036fbf4c3ecd3bc7/fonts/%E6%89%8B%E5%86%99%E5%A4%A7%E8%B1%A1%E4%BD%93.ttf"
+  },
+  {
+    "id": "original-unknown-one",
+    "name": "未知手写体 1",
+    "author": "来源于互联网",
+    "tags": [
+      "手写体"
+    ],
+    "file": "未知手写体_1.ttf",
+    "bytes": 4625060,
+    "sha256": "484976babbf1f74fa2a0bcc40733c462346e0d63e3eb3621466d64776ecdef3b",
+    "url": "https://raw.githubusercontent.com/cpython666/HandwritingGenerator/00160ae98e9512529f0180a8036fbf4c3ecd3bc7/fonts/%E6%9C%AA%E7%9F%A5%E6%89%8B%E5%86%99%E4%BD%93_1.ttf",
+    "previewUrl": "/handwriting-fonts/original-unknown-one.png",
+    "license": "作者授权（Starclip 按需提供）",
+    "licenseUrl": "/handwriting-fonts/ORIGINAL-FONTS-AUTHORIZATION.txt",
+    "sourceUrl": "https://github.com/cpython666/HandwritingGenerator/blob/00160ae98e9512529f0180a8036fbf4c3ecd3bc7/fonts/%E6%9C%AA%E7%9F%A5%E6%89%8B%E5%86%99%E4%BD%93_1.ttf"
+  },
+  {
+    "id": "original-li-guo-fu",
+    "name": "李国夫董事长手写体",
+    "author": "来源于互联网",
+    "tags": [
+      "手写体"
+    ],
+    "file": "李国夫董事长手写体.ttf",
+    "bytes": 3625548,
+    "sha256": "ef8867a79d0e66d0a07591a45a8885200eb24c0e2c848e52a3df0b44cb64dbf2",
+    "url": "https://raw.githubusercontent.com/cpython666/HandwritingGenerator/00160ae98e9512529f0180a8036fbf4c3ecd3bc7/fonts/%E6%9D%8E%E5%9B%BD%E5%A4%AB%E8%91%A3%E4%BA%8B%E9%95%BF%E6%89%8B%E5%86%99%E4%BD%93.ttf",
+    "previewUrl": "/handwriting-fonts/original-li-guo-fu.png",
+    "license": "作者授权（Starclip 按需提供）",
+    "licenseUrl": "/handwriting-fonts/ORIGINAL-FONTS-AUTHORIZATION.txt",
+    "sourceUrl": "https://github.com/cpython666/HandwritingGenerator/blob/00160ae98e9512529f0180a8036fbf4c3ecd3bc7/fonts/%E6%9D%8E%E5%9B%BD%E5%A4%AB%E8%91%A3%E4%BA%8B%E9%95%BF%E6%89%8B%E5%86%99%E4%BD%93.ttf"
+  },
+  {
+    "id": "original-xue-wen-xuan",
+    "name": "薛文轩钢笔楷体",
+    "author": "来源于互联网",
+    "tags": [
+      "手写体"
+    ],
+    "file": "薛文轩钢笔楷体.ttf",
+    "bytes": 2718644,
+    "sha256": "1d1bece482683835efdf9bd4733648bdd1f23affc394ed9ca6b0e0bfb2c0dfad",
+    "url": "https://raw.githubusercontent.com/cpython666/HandwritingGenerator/00160ae98e9512529f0180a8036fbf4c3ecd3bc7/fonts/%E8%96%9B%E6%96%87%E8%BD%A9%E9%92%A2%E7%AC%94%E6%A5%B7%E4%BD%93.ttf",
+    "previewUrl": "/handwriting-fonts/original-xue-wen-xuan.png",
+    "license": "作者授权（Starclip 按需提供）",
+    "licenseUrl": "/handwriting-fonts/ORIGINAL-FONTS-AUTHORIZATION.txt",
+    "sourceUrl": "https://github.com/cpython666/HandwritingGenerator/blob/00160ae98e9512529f0180a8036fbf4c3ecd3bc7/fonts/%E8%96%9B%E6%96%87%E8%BD%A9%E9%92%A2%E7%AC%94%E6%A5%B7%E4%BD%93.ttf"
+  },
+  {
+    "id": "original-qing-ye",
+    "name": "青叶手写体",
+    "author": "来源于互联网",
+    "tags": [
+      "手写体"
+    ],
+    "file": "青叶手写体.ttf",
+    "bytes": 3031176,
+    "sha256": "f58d3ad88e108d70e9083490e32aad1284143f2c9fc1548407bfc8ac56c2383d",
+    "url": "https://raw.githubusercontent.com/cpython666/HandwritingGenerator/00160ae98e9512529f0180a8036fbf4c3ecd3bc7/fonts/%E9%9D%92%E5%8F%B6%E6%89%8B%E5%86%99%E4%BD%93.ttf",
+    "previewUrl": "/handwriting-fonts/original-qing-ye.png",
+    "license": "作者授权（Starclip 按需提供）",
+    "licenseUrl": "/handwriting-fonts/ORIGINAL-FONTS-AUTHORIZATION.txt",
+    "sourceUrl": "https://github.com/cpython666/HandwritingGenerator/blob/00160ae98e9512529f0180a8036fbf4c3ecd3bc7/fonts/%E9%9D%92%E5%8F%B6%E6%89%8B%E5%86%99%E4%BD%93.ttf"
+  },
+  {
+    "id": "ma-shan-zheng",
+    "name": "马善政楷书",
+    "file": "MaShanZheng-Regular.ttf",
+    "bytes": 5857936,
+    "sha256": "6d2546bb189c732a8ca29af9e22457b152387d158aa459e4ac2ce1e51788b7fb",
+    "url": "https://raw.githubusercontent.com/google/fonts/406197b91ff39a93061c2c2eeaee67ddf2ae1f0d/ofl/mashanzheng/MaShanZheng-Regular.ttf",
+    "previewUrl": "/handwriting-fonts/ma-shan-zheng.png",
+    "license": "SIL OFL 1.1",
+    "licenseUrl": "/handwriting-fonts/ma-shan-zheng-OFL.txt",
+    "sourceUrl": "https://github.com/google/fonts/tree/406197b91ff39a93061c2c2eeaee67ddf2ae1f0d/ofl/mashanzheng",
+    "author": "The Ma Shan Zheng Project Authors",
+    "tags": [
+      "手写体"
+    ]
+  },
+  {
+    "id": "zhi-mang-xing",
+    "name": "志莽行书",
+    "file": "ZhiMangXing-Regular.ttf",
+    "bytes": 4063532,
+    "sha256": "644e0cae9b40f0b10ab729a01bd32032e3973bac22be3dccae01bf6ae7fde969",
+    "url": "https://raw.githubusercontent.com/google/fonts/187e2123ad2710ad8c2fa9955332fe9073e834b1/ofl/zhimangxing/ZhiMangXing-Regular.ttf",
+    "previewUrl": "/handwriting-fonts/zhi-mang-xing.png",
+    "license": "SIL OFL 1.1",
+    "licenseUrl": "/handwriting-fonts/zhi-mang-xing-OFL.txt",
+    "sourceUrl": "https://github.com/google/fonts/tree/187e2123ad2710ad8c2fa9955332fe9073e834b1/ofl/zhimangxing",
+    "author": "The Zhi Mang Xing Project Authors",
+    "tags": [
+      "手写体"
+    ]
+  },
+  {
+    "id": "long-cang",
+    "name": "龙藏体",
+    "file": "LongCang-Regular.ttf",
+    "bytes": 5162508,
+    "sha256": "e5bf2c3f24ef2327c6f136d8f73e2f9dfdf44896fdbeb35a9515f44777bb91bc",
+    "url": "https://raw.githubusercontent.com/google/fonts/9b59ea9f333c5b8a99fa44e2a698496d6cde5b8e/ofl/longcang/LongCang-Regular.ttf",
+    "previewUrl": "/handwriting-fonts/long-cang.png",
+    "license": "SIL OFL 1.1",
+    "licenseUrl": "/handwriting-fonts/long-cang-OFL.txt",
+    "sourceUrl": "https://github.com/google/fonts/tree/9b59ea9f333c5b8a99fa44e2a698496d6cde5b8e/ofl/longcang",
+    "author": "The Long Cang Project Authors",
+    "tags": [
+      "手写体"
+    ]
+  },
+  {
+    "id": "liu-jian-mao-cao",
+    "name": "刘建毛草",
+    "file": "LiuJianMaoCao-Regular.ttf",
+    "bytes": 4951804,
+    "sha256": "cab396b91a5b7c0b4005a35891180d06e6751f5ac261fe680aec65c1ae209033",
+    "url": "https://raw.githubusercontent.com/google/fonts/9b59ea9f333c5b8a99fa44e2a698496d6cde5b8e/ofl/liujianmaocao/LiuJianMaoCao-Regular.ttf",
+    "previewUrl": "/handwriting-fonts/liu-jian-mao-cao.png",
+    "license": "SIL OFL 1.1",
+    "licenseUrl": "/handwriting-fonts/liu-jian-mao-cao-OFL.txt",
+    "sourceUrl": "https://github.com/google/fonts/tree/9b59ea9f333c5b8a99fa44e2a698496d6cde5b8e/ofl/liujianmaocao",
+    "author": "The Liu Jian Mao Cao Project Authors",
+    "tags": [
+      "手写体"
+    ]
+  },
+  {
+    "id": "zcool-kuai-le",
+    "name": "站酷快乐体",
+    "file": "ZCOOLKuaiLe-Regular.ttf",
+    "bytes": 1514968,
+    "sha256": "812a6fc1fe54b6d73a419245c32dfeba8aa33104d5be90d1cf6af082007cb71d",
+    "url": "https://raw.githubusercontent.com/google/fonts/9b59ea9f333c5b8a99fa44e2a698496d6cde5b8e/ofl/zcoolkuaile/ZCOOLKuaiLe-Regular.ttf",
+    "previewUrl": "/handwriting-fonts/zcool-kuai-le.png",
+    "license": "SIL OFL 1.1",
+    "licenseUrl": "/handwriting-fonts/zcool-kuai-le-OFL.txt",
+    "sourceUrl": "https://github.com/google/fonts/tree/9b59ea9f333c5b8a99fa44e2a698496d6cde5b8e/ofl/zcoolkuaile",
+    "author": "The ZCOOL KuaiLe Project Authors",
+    "tags": [
+      "趣味体"
+    ]
+  },
+  {
+    "id": "zcool-qing-ke-huang-you",
+    "name": "站酷庆科黄油体",
+    "file": "ZCOOLQingKeHuangYou-Regular.ttf",
+    "bytes": 8328684,
+    "sha256": "54f0c0df4308cd74cd0f2fd3494ae054dbc4a1fd6fa7d71f4807eb4cdd8b4136",
+    "url": "https://raw.githubusercontent.com/google/fonts/9b59ea9f333c5b8a99fa44e2a698496d6cde5b8e/ofl/zcoolqingkehuangyou/ZCOOLQingKeHuangYou-Regular.ttf",
+    "previewUrl": "/handwriting-fonts/zcool-qing-ke-huang-you.png",
+    "license": "SIL OFL 1.1",
+    "licenseUrl": "/handwriting-fonts/zcool-qing-ke-huang-you-OFL.txt",
+    "sourceUrl": "https://github.com/google/fonts/tree/9b59ea9f333c5b8a99fa44e2a698496d6cde5b8e/ofl/zcoolqingkehuangyou",
+    "author": "The ZCOOL QingKe HuangYou Project Authors",
+    "tags": [
+      "趣味体"
+    ]
+  },
+  {
+    "id": "zcool-xiao-wei",
+    "name": "站酷小薇体",
+    "file": "ZCOOLXiaoWei-Regular.ttf",
+    "bytes": 6313808,
+    "sha256": "a42b620140f493db42f741351dfbf343c0936d58588ee8004b8b2a218d997ff1",
+    "url": "https://raw.githubusercontent.com/google/fonts/9b59ea9f333c5b8a99fa44e2a698496d6cde5b8e/ofl/zcoolxiaowei/ZCOOLXiaoWei-Regular.ttf",
+    "previewUrl": "/handwriting-fonts/zcool-xiao-wei.png",
+    "license": "SIL OFL 1.1",
+    "licenseUrl": "/handwriting-fonts/zcool-xiao-wei-OFL.txt",
+    "sourceUrl": "https://github.com/google/fonts/tree/9b59ea9f333c5b8a99fa44e2a698496d6cde5b8e/ofl/zcoolxiaowei",
+    "author": "The ZCOOL XiaoWei Project Authors",
+    "tags": [
+      "印刷体"
+    ]
+  },
+  {
+    "id": "lxgw-marker-gothic",
+    "name": "霞鹜漫黑",
+    "file": "LXGWMarkerGothic-Regular.ttf",
+    "bytes": 3187360,
+    "sha256": "e6a55cfd5f18dc393f92670a164397a69242cb4eabe1d3feb5dc22fc4947a8ba",
+    "url": "https://raw.githubusercontent.com/google/fonts/9b59ea9f333c5b8a99fa44e2a698496d6cde5b8e/ofl/lxgwmarkergothic/LXGWMarkerGothic-Regular.ttf",
+    "previewUrl": "/handwriting-fonts/lxgw-marker-gothic.png",
+    "license": "SIL OFL 1.1",
+    "licenseUrl": "/handwriting-fonts/lxgw-marker-gothic-OFL.txt",
+    "sourceUrl": "https://github.com/google/fonts/tree/9b59ea9f333c5b8a99fa44e2a698496d6cde5b8e/ofl/lxgwmarkergothic",
+    "author": "The LXGW Marker Gothic Project Authors",
+    "tags": [
+      "趣味体"
+    ]
+  },
+  {
+    "id": "lxgwwenkaitc-light",
+    "name": "霞鹜文楷 TC · 细体",
+    "file": "LXGWWenKaiTC-Light.ttf",
+    "bytes": 13771744,
+    "sha256": "48cabec60b908f145002192c366d805b674d6e890a98c24f8a39fd33542273fd",
+    "url": "https://raw.githubusercontent.com/google/fonts/9b59ea9f333c5b8a99fa44e2a698496d6cde5b8e/ofl/lxgwwenkaitc/LXGWWenKaiTC-Light.ttf",
+    "previewUrl": "/handwriting-fonts/lxgwwenkaitc-light.png",
+    "license": "SIL OFL 1.1",
+    "licenseUrl": "/handwriting-fonts/lxgwwenkaitc-light-OFL.txt",
+    "sourceUrl": "https://github.com/google/fonts/tree/9b59ea9f333c5b8a99fa44e2a698496d6cde5b8e/ofl/lxgwwenkaitc",
+    "author": "The LXGW WenKai Project Authors",
+    "tags": [
+      "手写体"
+    ]
+  },
+  {
+    "id": "lxgwwenkaitc-regular",
+    "name": "霞鹜文楷 TC · 常规",
+    "file": "LXGWWenKaiTC-Regular.ttf",
+    "bytes": 13110528,
+    "sha256": "4fcc5aec11cbbf737b0cfab7b63796f7f280087a7a656b2f13342cd5e5318d95",
+    "url": "https://raw.githubusercontent.com/google/fonts/9b59ea9f333c5b8a99fa44e2a698496d6cde5b8e/ofl/lxgwwenkaitc/LXGWWenKaiTC-Regular.ttf",
+    "previewUrl": "/handwriting-fonts/lxgwwenkaitc-regular.png",
+    "license": "SIL OFL 1.1",
+    "licenseUrl": "/handwriting-fonts/lxgwwenkaitc-regular-OFL.txt",
+    "sourceUrl": "https://github.com/google/fonts/tree/9b59ea9f333c5b8a99fa44e2a698496d6cde5b8e/ofl/lxgwwenkaitc",
+    "author": "The LXGW WenKai Project Authors",
+    "tags": [
+      "手写体"
+    ]
+  },
+  {
+    "id": "lxgwwenkaitc-bold",
+    "name": "霞鹜文楷 TC · 粗体",
+    "file": "LXGWWenKaiTC-Bold.ttf",
+    "bytes": 12881104,
+    "sha256": "5c9feadfd928f3ae3860e7d001ad3d0d0c55b0157fff08cd4d51b51aca677f23",
+    "url": "https://raw.githubusercontent.com/google/fonts/9b59ea9f333c5b8a99fa44e2a698496d6cde5b8e/ofl/lxgwwenkaitc/LXGWWenKaiTC-Bold.ttf",
+    "previewUrl": "/handwriting-fonts/lxgwwenkaitc-bold.png",
+    "license": "SIL OFL 1.1",
+    "licenseUrl": "/handwriting-fonts/lxgwwenkaitc-bold-OFL.txt",
+    "sourceUrl": "https://github.com/google/fonts/tree/9b59ea9f333c5b8a99fa44e2a698496d6cde5b8e/ofl/lxgwwenkaitc",
+    "author": "The LXGW WenKai Project Authors",
+    "tags": [
+      "手写体"
+    ]
+  },
+  {
+    "id": "lxgwwenkaimonotc-light",
+    "name": "霞鹜文楷等宽 TC · 细体",
+    "file": "LXGWWenKaiMonoTC-Light.ttf",
+    "bytes": 13769976,
+    "sha256": "b61aa17e05c027cb8ce3768516795ef92a3363f8f537f385797dba7045bc453c",
+    "url": "https://raw.githubusercontent.com/google/fonts/9b59ea9f333c5b8a99fa44e2a698496d6cde5b8e/ofl/lxgwwenkaimonotc/LXGWWenKaiMonoTC-Light.ttf",
+    "previewUrl": "/handwriting-fonts/lxgwwenkaimonotc-light.png",
+    "license": "SIL OFL 1.1",
+    "licenseUrl": "/handwriting-fonts/lxgwwenkaimonotc-light-OFL.txt",
+    "sourceUrl": "https://github.com/google/fonts/tree/9b59ea9f333c5b8a99fa44e2a698496d6cde5b8e/ofl/lxgwwenkaimonotc",
+    "author": "The LXGW WenKai Project Authors",
+    "tags": [
+      "手写体",
+      "等宽"
+    ]
+  },
+  {
+    "id": "lxgwwenkaimonotc-regular",
+    "name": "霞鹜文楷等宽 TC · 常规",
+    "file": "LXGWWenKaiMonoTC-Regular.ttf",
+    "bytes": 13122932,
+    "sha256": "ea6707f71c862f4f255cbe510148b676ca8f5360872633de88694f8004f3f8b3",
+    "url": "https://raw.githubusercontent.com/google/fonts/9b59ea9f333c5b8a99fa44e2a698496d6cde5b8e/ofl/lxgwwenkaimonotc/LXGWWenKaiMonoTC-Regular.ttf",
+    "previewUrl": "/handwriting-fonts/lxgwwenkaimonotc-regular.png",
+    "license": "SIL OFL 1.1",
+    "licenseUrl": "/handwriting-fonts/lxgwwenkaimonotc-regular-OFL.txt",
+    "sourceUrl": "https://github.com/google/fonts/tree/9b59ea9f333c5b8a99fa44e2a698496d6cde5b8e/ofl/lxgwwenkaimonotc",
+    "author": "The LXGW WenKai Project Authors",
+    "tags": [
+      "手写体",
+      "等宽"
+    ]
+  },
+  {
+    "id": "lxgwwenkaimonotc-bold",
+    "name": "霞鹜文楷等宽 TC · 粗体",
+    "file": "LXGWWenKaiMonoTC-Bold.ttf",
+    "bytes": 12885112,
+    "sha256": "b3c9b93d8074e1ee8ff8b2f49388f26f6528d5cd614ba7d61ea4d45645c9a3e8",
+    "url": "https://raw.githubusercontent.com/google/fonts/9b59ea9f333c5b8a99fa44e2a698496d6cde5b8e/ofl/lxgwwenkaimonotc/LXGWWenKaiMonoTC-Bold.ttf",
+    "previewUrl": "/handwriting-fonts/lxgwwenkaimonotc-bold.png",
+    "license": "SIL OFL 1.1",
+    "licenseUrl": "/handwriting-fonts/lxgwwenkaimonotc-bold-OFL.txt",
+    "sourceUrl": "https://github.com/google/fonts/tree/9b59ea9f333c5b8a99fa44e2a698496d6cde5b8e/ofl/lxgwwenkaimonotc",
+    "author": "The LXGW WenKai Project Authors",
+    "tags": [
+      "手写体",
+      "等宽"
+    ]
+  }
+]

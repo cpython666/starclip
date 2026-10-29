@@ -5,7 +5,7 @@ import type { UpdateStatus } from '../src/update-api.ts';
 
 const base: UpdateStatus = { revision: 0, currentVersion: '0.2.0', configured: true, phase: 'idle', downloaded: 0 };
 test('update states distinguish unchecked, no release, errors and restart; download handles unknown totals', () => {
-  assert.match(updatePhaseText(base), /按需检查/);
+  assert.match(updatePhaseText(base), /稳定版更新通道/);
   assert.match(updatePhaseText({ ...base, phase: 'up-to-date' }), /已检查，当前没有更新/);
   assert.match(updatePhaseText({ ...base, configured: false }), /尚未配置/);
   assert.equal(updatePhaseText({ ...base, phase: 'error', error: '测试网络错误' }), '测试网络错误');

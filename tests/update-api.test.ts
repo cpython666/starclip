@@ -108,3 +108,24 @@ test('subscription errors allow reconnecting; browser mode never invokes native 
   await assert.rejects(browser.createRecoveryPoint(), /桌面版/);
   demo.dispose();
 });
+
+
+test('update preferences use dedicated native commands and the browser stays offline', async () => {
+  const preferences = { revision: 3, autoCheck: true, skippedVersion: null, lastCheckAt: 1760000000000 };
+  const commands: unknown[] = []; let stops = 0;
+  Object.assign(globalThis, {
+    updateTestEvents: { async listen(name: string) { assert.equal(name, 'starclip-update-preferences'); return () => { stops++; }; } },
+    updateTestCore: { async invoke(command: string, args?: Record<string, unknown>) { commands.push([command, args]); return preferences; } },
+  });
+  const api = await loadApi();
+  assert.deepEqual(await api.getUpdatePreferences(), preferences);
+  await api.setAutoUpdateCheck(false); await api.skipUpdateVersion('0.3.0');
+  const stop = await api.onUpdatePreferencesChanged(() => {}); stop(); assert.equal(stops, 1);
+  assert.deepEqual(commands, [['get_update_preferences', undefined], ['set_auto_update_check', { enabled: false }], ['skip_update_version', { version: '0.3.0' }]]);
+  const browser = await loadApi(false);
+  assert.equal((await browser.getUpdatePreferences()).autoCheck, true);
+  (await browser.onUpdatePreferencesChanged(() => assert.fail('no synthetic preference event')))();
+  await assert.rejects(browser.setAutoUpdateCheck(false), /桌面版/);
+  await assert.rejects(browser.skipUpdateVersion('0.3.0'), /桌面版/);
+  assert.equal(commands.length, 3); assert.equal(stops, 1);
+});

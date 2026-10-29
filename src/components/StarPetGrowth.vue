@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { errorText, t } from '../i18n';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue';
 import StarPet from './StarPet.vue';
 import { starPetDesktopAvailable } from '../starpet-api';
@@ -10,6 +11,7 @@ const props = withDefaults(defineProps<{ disabled?: boolean; color?: string; moo
 const emit = defineEmits<{ change: [value: GrowthState]; action: [id: ActionId]; busy: [value: boolean] }>();
 const state = ref<GrowthState>(emptyGrowth());
 const loading = ref(true), busy = ref(false), error = ref(''), notice = ref('');
+const loaded = ref(false);
 const tab = ref('growth'), slot = ref<Slot | 'all'>('all');
 const previewAction = ref<ActionId>('greet'), previewNonce = ref(0);
 const tabs = [{ id: 'growth', name: '成长' }, { id: 'outfit', name: '装扮' }, { id: 'achievements', name: '成就' }];
@@ -27,6 +29,7 @@ const shownItems = computed(() => growthCatalog.items.filter(item => slot.value 
 const blocked = computed(() => props.disabled || loading.value || busy.value);
 const pendingImport = ref<{ data: string; state: GrowthState; name: string; revision: number } | null>(null);
 const resetRevision = ref<number | null>(null);
+const canRelease = computed(() => loaded.value && !loading.value && !busy.value && !pendingImport.value && resetRevision.value === null);
 const fileInput = ref<HTMLInputElement>();
 const importPanel = ref<HTMLElement>(), resetPanel = ref<HTMLElement>();
 let unsubscribe: (() => void) | undefined, midnightTimer: ReturnType<typeof setTimeout> | undefined, disposed = false;
@@ -34,6 +37,7 @@ let unsubscribe: (() => void) | undefined, midnightTimer: ReturnType<typeof setT
 function accept(value: GrowthState) {
   if (disposed || value.revision < state.value.revision) return;
   state.value = value;
+  loaded.value = true;
   emit('change', value);
 }
 function scheduleDay() {
@@ -55,7 +59,7 @@ onMounted(async () => {
   document.addEventListener('visibilitychange', scheduleDay);
   try {
     await readState();
-  } catch (reason) { if (!disposed) error.value = `成长记录未能载入：${String(reason)}`; }
+  } catch (reason) { if (!disposed) error.value = t('成长记录未能载入：{error}', { error: errorText(reason) }); }
   finally { if (!disposed) loading.value = false; }
 });
 onBeforeUnmount(() => {
@@ -67,7 +71,7 @@ async function run(work: () => Promise<void>) {
   if (blocked.value) return;
   busy.value = true; emit('busy', true); error.value = ''; notice.value = '';
   try { await work(); }
-  catch (reason) { if (!disposed) error.value = String(reason); }
+  catch (reason) { if (!disposed) error.value = errorText(reason); }
   finally { if (!disposed) { busy.value = false; emit('busy', false); } }
 }
 async function reload() {
@@ -78,7 +82,7 @@ function toggle() {
     const value = await setStarPetGrowthEnabled(!state.value.enabled);
     if (disposed) return;
     accept(value); scheduleDay();
-    notice.value = value.enabled ? '成长记录已开启，和星芽打个招呼吧。' : '已暂停成长记录，进度和装扮都保留，仍可与星芽互动。';
+    notice.value = value.enabled ? t('成长记录已开启，和星芽打个招呼吧。') : t('已暂停成长记录，进度和装扮都保留，仍可与星芽互动。');
   });
 }
 function interact(id: ActionId, animate = true) {
@@ -89,33 +93,33 @@ function interact(id: ActionId, animate = true) {
     previewAction.value = id; previewNonce.value++;
     if (animate) emit('action', id);
     const action = growthCatalog.actions.find(item => item.id === id)!;
-    notice.value = `${action.message}。当前 Lv.${levelForXp(state.value.xp)} · 累计 ${state.value.xp} XP。${state.value.enabled ? '每天每项任务只记录一次，想玩还可以再来。' : '开启成长记录后可获得经验。'}`;
-    if (clockBehind.value) notice.value = `${action.message}。本机日期早于上次记录，经验暂不增加。`;
+    notice.value = t('{message}。当前 Lv.{level} · 累计 {xp} XP。', { message: t(action.message), level: levelForXp(state.value.xp), xp: state.value.xp }) + (state.value.enabled ? t('每天每项任务只记录一次，想玩还可以再来。') : t('开启成长记录后可获得经验。'));
+    if (clockBehind.value) notice.value = t('{message}。本机日期早于上次记录，经验暂不增加。', { message: t(action.message) });
   });
 }
-defineExpose({ greet: () => interact('greet', false) });
+defineExpose({ greet: () => interact('greet', false), canRelease });
 function equip(item: typeof growthCatalog.items[number]) {
   return run(async () => {
     const removing = state.value.equipment[item.slot] === item.id;
     accept(await equipStarPetItem(item.slot, removing ? null : item.id));
-    if (!disposed) notice.value = `${item.name}已${removing ? '卸下' : '穿戴'}。装扮会自动保存。`;
+    if (!disposed) notice.value = removing ? t('已卸下 {name}。装扮会自动保存。', { name: t(item.name) }) : t('已穿戴 {name}。装扮会自动保存。', { name: t(item.name) });
   });
 }
 function unequip(slotId: Slot) {
   return run(async () => {
     accept(await equipStarPetItem(slotId, null));
-    if (!disposed) notice.value = '装饰已卸下。';
+    if (!disposed) notice.value = t('装饰已卸下。');
   });
 }
 function previewEquipment(item: typeof growthCatalog.items[number]): Equipment {
   return { back: null, face: null, hand: null, charm: null, [item.slot]: item.id };
 }
 function unlockText(item: typeof growthCatalog.items[number]) {
-  return item.achievement ? `成就：${growthCatalog.achievements.find(achievement => achievement.id === item.achievement)?.name ?? item.achievement}` : `Lv.${item.level} 解锁`;
+  return item.achievement ? t('成就：{name}', { name: t(growthCatalog.achievements.find(achievement => achievement.id === item.achievement)?.name ?? item.achievement) }) : t('Lv.{level} 解锁', { level: item.level });
 }
 function taskAction(id: TaskId): ActionId { return id === 'greet' ? 'greet' : id === 'play' ? 'highfive' : 'stretch'; }
-function taskActionName(id: TaskId) { return id === 'greet' ? '问个好' : id === 'play' ? '击个掌' : '一起伸懒腰'; }
-function itemName(id: string | null) { return growthCatalog.items.find(item => item.id === id)?.name ?? '未穿戴'; }
+function taskActionName(id: TaskId) { return id === 'greet' ? t('问个好') : id === 'play' ? t('击个掌') : t('一起伸懒腰'); }
+function itemName(id: string | null) { return id ? t(growthCatalog.items.find(item => item.id === id)?.name ?? id) : t('未穿戴'); }
 async function selectTab(id: string) {
   tab.value = id;
   await nextTick();
@@ -133,7 +137,7 @@ function tabKey(event: KeyboardEvent, index: number) {
 function exportArchive() {
   return run(async () => {
     const path = await exportStarPetGrowth();
-    if (!disposed) notice.value = path ? starPetDesktopAvailable ? `成长存档已保存到：${path}` : `已请求浏览器下载：${path}。保存位置由浏览器决定。` : '已取消导出，成长记录未改动。';
+    if (!disposed) notice.value = path ? starPetDesktopAvailable ? t('成长存档已保存到：{path}', { path }) : t('已请求浏览器下载：{path}。保存位置由浏览器决定。', { path }) : t('已取消导出，成长记录未改动。');
   });
 }
 function chooseImport() { pendingImport.value = null; resetRevision.value = null; fileInput.value?.click(); }
@@ -142,7 +146,7 @@ async function readImport(event: Event) {
   input.value = '';
   if (!file) return;
   await run(async () => {
-    if (file.size > 64 * 1024) throw new Error('成长存档不能超过 64 KiB。');
+    if (file.size > 64 * 1024) throw new Error(t('成长存档不能超过 64 KiB。'));
     const data = await file.text(), imported = parseGrowthArchive(data);
     if (disposed) return;
     pendingImport.value = { data, state: imported, name: file.name, revision: state.value.revision };
@@ -154,7 +158,7 @@ function confirmImport() {
   if (!pending) return;
   return run(async () => {
     accept(await importStarPetGrowth(pending.data, pending.revision));
-    if (!disposed) { pendingImport.value = null; scheduleDay(); notice.value = '成长存档已替换，剪贴历史与星芽外观偏好未改动。'; }
+    if (!disposed) { pendingImport.value = null; scheduleDay(); notice.value = t('成长存档已替换，剪贴历史与星芽外观偏好未改动。'); }
   });
 }
 async function askReset() {
@@ -166,58 +170,58 @@ function confirmReset() {
   if (revision === null) return;
   return run(async () => {
     accept(await resetStarPetGrowth(revision));
-    if (!disposed) { resetRevision.value = null; scheduleDay(); notice.value = '成长记录已重置。剪贴历史、表情、颜色和大小保持原样。'; }
+    if (!disposed) { resetRevision.value = null; scheduleDay(); notice.value = t('成长记录已重置。剪贴历史、表情、颜色和大小保持原样。'); }
   });
 }
 </script>
 
 <template>
-  <section class="pet-growth" aria-label="星伴养成">
+  <section class="pet-growth" :aria-label="t('星伴养成')">
     <div class="growth-heading">
-      <div><span class="growth-eyebrow">一起慢慢长大</span><h4>星芽的成长手记</h4><p>离开也没关系，下次见面继续长大。</p></div>
-      <button type="button" class="growth-toggle" :aria-pressed="state.enabled" :disabled="blocked" @click="toggle">{{ state.enabled ? '暂停成长记录' : '开启成长记录' }}</button>
+      <div><span class="growth-eyebrow">{{ t('一起慢慢长大') }}</span><h4>{{ t('星芽的成长手记') }}</h4><p>{{ t('离开也没关系，下次见面继续长大。') }}</p></div>
+      <button type="button" class="growth-toggle" :aria-pressed="state.enabled" :disabled="blocked" @click="toggle">{{ state.enabled ? t('暂停成长记录') : t('开启成长记录') }}</button>
     </div>
-    <p v-if="!starPetDesktopAvailable" class="growth-demo">浏览器演示 · 成长只在当前页面保留，刷新后重置。</p>
+    <p v-if="!starPetDesktopAvailable" class="growth-demo">{{ t('浏览器演示 · 成长只在当前页面保留，刷新后重置。') }}</p>
     <div class="growth-level">
       <strong><span>Lv.</span>{{ progress.level }}</strong>
-      <div><div class="growth-progress-copy"><span>{{ progress.level === growthCatalog.maxLevel ? '星光长久相伴' : `距离 Lv.${progress.level + 1}` }}</span><span>{{ progress.level === growthCatalog.maxLevel ? `${state.xp} XP · 已满级` : `${progress.current} / ${progress.needed} XP` }}</span></div><progress :value="progress.percent" max="100" :aria-label="`成长等级 ${progress.level}，${progress.current} 点本级经验`" /><p>{{ nextReward ? `下个等级奖励：Lv.${nextReward.level} · ${nextReward.name}` : '等级奖励已全部解锁，日常仍可继续积累经验。' }}</p></div>
+      <div><div class="growth-progress-copy"><span>{{ progress.level === growthCatalog.maxLevel ? t('星光长久相伴') : t('距离 Lv.{level}', { level: progress.level + 1 }) }}</span><span>{{ progress.level === growthCatalog.maxLevel ? t('{xp} XP · 已满级', { xp: state.xp }) : `${progress.current} / ${progress.needed} XP` }}</span></div><progress :value="progress.percent" max="100" :aria-label="t('成长等级 {level}，{current} 点本级经验', { level: progress.level, current: progress.current })" /><p>{{ nextReward ? t('下个等级奖励：Lv.{level} · {name}', { level: nextReward.level, name: t(nextReward.name) }) : t('等级奖励已全部解锁，日常仍可继续积累经验。') }}</p></div>
     </div>
-    <p v-if="!state.enabled" class="growth-note">成长记录尚未开启或已暂停。原有 32 种表情和轻互动始终可用。</p>
-    <p v-if="clockBehind" class="growth-note">本机日期早于上次记录，经验暂不增加；已有进度会保留。</p>
-    <div class="growth-tabs" role="tablist" aria-label="成长内容">
-      <button v-for="(item, index) in tabs" :id="`${uid}-tab-${item.id}`" :key="item.id" type="button" role="tab" :aria-selected="tab === item.id" :aria-controls="`${uid}-panel-${item.id}`" :tabindex="tab === item.id ? 0 : -1" @click="tab = item.id" @keydown="tabKey($event, index)">{{ item.name }}<span v-if="item.id === 'outfit'">{{ state.unlockedItems.length }}</span><span v-if="item.id === 'achievements'">{{ state.achievements.length }}/{{ growthCatalog.achievements.length }}</span></button>
+    <p v-if="!state.enabled" class="growth-note">{{ t('成长记录尚未开启或已暂停。原有 32 种表情和轻互动始终可用。') }}</p>
+    <p v-if="clockBehind" class="growth-note">{{ t('本机日期早于上次记录，经验暂不增加；已有进度会保留。') }}</p>
+    <div class="growth-tabs" role="tablist" :aria-label="t('成长内容')">
+      <button v-for="(item, index) in tabs" :id="`${uid}-tab-${item.id}`" :key="item.id" type="button" role="tab" :aria-selected="tab === item.id" :aria-controls="`${uid}-panel-${item.id}`" :tabindex="tab === item.id ? 0 : -1" @click="tab = item.id" @keydown="tabKey($event, index)">{{ t(item.name) }}<span v-if="item.id === 'outfit'">{{ state.unlockedItems.length }}</span><span v-if="item.id === 'achievements'">{{ state.achievements.length }}/{{ growthCatalog.achievements.length }}</span></button>
     </div>
     <div v-show="tab === 'growth'" :id="`${uid}-panel-growth`" role="tabpanel" :aria-labelledby="`${uid}-tab-growth`" class="growth-panel">
-      <div class="growth-section-title"><h5>今天的小小约定</h5><span>{{ earnedToday }} / 45 XP</span></div>
+      <div class="growth-section-title"><h5>{{ t('今天的小小约定') }}</h5><span>{{ earnedToday }} / 45 XP</span></div>
       <div class="growth-tasks">
         <article v-for="task in growthCatalog.tasks" :key="task.id" :class="{ completed: completed.includes(task.id) }">
           <span class="task-mark" aria-hidden="true">{{ completed.includes(task.id) ? '✓' : '✦' }}</span>
-          <div><h6>{{ task.name }} <span>+{{ task.xp }} XP</span></h6><p>{{ task.id === 'create' ? '一起伸懒腰，或在桌面版保存代码、导出卡片' : task.description }}</p></div>
-          <span v-if="completed.includes(task.id)" class="task-done">已完成</span><button v-else type="button" :disabled="blocked" @click="interact(taskAction(task.id))">{{ taskActionName(task.id) }}</button>
+          <div><h6>{{ t(task.name) }} <span>+{{ task.xp }} XP</span></h6><p>{{ task.id === 'create' ? t('一起伸懒腰，或在桌面版保存代码、导出卡片') : t(task.description) }}</p></div>
+          <span v-if="completed.includes(task.id)" class="task-done">{{ t('已完成') }}</span><button v-else type="button" :disabled="blocked" @click="interact(taskAction(task.id))">{{ taskActionName(task.id) }}</button>
         </article>
       </div>
-      <p class="growth-note">奖励自动收好，每项每天一次，不需要连续打卡。{{ state.interactionDays ? `已经一起度过 ${state.interactionDays} 个有互动的日子。` : '今天就从一个小小的问好开始。' }}</p>
-      <div class="growth-section-title"><h5>和星芽玩一会</h5><span>动作结束后恢复原心情</span></div>
-      <div class="growth-play"><div class="growth-action-preview" aria-label="星芽动作预览"><StarPet :mood="mood" :color="color" :size="104" :equipment="state.equipment" :action="previewAction" :action-nonce="previewNonce" :animated="tab === 'growth'" /></div><div class="growth-actions"><button v-for="action in growthCatalog.actions" :key="action.id" type="button" :disabled="blocked || action.level > progress.level" @click="interact(action.id)"><span>{{ action.name }}</span><small>{{ action.level > progress.level ? `Lv.${action.level} 解锁` : '一起玩' }}</small></button></div></div>
+      <p class="growth-note">{{ t('奖励自动收好，每项每天一次，不需要连续打卡。') }}{{ state.interactionDays ? t('已经一起度过 {days} 个有互动的日子。', { days: state.interactionDays }) : t('今天就从一个小小的问好开始。') }}</p>
+      <div class="growth-section-title"><h5>{{ t('和星芽玩一会') }}</h5><span>{{ t('动作结束后恢复原心情') }}</span></div>
+      <div class="growth-play"><div class="growth-action-preview" :aria-label="t('星芽动作预览')"><StarPet :mood="mood" :color="color" :size="104" :equipment="state.equipment" :action="previewAction" :action-nonce="previewNonce" :animated="tab === 'growth'" /></div><div class="growth-actions"><button v-for="action in growthCatalog.actions" :key="action.id" type="button" :disabled="blocked || action.level > progress.level" @click="interact(action.id)"><span>{{ t(action.name) }}</span><small>{{ action.level > progress.level ? t('Lv.{level} 解锁', { level: action.level }) : t('一起玩') }}</small></button></div></div>
     </div>
-    <div v-show="tab === 'outfit'" :id="`${uid}-panel-outfit`" role="tabpanel" :aria-labelledby="`${uid}-tab-outfit`" class="growth-panel">
-      <div class="equipment-slots"><div v-for="item in growthSlots" :key="item.id"><span>{{ item.name }}</span><strong>{{ itemName(state.equipment[item.id]) }}</strong><button v-if="state.equipment[item.id]" type="button" :aria-label="`卸下${item.name}装饰`" :disabled="blocked" @click="unequip(item.id)">卸下</button></div></div>
-      <div class="outfit-filters" aria-label="装扮分类"><button type="button" :aria-pressed="slot === 'all'" @click="slot = 'all'">全部</button><button v-for="item in growthSlots" :key="item.id" type="button" :aria-pressed="slot === item.id" @click="slot = item.id">{{ item.name }}</button></div>
-      <div class="outfit-grid"><article v-for="item in shownItems" :key="item.id" :class="{ locked: !state.unlockedItems.includes(item.id), wearing: state.equipment[item.slot] === item.id }"><div class="outfit-preview"><StarPet mood="idle" :color="color" :size="96" :equipment="previewEquipment(item)" :animated="false" /></div><h5>{{ item.name }}</h5><p>{{ item.description }}</p><span class="outfit-condition">{{ state.unlockedItems.includes(item.id) ? '已获得' : unlockText(item) }}</span><button type="button" :disabled="blocked || !state.unlockedItems.includes(item.id)" :aria-pressed="state.equipment[item.slot] === item.id" @click="equip(item)">{{ state.equipment[item.slot] === item.id ? '已穿戴 · 卸下' : state.unlockedItems.includes(item.id) ? '穿戴' : '尚未解锁' }}</button></article></div>
-      <p class="growth-note">预览不消耗物品，也不增加经验。读书、捧杯等表情会暂时收起冲突的手持玩具，换回其他表情后恢复。</p>
+    <div v-if="tab === 'outfit'" :id="`${uid}-panel-outfit`" role="tabpanel" :aria-labelledby="`${uid}-tab-outfit`" class="growth-panel">
+      <div class="equipment-slots"><div v-for="item in growthSlots" :key="item.id"><span>{{ t(item.name) }}</span><strong>{{ itemName(state.equipment[item.id]) }}</strong><button v-if="state.equipment[item.id]" type="button" :aria-label="t('卸下{name}装饰', { name: t(item.name) })" :disabled="blocked" @click="unequip(item.id)">{{ t('卸下') }}</button></div></div>
+      <div class="outfit-filters" :aria-label="t('装扮分类')"><button type="button" :aria-pressed="slot === 'all'" @click="slot = 'all'">{{ t('全部') }}</button><button v-for="item in growthSlots" :key="item.id" type="button" :aria-pressed="slot === item.id" @click="slot = item.id">{{ t(item.name) }}</button></div>
+      <div class="outfit-grid"><article v-for="item in shownItems" :key="item.id" :class="{ locked: !state.unlockedItems.includes(item.id), wearing: state.equipment[item.slot] === item.id }"><div class="outfit-preview"><StarPet mood="idle" :color="color" :size="96" :equipment="previewEquipment(item)" :animated="false" /></div><h5>{{ t(item.name) }}</h5><p>{{ t(item.description) }}</p><span class="outfit-condition">{{ state.unlockedItems.includes(item.id) ? t('已获得') : unlockText(item) }}</span><button type="button" :disabled="blocked || !state.unlockedItems.includes(item.id)" :aria-pressed="state.equipment[item.slot] === item.id" @click="equip(item)">{{ state.equipment[item.slot] === item.id ? t('已穿戴 · 卸下') : state.unlockedItems.includes(item.id) ? t('穿戴') : t('尚未解锁') }}</button></article></div>
+      <p class="growth-note">{{ t('预览不消耗物品，也不增加经验。读书、捧杯等表情会暂时收起冲突的手持玩具，换回其他表情后恢复。') }}</p>
     </div>
     <div v-show="tab === 'achievements'" :id="`${uid}-panel-achievements`" role="tabpanel" :aria-labelledby="`${uid}-tab-achievements`" class="growth-panel">
-      <div class="achievement-grid"><article v-for="achievement in growthCatalog.achievements" :key="achievement.id" :class="{ achieved: state.achievements.includes(achievement.id) }"><span class="achievement-badge" aria-hidden="true">{{ state.achievements.includes(achievement.id) ? '✦' : '☆' }}</span><div><h5>{{ achievement.name }}<small>{{ state.achievements.includes(achievement.id) ? '已达成' : '未达成' }}</small></h5><p>{{ achievement.description }}</p><span>奖励 · {{ achievement.reward }}</span></div></article></div>
-      <p class="growth-note">成就只获得一次。纪念徽章会留在这里，装饰奖励会放入装扮收藏。</p>
+      <div class="achievement-grid"><article v-for="achievement in growthCatalog.achievements" :key="achievement.id" :class="{ achieved: state.achievements.includes(achievement.id) }"><span class="achievement-badge" aria-hidden="true">{{ state.achievements.includes(achievement.id) ? '✦' : '☆' }}</span><div><h5>{{ t(achievement.name) }}<small>{{ state.achievements.includes(achievement.id) ? t('已达成') : t('未达成') }}</small></h5><p>{{ t(achievement.description) }}</p><span>{{ t('奖励 · {reward}', { reward: t(achievement.reward) }) }}</span></div></article></div>
+      <p class="growth-note">{{ t('成就只获得一次。纪念徽章会留在这里，装饰奖励会放入装扮收藏。') }}</p>
     </div>
-    <p v-if="loading || notice || error" class="growth-status" :class="{ error: !!error }" :role="error ? 'alert' : 'status'">{{ loading ? '正在载入成长手记…' : error || notice }} <button v-if="error" type="button" :disabled="blocked" @click="reload">重新读取</button></p>
+    <p v-if="loading || notice || error" class="growth-status" :class="{ error: !!error }" :role="error ? 'alert' : 'status'">{{ loading ? t('正在载入成长手记…') : error || notice }} <button v-if="error" type="button" :disabled="blocked" @click="reload">{{ t('重新读取') }}</button></p>
     <details class="growth-storage">
-      <summary>成长存档 · 导入、导出与重置</summary>
-      <p>成长存档只包含经验、成就和装扮，不含剪贴内容。现有剪贴历史备份不包含成长，请单独保存。</p>
-      <div class="storage-actions"><button type="button" :disabled="blocked" @click="exportArchive">导出成长存档</button><button type="button" :disabled="blocked" @click="chooseImport">导入成长存档</button><button type="button" :disabled="blocked" @click="askReset">重置成长</button></div>
+      <summary>{{ t('成长存档 · 导入、导出与重置') }}</summary>
+      <p>{{ t('成长存档只包含经验、成就和装扮，不含剪贴内容。现有剪贴历史备份不包含成长，请单独保存。') }}</p>
+      <div class="storage-actions"><button type="button" :disabled="blocked" @click="exportArchive">{{ t('导出成长存档') }}</button><button type="button" :disabled="blocked" @click="chooseImport">{{ t('导入成长存档') }}</button><button type="button" :disabled="blocked" @click="askReset">{{ t('重置成长') }}</button></div>
       <input ref="fileInput" type="file" accept=".json,application/json" hidden @change="readImport" />
-      <div v-if="pendingImport" ref="importPanel" class="growth-confirm" tabindex="-1" aria-label="确认导入成长存档"><h5>将替换当前成长记录</h5><p class="archive-name">{{ pendingImport.name }}</p><p>存档：Lv.{{ levelForXp(pendingImport.state.xp) }} · {{ pendingImport.state.xp }} XP · {{ pendingImport.state.unlockedItems.length }} 件装饰 · 成长{{ pendingImport.state.enabled ? '开启' : '暂停' }}</p><p>当前：Lv.{{ progress.level }} · {{ state.xp }} XP。导入会替换经验、成就与装扮，不会合并；建议先导出当前存档。</p><p v-if="pendingImport.revision !== state.revision" class="growth-note">当前记录已有变化，请取消后重新选择文件再确认。</p><div class="storage-actions"><button type="button" :disabled="blocked || pendingImport.revision !== state.revision" @click="confirmImport">确认替换成长记录</button><button type="button" :disabled="busy" @click="pendingImport = null">取消</button></div></div>
-      <div v-if="resetRevision !== null" ref="resetPanel" class="growth-confirm" tabindex="-1" aria-label="确认重置成长"><h5>重置经验、成就与装扮？</h5><p>当前 {{ state.xp }} XP、{{ state.achievements.length }} 项成就与 {{ state.unlockedItems.length }} 件装饰将被清空，成长记录会暂停。可先导出存档留念；剪贴历史和星芽外观偏好不受影响。</p><p v-if="resetRevision !== state.revision" class="growth-note">当前记录已有变化，请取消后重新发起重置。</p><div class="storage-actions"><button type="button" :disabled="blocked || resetRevision !== state.revision" @click="confirmReset">确认重置成长</button><button type="button" :disabled="busy" @click="resetRevision = null">取消</button></div></div>
+      <div v-if="pendingImport" ref="importPanel" class="growth-confirm" tabindex="-1" :aria-label="t('确认导入成长存档')"><h5>{{ t('将替换当前成长记录') }}</h5><p class="archive-name">{{ pendingImport.name }}</p><p>{{ t('存档：Lv.{level} · {xp} XP · {items} 件装饰 · 成长{state}', { level: levelForXp(pendingImport.state.xp), xp: pendingImport.state.xp, items: pendingImport.state.unlockedItems.length, state: pendingImport.state.enabled ? t('开启') : t('暂停') }) }}</p><p>{{ t('当前：Lv.{level} · {xp} XP。导入会替换经验、成就与装扮，不会合并；建议先导出当前存档。', { level: progress.level, xp: state.xp }) }}</p><p v-if="pendingImport.revision !== state.revision" class="growth-note">{{ t('当前记录已有变化，请取消后重新选择文件再确认。') }}</p><div class="storage-actions"><button type="button" :disabled="blocked || pendingImport.revision !== state.revision" @click="confirmImport">{{ t('确认替换成长记录') }}</button><button type="button" :disabled="busy" @click="pendingImport = null">{{ t('取消') }}</button></div></div>
+      <div v-if="resetRevision !== null" ref="resetPanel" class="growth-confirm" tabindex="-1" :aria-label="t('确认重置成长')"><h5>{{ t('重置经验、成就与装扮？') }}</h5><p>{{ t('当前 {xp} XP、{achievements} 项成就与 {items} 件装饰将被清空，成长记录会暂停。可先导出存档留念；剪贴历史和星芽外观偏好不受影响。', { xp: state.xp, achievements: state.achievements.length, items: state.unlockedItems.length }) }}</p><p v-if="resetRevision !== state.revision" class="growth-note">{{ t('当前记录已有变化，请取消后重新发起重置。') }}</p><div class="storage-actions"><button type="button" :disabled="blocked || resetRevision !== state.revision" @click="confirmReset">{{ t('确认重置成长') }}</button><button type="button" :disabled="busy" @click="resetRevision = null">{{ t('取消') }}</button></div></div>
     </details>
   </section>
 </template>
