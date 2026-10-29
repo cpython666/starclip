@@ -9,7 +9,7 @@
 | `src/main.ts`、`src/App.vue`、`src/starpet-shell.css` | 入口按 `?view=starpet` 动态加载桌面星伴或主应用；星伴使用独立外壳，不加载主应用全局样式。主应用管理列表、详情、设置草稿、弹窗和快捷键 |
 | `src/i18n/`、`src/types.ts`、`src/api.ts` | 中文原文作键的简体中文 / English 目录、`t()` 插值与单复数、`errorText()` 原生错误映射；locale 即时切换并写入 `uiLanguage`；桌面端命令 `set_native_language` 仅主窗可用 |
 | `src/types.ts`、`src/api.ts` | 前后端数据形状与调用入口；用 `__TAURI_INTERNALS__` 区分桌面 invoke 和原创内存演示。修改行为时检查两条分支及 Rust 类型 |
-| `src/components/ProductShare.vue`、`src/product-share.ts`、`src/product-share-catalog.json` | 帮助页分享入口、两套文案与三张固定产品 PNG、复制 / 保存回执；元数据与 Rust 共用 |
+| `src/components/ProductShare.vue`、`src/product-share.ts`、`src/product-share-catalog.json` | 独立「分享」页，默认跟随界面 / 手选中英；2 类文案 × 2 语言、5 主题 PNG × 2 语言。按 `locale` 筛选，去掉 `-en` 后缀维持当前主题；预览 / 复制 / 保存使用同一语言，元数据与 Rust 共用 |
 | `src/components/UpdateSettings.vue`、`src/components/UpdateNotice.vue`、`src/update-api.ts`、`src/update-state.ts` | 更新与恢复界面、独立自动检查开关、主界面空闲时的稳定版提示 / 单版本忽略、进度订阅、确认版本固定、恢复后重启保护；浏览器仅说明。偏好按 revision 合并，提示本身不发起网络检查 |
 | `src/components/StartupSettings.vue`、`src/startup-api.ts` | 使用习惯中的三项独立即时保存开关：登录自启动、启动收起、图标显隐；读取 / 保存中保护释放，失败可重读。退出事件交由 `App.vue` 核对草稿与子面板状态；浏览器只说明桌面限定 |
 | `src/privacy.ts`、`src/components/PrivacyRules.vue`、`src/components/AiSettings.vue` | 标签 / 来源 / 隐私筛选、规则与重扫、本地 AI 授权及连接配置；`src/api.ts` 包装命令，浏览器只作固定数据演示 |
@@ -89,7 +89,7 @@ SQLite 主要表为 `clips`、`clip_images`、`clip_privacy`、`groups`、`prefe
 
 Homebrew 同步独立使用 `.github/workflows/homebrew.yml`、`scripts/homebrew-release.mjs` 与 `tests/homebrew-release.test.ts`。读取公开 latest 稳定 Release，校验实际 DMG 与清单及应用身份后生成 Cask；仅末尾 Tap job 使用单仓 deploy key，推送前重查 Release，拒绝降级 / 同版换摘要。详见 [Homebrew 自动化](../../../../docs/homebrew-release.md)，不能把同步验包称为完整安装升级验收。
 
-产品宣传素材源为 `scripts/share-posters.html`，直接渲染既有星芽组件与原创界面 / 代码示意；`scripts/compress-share-images.py` 制作 256 色索引 PNG 并同步 catalog，Pillow 仅为素材制作依赖。见 [分享说明](../../../../docs/product-share.md)。
+产品宣传素材源为 `scripts/share-posters.html`，直接渲染既有星芽组件与原创界面 / 代码示意；中文主题 ID 为 `overview` / `workflow` / `companion` / `creation` / `ai`，英文对应加 `-en`，均为 1080 × 1440。`scripts/compress-share-images.py` 按 `product-share-catalog.json` 的十个图片条目制作 256 色索引 PNG 并回填字节数，Pillow 仅为素材制作依赖；文案 ID 为 `short` / `detailed` 及其 `-en` 版本。素材语言由面板临时选择，不写应用偏好、不自动发布；原生新素材复制 / 保存仍需单独验收。见 [分享说明](../../../../docs/product-share.md)。
 
 可选统计：`telemetry.rs` 只接收 9 种固定事件并聚合计数，主窗只申报星绘坊打开，其余由原生操作路径计数。缺失偏好默认开启，已保存的关闭选择保留，读取 / 解析失败关闭；无有效接收端时不采集。复用 monitor 约每分钟 checkpoint / 调度发送，发送前后和正常 `RunEvent::Exit` 也 checkpoint；下载验签完成和进入安装阶段后另调度异步发送，不等待网络、不持有存储锁。固定缓存位于默认应用目录 `usage-counts.json`，读取上限 2 KiB，9 类各最多 100 次、TTL 72 小时，只存格式 / 应用版本、创建时间和计数；同版本恢复，换版本丢弃，不含设备 / sessionId，不加入剪贴备份或目录迁移。异常终止可能丢最后一分钟新增计数；安装只计尝试，补报按收到时间计，可能丢失或重复。
 

@@ -248,13 +248,13 @@ test('clean settings release only after every mounted child is ready and free of
     vm.changeSettingsTab('privacy'); vm.privacySettings = { canRelease: false }; vm.telemetrySettings = { canRelease: true };
     vm.changeSettingsTab('ai'); vm.aiSettings = { canRelease: true };
     vm.changeSettingsTab('data'); vm.dataSettings = { canRelease: true };
-    vm.changeSettingsTab('help'); vm.productShare = { canRelease: true }; vm.updateSettings = { canRelease: true };
+    vm.changeSettingsTab('help'); vm.updateSettings = { canRelease: true };
     await fixture.close(96);
     assert.deepEqual(calls.at(-1), { release: false, requestId: 96 }, 'a hidden visited privacy draft still protects the window');
     vm.privacySettings.canRelease = true; await flush();
     assert.deepEqual(calls.at(-1), { release: true, requestId: 96 });
 
-    for (const key of ['appearanceSettings', 'privacySettings', 'telemetrySettings', 'aiSettings', 'dataSettings', 'productShare', 'updateSettings']) {
+    for (const key of ['appearanceSettings', 'privacySettings', 'telemetrySettings', 'aiSettings', 'dataSettings', 'updateSettings']) {
       vm[key].canRelease = false; await flush();
       await fixture.close(97);
       assert.deepEqual(calls.at(-1), { release: false, requestId: 97 }, key);
@@ -301,7 +301,7 @@ test('vertical settings tabs use Up/Down and Home/End while preserving drafts an
     assert.equal(await press('ArrowDown'), true); assert.equal(vm.settingsTab, 'appearance');
     await press('End'); assert.equal(vm.settingsTab, 'help');
     await press('Home'); assert.equal(vm.settingsTab, 'appearance');
-    for (const tab of ['starpet', 'habits', 'privacy', 'ai', 'data']) {
+    for (const tab of ['starpet', 'habits', 'privacy', 'ai', 'data', 'share']) {
       await press('ArrowDown'); assert.equal(vm.settingsTab, tab);
       assert.equal(focused.at(-1), `#settings-tab-${tab}`);
     }
@@ -309,7 +309,7 @@ test('vertical settings tabs use Up/Down and Home/End while preserving drafts an
     assert.equal(vm.settingsDraft.maxHistory, 500);
     assert.deepEqual(scrolls.at(-1), { top: 0 });
     for (const [key, extra] of [['ArrowLeft', {}], ['ArrowRight', {}], ['ArrowDown', { metaKey: true }], ['ArrowDown', { isComposing: true }]] as const) {
-      assert.equal(await press(key, extra), false); assert.equal(vm.settingsTab, 'data');
+      assert.equal(await press(key, extra), false); assert.equal(vm.settingsTab, 'share');
     }
   } finally { fixture.cleanup(); }
 });
@@ -564,5 +564,33 @@ test('settings quit preserves pending work and drafts, then exits when all setti
     await f.vm.quitFromSettings(); assert.equal(f.stopped.quit, 0);
     f.vm.startupSettings.canRelease = true;
     await f.vm.quitFromSettings(); assert.equal(f.stopped.quit, 1);
+  } finally { f.cleanup(); }
+});
+
+
+test('direct share tab blocks navigation and window release until sharing is fully complete', async () => {
+  const f = await mount(), { vm, calls } = f;
+  try {
+    vm.openSettings(); vm.appearanceSettings = { canRelease: true };
+    vm.changeSettingsTab('share');
+    assert.equal(vm.settingsTab, 'share');
+    await f.close(401);
+    assert.deepEqual(calls.at(-1), { release: false, requestId: 401 }, 'unknown share panel is protected');
+    vm.productShare = { canRelease: true }; await flush();
+    assert.deepEqual(calls.at(-1), { release: true, requestId: 401 });
+
+    vm.productShare.canRelease = false; vm.shareBusy = true;
+    vm.changeSettingsTab('help');
+    assert.equal(vm.settingsTab, 'share', 'in-flight sharing must not be unmounted');
+    await f.close(402);
+    assert.deepEqual(calls.at(-1), { release: false, requestId: 402 });
+    vm.shareBusy = false; await flush();
+    assert.deepEqual(calls.at(-1), { release: false, requestId: 402 });
+    vm.productShare.canRelease = true; await flush();
+    assert.deepEqual(calls.at(-1), { release: true, requestId: 402 });
+    vm.changeSettingsTab('help'); vm.updateSettings = { canRelease: true };
+    vm.productShare = undefined;
+    await f.close(403);
+    assert.deepEqual(calls.at(-1), { release: true, requestId: 403 }, 'help no longer depends on an unmounted share panel');
   } finally { f.cleanup(); }
 });

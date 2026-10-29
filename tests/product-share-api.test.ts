@@ -4,8 +4,8 @@ import fs from 'node:fs';
 import ts from 'typescript';
 
 const catalog = {
-  texts: [{ id: 'short', label: '简短介绍', content: '原创固定分享文案' }],
-  images: [{ id: 'overview', label: '产品总览', path: 'share/overview.png', filename: 'starclip-overview.png', width: 1080, height: 1440, bytes: 12345, description: '原创产品图片' }],
+  texts: [{ id: 'short', locale: 'zh-CN', label: '简短介绍', content: '原创固定分享文案' }, { id: 'short-en', locale: 'en-US', label: '简短介绍', content: 'Original English share text' }],
+  images: ['zh-CN', 'en-US'].map(locale => { const id = `overview${locale === 'en-US' ? '-en' : ''}`; return { id, locale, label: '产品总览', path: `share/${id}.png`, filename: `starclip-${id}.png`, width: 1080, height: 1440, bytes: 12345, description: '原创产品图片' }; }),
 };
 let sequence = 0;
 async function load(desktop: boolean) {
@@ -33,16 +33,19 @@ test('desktop share sends only fixed catalog ids, preserves native cancellation 
   assert.deepEqual(await api.saveProductShareImage('overview'), { kind: 'cancelled' });
   savePath = '/synthetic-output/产品图.png';
   assert.deepEqual(await api.saveProductShareImage('overview'), { kind: 'saved', path: savePath });
+  await api.copyProductShareText('short-en'); await api.copyProductShareImage('overview-en');
+  assert.deepEqual(await api.saveProductShareImage('overview-en'), { kind: 'saved', path: savePath });
   assert.deepEqual(calls, [
     ['copy_product_share_text', { id: 'short' }], ['copy_product_share_image', { id: 'overview' }],
     ['save_product_share_image', { id: 'overview' }], ['save_product_share_image', { id: 'overview' }],
+    ['copy_product_share_text', { id: 'short-en' }], ['copy_product_share_image', { id: 'overview-en' }], ['save_product_share_image', { id: 'overview-en' }],
   ]);
   for (const id of ['../../private.png', 'https://example.com/image.png', 'missing']) {
     await assert.rejects(api.copyProductShareImage(id), /暂不可用/);
     await assert.rejects(api.saveProductShareImage(id), /暂不可用/);
     await assert.rejects(api.copyProductShareText(id), /暂不可用/);
   }
-  assert.equal(calls.length, 4);
+  assert.equal(calls.length, 7);
 });
 
 test('browser image copy starts write during the click and awaits promised PNG, never reads clipboard', async () => {
@@ -85,4 +88,21 @@ test('browser rejects denied or unsupported copy and downloads only a valid buil
   Object.assign(globalThis, { fetch: async () => new Response('', { status: 404 }) });
   await assert.rejects(api.saveProductShareImage('overview'), /读取失败/);
   assert.equal(clicked, 1);
+});
+
+
+test('browser English sharing copies its actual text and downloads its matching image and filename', async () => {
+  const copied: string[] = [], fetched: string[] = [];
+  navigatorWith({ async writeText(value: string) { copied.push(value); } });
+  const link = { href: '', download: '', click() {} };
+  Object.assign(globalThis, {
+    fetch: async (url: string) => { fetched.push(url); return new Response(new Blob(['original fixture'], { type: 'image/png' })); },
+    document: { createElement(tag: string) { assert.equal(tag, 'a'); return link; } },
+  });
+  const api = await load(false);
+  await api.copyProductShareText('short-en');
+  assert.deepEqual(copied, ['Original English share text']);
+  assert.deepEqual(await api.saveProductShareImage('overview-en'), { kind: 'downloaded', filename: 'starclip-overview-en.png' });
+  assert.deepEqual(fetched, ['/share/overview-en.png']);
+  assert.equal(link.download, 'starclip-overview-en.png');
 });

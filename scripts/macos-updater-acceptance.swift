@@ -18,7 +18,7 @@ guard environment["GITHUB_ACTIONS"] == "true",
     fail("Only a disposable GitHub-hosted Starclip runner may use this UI helper")
 }
 let args = CommandLine.arguments
-guard args.count >= 2 else { fail("Expected preflight, processes, inspect, find, press or dump") }
+guard args.count >= 2 else { fail("Expected preflight, processes, inspect, prepare, find, press or dump") }
 if args[1] == "preflight" {
     guard AXIsProcessTrusted() else {
         fail("Accessibility is not authorized on this runner; UI acceptance is unverified. No TCC or privacy settings were changed.")
@@ -63,7 +63,15 @@ func attribute(_ element: AXUIElement, _ key: String) -> CFTypeRef? {
     return AXUIElementCopyAttributeValue(element, key as CFString, &value) == .success ? value : nil
 }
 func strings(_ node: AXUIElement) -> [String] {
-    [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute].compactMap { attribute(node, $0) as? String }
+    var result = [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute]
+        .compactMap { attribute(node, $0) as? String }
+    // WebKit can expose a button's visible label only as child static text.
+    // Limit this to direct children, so parent groups never impersonate buttons.
+    let children = attribute(node, kAXChildrenAttribute) as? [AXUIElement] ?? []
+    for child in children where attribute(child, kAXRoleAttribute) as? String == kAXStaticTextRole {
+        result.append(contentsOf: [kAXTitleAttribute, kAXValueAttribute].compactMap { attribute(child, $0) as? String })
+    }
+    return result.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
 }
 func walk(_ root: AXUIElement) -> [AXUIElement] {
     var queue = [root], result: [AXUIElement] = []
@@ -78,6 +86,15 @@ func walk(_ root: AXUIElement) -> [AXUIElement] {
 }
 let application = AXUIElementCreateApplication(pid)
 AXUIElementSetMessagingTimeout(application, 3)
+if args[1] == "prepare" {
+    _ = app.activate(options: [])
+    // WebKit propagates this app-scoped assistive-client flag to its web
+    // process (WebProcessPoolCocoa.mm::registerNotificationObservers). It
+    // materializes the AX tree; it neither grants TCC access nor changes data.
+    // Call once per app launch, never once per polling iteration.
+    let result = AXUIElementSetAttributeValue(application, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+    emit(["accessibilityModeResult": result.rawValue, "activated": app.isActive]); exit(0)
+}
 let roots = attribute(application, kAXWindowsAttribute) as? [AXUIElement] ?? []
 var nodes = roots.flatMap(walk)
 if args[1] == "dump" {

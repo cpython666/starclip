@@ -28,6 +28,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          cache-on-failure: true
       - run: npm ci --no-audit --no-fund
       - run: npm run version:check
       - run: npm run tauri icon public/starclip.svg

@@ -168,6 +168,7 @@ def main():
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         active_pid = process.pid
         wait_window()
+        write("accessibility-prepare-" + str(active_pid) + ".json", ui("prepare", active_pid))
         command("pbcopy", input=b"Starclip CI second original canary: a bright orbit.")
 
     def stop():
@@ -274,6 +275,7 @@ def main():
         assert installed_hash == target_executable_hash and installed_hash != baseline_hash
         stage = "restarted-paused-with-fixed-data"
         wait_window()
+        write("accessibility-prepare-" + str(active_pid) + ".json", ui("prepare", active_pid))
         wait_ui(r"^(?:开启剪贴记录|Start recording)$")
         command("pbcopy", input=b"Starclip CI post-update original canary: a new orbit.")
         for _ in range(3):

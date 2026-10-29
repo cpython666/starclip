@@ -2,9 +2,9 @@
 
 ## 当前状态与验证快照（2026-10-29）
 
-- 启动偏好复核发现原生托盘同步调用不能持有存储锁，否则与主线程暂停回调形成死锁。`desktop::apply_startup_preferences` 使用独立操作锁、缩短存储临界区并在保存前重查冻结；正常 / 冻结回滚定向测试通过。Windows smoke 已扩展启动设置 UI，macOS 完整更新新增隔离 CI（固定目标公开 0.2.2、Accessibility 前置检查、不修改系统授权）；实际运行结果待补，不能把脚本已实现写成验收通过。
+- 启动偏好复核发现原生托盘同步调用不能持有存储锁，否则与主线程暂停回调形成死锁。`desktop::apply_startup_preferences` 使用独立操作锁、缩短存储临界区并在保存前重查冻结；正常 / 冻结回滚定向测试通过。扩展的 Windows 启动设置 UI smoke 已在 `f3da89d` 的 fresh / upgrade 两组 CI 原生通过；macOS 完整更新隔离 CI 首轮停在 AX 首屏控件识别，未进入更新步骤，不能归因为 updater 安装失败，仍待测试工具修复后重跑。出处见 [本轮启动与更新验收](../../../../docs/verification.md#未发布启动与后台运行2026-10-29)。
 - 正式公开版与本机安装仍为 0.2.2；本机正式二进制缺少 `get_main_window_close_request` / `get_clips`，不能由相同版本文字推断包含新代码。本轮未替换正式应用或发布；用户要求明确确认后再发布。
-- 候选分支 `codex/acceptance-20261029` 的代码提交 `7fbbae542b89b9ea245e703330594cb1d78ffc76` 已通过双平台 CI：Node 174、core 109、Web 构建；macOS desktop 122 / ai_stdio 1、Windows desktop 118 / ai_stdio 1，以及两平台 23 款字体实际下载校验 / 离线渲染、安装器与成品 CLI 检查均通过。两平台全新安装 / 真实 0.1.0 覆盖升级固定数据验收通过；Windows 还验证暂停 UI、关主窗 HWND 销毁、二次启动重建仍暂停。完整证据及边界见 [双平台候选 CI](../../../../docs/verification.md#双平台候选-ci)，正式安装与发布仍待用户确认。
+- 候选提交 `f3da89d45fb25f46d88130794b3cfe77aa7786f5` 的 [Verify 40852732856](https://github.com/cpython666/starclip/actions/runs/40852732856) 全部成功：Node 183、core 112（另 3 ignored）、Web 构建；macOS desktop 128 / ai_stdio 1、Windows desktop 123 / ai_stdio 1（两平台 lib 各另 3 ignored），以及各自成品 CLI / MCP 1 项、23 款字体实际下载校验 / 离线渲染、app / DMG / NSIS 与全新安装 / 真实 0.1.0 覆盖升级均通过。Windows fresh / upgrade 原生 UI 还确认 HKCU 登录项启停及外部禁用回读、隐藏冷启动不创建主 HWND、二次启动恢复、托盘偏好持久化和隐藏图标后设置内退出，始终暂停、固定数据保留。未覆盖实际注销登录、Explorer 图标显示 / 点击或 macOS 应用内更新安装 / 重启。该结果只对应此提交，后续工作区修改仍需重新验证；更早 `7fbbae5` 的 CI 证据保留在 [历史候选 CI](../../../../docs/verification.md#双平台候选-ci)。正式安装与发布仍待用户确认。
 - 既有隔离原生证据：123 条原创文本、始终暂停，50 条分页、第二页与全库搜索、隐私变更后的详情保护、26 种日常表情及静默发送已核对。清理预览显示前 100 条、取消不删记录、重开不保留旧确认已验收，没有在原生执行清理删除。
 - macOS 内存诊断已完成：空库、暂停、100% idle 星伴、成长关闭，主控制页销毁后剩 1 个 WebContent，固定释放后 30 / 120 秒采样。首包 13.56 MiB 实测空白 1 轮、静态 2 轮、动画 3 轮，动画 120 秒中位 196.0 MiB、GPU 约 119 MiB；新包 13.58 MiB 的同包动画基线 194.0 MiB、共享 `defs` + `use` 单动态轮廓实验 192.5 MiB，1.5 MiB 差异小于首包动画复测波动，未证明稳定收益，实验不合入生产。两包构建及 strict / deep ad-hoc 验签通过；新包资源重新分块，不跨包计算实验收益。空白 / 静态仅为诊断对照；诊断前端不等于生产前端 GUI 验收，不与旧 123 条文本的 242.6 / 36.7 MiB 样本计算降幅，动画几十 MiB 目标仍未达到。逐轮数据见 [内存诊断与共享路径实验](../../../../docs/verification.md#内存诊断与共享路径实验)。
 - 统计兼容 v1 / v2 中继与 Realtime 设备参数已核对；2026-10-29 GA4 非实时探索确认 2026-10-01 至 10-28 固定范围内 9 类事件 14 条、`Usage count` 22 次。专用空库、暂停采集的 macOS 包已完成进程级断网缓存、正常退出 / 重启恢复、联网后清队列与静默发送。只限制测试进程出站，不覆盖系统网络切换、Windows 原生断网或长期持续观察。证据集中在 [统计说明](../../../../docs/telemetry.md)，不复制账号、私有报表网址或具体硬件代号。
@@ -12,9 +12,9 @@
 - macOS 当前源码以独立测试 ID、仅覆盖 `config.version=0.2.1` 的包完成公开 0.2.2 检测、下载验签、就绪提示与稍后安装；公开目标使用正式标识及其数据目录，未执行安装 / 重启。Windows 一次性隔离实验已验证当前源码到公开签名 0.2.2 的真实检查、下载验签、稍后安装、确认后备份、安装与自动重启，固定数据 / 偏好 / 暂停状态保留；产品源码仍为 `7fbbae5`，只覆盖 Tauri / 打包比较版本为 0.2.1，非真实旧 0.2.1 源码二进制升级，也非发布候选。完整证据见 [Windows 应用内更新完整链路](../../../../docs/verification.md#windows-应用内更新完整链路)。本机正式安装未换、新候选未发布。
 - 各能力历史版本、样本和日期以 [验证记录](../../../../docs/verification.md) 为准，不把旧验收扩大成最新全功能验收；候选 CI 只证明所列提交与场景，后续隔离实验须独立验证。
 
-- 2026-10-29 启动设置未发布工作区：Node 183 / core 112 / macOS desktop 127 / stdio 1 及 Web、隔离 app 打包通过。独立空库暂停验证登录项启停、系统侧禁用回读、LaunchAgent bootstrap 启动、隐藏主窗和再次呼出、图标即时设置及退出草稿保护。临时诊断确认隐藏首启不建主窗，CUA 激活才发 Reopen；诊断已撤回，证据留忽略目录 `artifacts/acceptance.noindex/startup-check/`。`launchctl print-disabled` 需兼容 enabled/disabled 和 true/false；Windows 本轮构建及真实注销重登仍未验证。测试服务 / 登录项已撤销，测试 app 已退出并移入废纸篓；正式安装未更改，详见 [启动验收](../../../../docs/verification.md#未发布启动与后台运行2026-10-29)。
+- 2026-10-29 先前 macOS 启动设置隔离验收：独立空库暂停验证登录项启停、系统侧禁用回读、LaunchAgent bootstrap 启动、隐藏主窗和再次呼出、图标即时设置及退出草稿保护。临时诊断确认隐藏首启不建主窗，CUA 激活才发 Reopen；诊断已撤回，证据留忽略目录 `artifacts/acceptance.noindex/startup-check/`。`launchctl print-disabled` 需兼容 enabled/disabled 和 true/false；Windows 本轮构建及原生启动设置随后已在上述 CI 通过，两平台真实注销重登仍未验证。测试服务 / 登录项已撤销，测试 app 已退出并移入废纸篓；正式安装未更改，详见 [启动验收](../../../../docs/verification.md#未发布启动与后台运行2026-10-29)。
 
-- 2026-10-29 当前工作区 release 模式测量：Apple Silicon DMG 6,978,352 B（6.98 MB）、app 文件 15,013,697 B（15.01 MB）；独立测量 ID，不运行、不安装、不发布，深度 / 严格 ad-hoc 验签通过，不能等同公证或 updater 签名。字体缓存 / 用户数据另计，47 MiB 调试包不能作为正式模式包体积。测量 app 已注销后移入废纸篓，DMG 和结果在 `artifacts/package-size-20261029.noindex/`；Windows 新候选仍待 CI，见验证记录。
+- 2026-10-29 先前工作区 release 模式测量：Apple Silicon DMG 6,978,352 B（6.98 MB）、app 文件 15,013,697 B（15.01 MB）；独立测量 ID，不运行、不安装、不发布，深度 / 严格 ad-hoc 验签通过，不能等同公证或 updater 签名。字体缓存 / 用户数据另计，47 MiB 调试包不能作为正式模式包体积。测量 app 已注销后移入废纸篓，DMG 和结果在 `artifacts/package-size-20261029.noindex/`；Windows 新候选 NSIS 构建已通过，本条未核对其包体字节数，见验证记录。
 
 ## 环境与检查
 
