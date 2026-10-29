@@ -32,6 +32,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          cache-on-failure: true
       - run: npm ci --no-audit --no-fund
       - run: npm run version:check
       - run: npm run tauri icon public/starclip.svg
@@ -42,6 +43,13 @@ jobs:
           @{ version='0.2.1'; bundle=@{ createUpdaterArtifacts=$false } } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $overlay -Encoding utf8
           npm run tauri build -- --target x86_64-pc-windows-msvc --bundles nsis --config $overlay
           if ($LASTEXITCODE -ne 0) { throw 'One-off comparison build failed.' }
+      - name: Preserve this diagnostic installer for isolated retries
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-updater-comparison-only-0.2.1
+          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/Starclip_0.2.1_x64-setup.exe
+          if-no-files-found: error
+          retention-days: 7
       - name: Exercise the shipped Windows UI and genuine signed updater
         shell: pwsh
         run: |

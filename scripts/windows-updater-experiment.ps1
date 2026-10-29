@@ -164,7 +164,7 @@ try {
   $later = Wait-Ui '^(?:稍后再说|Later)$'
   # Limit the confirming action to the dialog button row containing Later,
   # so the identically named underlying Help button cannot count as consent.
-  $row = [System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParentElement($later)
+  $row = [System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($later)
   $confirm = Find-Ui '^(?:安装并重启|Install and restart)$' $true $row
   if ($null -eq $confirm) { throw 'The real confirmation dialog action could not be identified.' }
   Invoke-Ui $confirm
