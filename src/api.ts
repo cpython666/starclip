@@ -154,10 +154,10 @@ export const api = {
     if (isDesktop) return handwritingInvoke('handwriting_assets');
     // Only the bundled catalog and thumbnail images are read in the browser.
     // Font files are fetched exclusively by the native, verified installer.
-    const response = await fetch('/handwriting-fonts/catalog.json');
-    if (!response.ok) throw new Error('暂时无法读取字体列表，请重试。');
+    const [response, papers] = await Promise.all([fetch('/handwriting-fonts/catalog.json'), fetch('/handwriting-papers/catalog.json')]);
+    if (!response.ok || !papers.ok) throw new Error('暂时无法读取字体列表，请重试。');
     const catalog = await response.json() as Array<Omit<HandwritingAssets['fonts'][number], 'path' | 'downloaded'>>;
-    return { available: true, path: 'builtin', fonts: catalog.map(item => ({ ...item, path: item.id, downloaded: false })), backgrounds: [], error: null };
+    return { available: true, path: 'builtin', fonts: catalog.map(item => ({ ...item, path: item.id, downloaded: false })), backgrounds: await papers.json() as HandwritingAssets['backgrounds'], error: null };
   },
   async downloadHandwritingFont(id: string): Promise<HandwritingAssets> {
     if (!isDesktop) throw new Error('请在桌面版下载字体并生成月光笺。');

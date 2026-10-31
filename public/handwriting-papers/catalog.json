@@ -1,0 +1,128 @@
+[
+  {
+    "id": "warm",
+    "name": "暖白信纸",
+    "path": "solid:#f8f1e3:1200:1600",
+    "width": 1200,
+    "height": 1600,
+    "color": "#f8f1e3",
+    "previewUrl": null
+  },
+  {
+    "id": "white",
+    "name": "纯白纸张",
+    "path": "solid:#ffffff:1200:1600",
+    "width": 1200,
+    "height": 1600,
+    "color": "#ffffff",
+    "previewUrl": null
+  },
+  {
+    "id": "original-letter",
+    "name": "横线信笺",
+    "path": "paper:original-letter",
+    "file": "letter.png",
+    "width": 724,
+    "height": 1024,
+    "bytes": 316251,
+    "sha256": "b85a1f1afee6da23aa9f2299a03dacc6e5625748aa64d37dff8e5cb866efe99b",
+    "previewUrl": "/handwriting-papers/original-letter.png",
+    "source": "https://github.com/cpython666/HandwritingGenerator/blob/d7036998501e9de3dbe57af4aaa1b7d289547ec8/bgs/letter.png"
+  },
+  {
+    "id": "original-grid",
+    "name": "方格纸",
+    "path": "paper:original-grid",
+    "file": "grid.jpeg",
+    "width": 818,
+    "height": 1180,
+    "bytes": 84777,
+    "sha256": "d6f8cd62eac02d6a6a4376ef5a6ded5cdc3e009bc2754afdc11879deba9124d0",
+    "previewUrl": "/handwriting-papers/original-grid.png",
+    "source": "https://github.com/cpython666/HandwritingGenerator/blob/d7036998501e9de3dbe57af4aaa1b7d289547ec8/bgs/grid.jpeg"
+  },
+  {
+    "id": "original-clear-1000",
+    "name": "透明纸 · 1000 × 1000",
+    "path": "paper:original-clear-1000",
+    "file": "clear-1000.png",
+    "width": 1000,
+    "height": 1000,
+    "bytes": 3978,
+    "sha256": "8bdc7cb7258ccc694d7afb5cd3129ce06b219dab7bd8dc457e651a2fdabbc0ef",
+    "previewUrl": "/handwriting-papers/original-clear-1000.png",
+    "source": "https://github.com/cpython666/HandwritingGenerator/blob/d7036998501e9de3dbe57af4aaa1b7d289547ec8/bgs/%23000000-1000x1000.png"
+  },
+  {
+    "id": "original-clear-500",
+    "name": "透明纸 · 500 × 500",
+    "path": "paper:original-clear-500",
+    "file": "clear-500.png",
+    "width": 500,
+    "height": 500,
+    "bytes": 1069,
+    "sha256": "55c0f430df1fa04e8b2515d538c5d734714cd8d38a28071b9a0957f7698d9f42",
+    "previewUrl": "/handwriting-papers/original-clear-500.png",
+    "source": "https://github.com/cpython666/HandwritingGenerator/blob/d7036998501e9de3dbe57af4aaa1b7d289547ec8/bgs/%23000000-500x500.png"
+  },
+  {
+    "id": "original-clear-200",
+    "name": "透明纸 · 200 × 200",
+    "path": "paper:original-clear-200",
+    "file": "clear-200.png",
+    "width": 200,
+    "height": 200,
+    "bytes": 255,
+    "sha256": "baff052b2c9b51eb9e6038936150e6330306f481128777f84aa0ec52681a7c7c",
+    "previewUrl": "/handwriting-papers/original-clear-200.png",
+    "source": "https://github.com/cpython666/HandwritingGenerator/blob/d7036998501e9de3dbe57af4aaa1b7d289547ec8/bgs/%23000000-200x200.png"
+  },
+  {
+    "id": "original-pink",
+    "name": "粉紫薄纱纸 · 500 × 500",
+    "path": "paper:original-pink",
+    "file": "pink.png",
+    "width": 500,
+    "height": 500,
+    "bytes": 2112,
+    "sha256": "b2604dd3560397566cb48803287e47ce03f9da7f11ba832e99e2a176b97e65b7",
+    "previewUrl": "/handwriting-papers/original-pink.png",
+    "source": "https://github.com/cpython666/HandwritingGenerator/blob/d7036998501e9de3dbe57af4aaa1b7d289547ec8/bgs/%23ff55ff-500x500.png"
+  },
+  {
+    "id": "starclip-manuscript",
+    "name": "红格稿纸",
+    "path": "paper:starclip-manuscript",
+    "file": "manuscript.png",
+    "width": 1200,
+    "height": 1600,
+    "bytes": 9190,
+    "sha256": "4bf7b4e7ddad94eeb4dc44521f2c0f12b698c5bfa14a4a1dbf60415b0c9468c7",
+    "previewUrl": "/handwriting-papers/starclip-manuscript.png",
+    "source": "Starclip 原创绘制"
+  },
+  {
+    "id": "starclip-cream",
+    "name": "米黄横线信笺",
+    "path": "paper:starclip-cream",
+    "file": "cream.png",
+    "width": 1200,
+    "height": 1600,
+    "bytes": 8671,
+    "sha256": "0b4654efbf7cdcee51c5cd8d5bcd8391cb95bcfb66996a6da043ed136c3a892b",
+    "previewUrl": "/handwriting-papers/starclip-cream.png",
+    "source": "Starclip 原创绘制"
+  },
+  {
+    "id": "starclip-starlight",
+    "name": "星光横线信笺",
+    "path": "paper:starclip-starlight",
+    "file": "starlight.png",
+    "width": 1200,
+    "height": 1600,
+    "bytes": 8952,
+    "sha256": "ded3d436bbe4aa2842d934ccd6e8e4b549b3dd55141b0d093996adbcf56570ca",
+    "previewUrl": "/handwriting-papers/starclip-starlight.png",
+    "source": "Starclip 原创绘制"
+  }
+]

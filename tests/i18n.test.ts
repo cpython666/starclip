@@ -11,6 +11,7 @@ import { petStatusLabel } from '../src/starpet-signal-api.ts';
 import { languages } from '../src/snippets.ts';
 import { defaultCodeCardStyle } from '../src/code-card.ts';
 import shareCatalog from '../src/product-share-catalog.json' with { type: 'json' };
+import paperCatalog from '../public/handwriting-papers/catalog.json' with { type: 'json' };
 
 test.afterEach(() => setLocale('zh-CN', false));
 
@@ -103,6 +104,7 @@ test('generated names shown through t(variable) are translated', () => {
   values.push(defaultCodeCardStyle.watermark);
   for (const text of shareCatalog.texts) values.push(text.label);
   for (const image of shareCatalog.images) values.push(image.label, image.description);
+  for (const paper of paperCatalog) values.push(paper.name);
   for (const file of ['src/components/OnboardingGuide.vue', 'src/components/UiColor.vue', 'src/components/StarPetGrowth.vue']) {
     const source = fs.readFileSync(file, 'utf8');
     for (const match of source.matchAll(/'((?:\\.|[^'\\])*)'/g)) {
