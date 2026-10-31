@@ -2,7 +2,7 @@
 import { t } from '../i18n';
 import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue';
 import { getStarPetMood, starPetPalette } from '../starpet';
-import { blinkOpenness, starOutline, stepSpring } from '../starpet-motion';
+import { blinkOpenness, sproutRoot, starOutline, stepSpring } from '../starpet-motion';
 import { createPetBehavior } from '../starpet-behavior';
 import type { PetBehavior, PetContext } from '../starpet-behavior';
 import { actionDuration, actionMood, actionPose } from '../starpet-action';
@@ -40,6 +40,8 @@ const gradientId = `starpet-body-${uid}`;
 const glowId = `starpet-glow-${uid}`;
 const eyeId = `starpet-eye-${uid}`;
 const clipId = `starpet-clip-${uid}`;
+const blushId = `starpet-blush-${uid}`;
+const leafId = `starpet-leaf-${uid}`;
 const palette = computed(() => starPetPalette(props.color));
 const phase = [...uid].reduce((total, char) => total + char.charCodeAt(0), 0) % 23 / 7;
 const media = typeof window === 'undefined' ? null : window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -56,16 +58,20 @@ const context = computed<PetContext>(() => {
   if (['sleepy', 'sad', 'crying', 'angry', 'nervous', 'relieved'].includes(desired.value.id)) return 'quiet';
   return ['bounce', 'hop', 'party'].includes(desired.value.motion) ? 'playful' : 'social';
 });
-const still = () => ({ x: 0, y: 0, tilt: desired.value.tilt as number, sx: 1, sy: 1, eyeX: 0, eyeY: 0, faceX: 0, faceY: 0, blink: 1, reveal: 1, tip: 0, side: 0, hand: 0, burst: 0, burstRadius: 50, squint: 0, widen: 0, wink: 0, smile: 0, wake: 0, behavior: 'rest' as PetBehavior, limbs: null as Array<[number, number]> | null, ground: 1, gait: null as Gait | null });
+const still = () => ({ x: 0, y: 0, tilt: desired.value.tilt as number, sx: 1, sy: 1, eyeX: 0, eyeY: 0, faceX: 0, faceY: 0, blink: 1, reveal: 1, tip: 0, side: 0, hand: 0, burst: 0, burstRadius: 50, squint: 0, widen: 0, wink: 0, smile: 0, wake: 0, behavior: 'rest' as PetBehavior, limbs: null as Array<[number, number]> | null, ground: 1, gait: null as Gait | null, sprout: 0 });
 const frame = ref(still());
 const bodyTransform = computed(() => `translate(${frame.value.x} ${frame.value.y}) rotate(${frame.value.tilt} 120 124) translate(120 190) scale(${frame.value.sx} ${frame.value.sy}) translate(-120 -190)`);
 const faceTransform = computed(() => `translate(${frame.value.faceX} ${frame.value.faceY})`);
 const eyeOffset = computed(() => ({ x: frame.value.eyeX + (expression.value.eyes === 'side' ? -2 : 0), y: frame.value.eyeY }));
 const outline = computed(() => starOutline(frame.value.tip, frame.value.side));
+// The sprout rides the top lobe and lags behind the body like a little antenna.
+const sproutTransform = computed(() => { const root = sproutRoot(frame.value.tip); return `translate(${root.x} ${root.y}) rotate(${-6 + frame.value.sprout})`; });
+const showSprout = computed(() => expression.value.prop !== 'crown');
 const spring = (value = 0) => ({ value, velocity: 0 });
 let gazeX = spring(), gazeY = spring(), faceX = spring(), faceY = spring(), tilt = spring(desired.value.tilt);
 let body = { x: spring(), y: spring(), sx: spring(1), sy: spring(1) };
 let feeling = { squint: spring(), widen: spring(), wink: spring(), smile: spring(), wake: spring() };
+let sprout = spring();
 let director = createPetBehavior();
 const locomotion = createLocomotion();
 let pointer = { x: 0, y: 0, inside: false };
@@ -106,6 +112,8 @@ function animate(stamp: number) {
   };
   faceX = stepSpring(faceX, gazeX.value * .45 - tilt.velocity * .016, dt, 15, .8);
   faceY = stepSpring(faceY, gazeY.value * .4 - body.y.velocity * .025, dt, 14, .8);
+  // Underdamped on purpose: the sprout keeps swaying a beat after the body settles.
+  sprout = stepSpring(sprout, Math.max(-16, Math.min(16, -tilt.velocity * .7 - body.x.velocity * .6 + body.y.velocity * .22)) + Math.sin(t * 1.15) * (quiet ? 1.5 : 3.5), dt, 10, .34);
   for (const key of ['squint', 'widen', 'wink', 'smile', 'wake'] as const) feeling[key] = stepSpring(feeling[key], key === 'squint' || key === 'widen' || key === 'smile' ? mix(pose[key], travel[key]) : pose[key], dt, key === 'wink' ? 24 : 17, .9);
   frame.value = {
     x: body.x.value, y: body.y.value, tilt: tilt.value,
@@ -120,6 +128,7 @@ function animate(stamp: number) {
     squint: feeling.squint.value, widen: feeling.widen.value, wink: feeling.wink.value,
     smile: feeling.smile.value, wake: feeling.wake.value, behavior: pose.behavior,
     limbs: w > .35 && travel.limbs.length ? travel.limbs : null, ground: mix(1, travel.ground), gait: travel.gait,
+    sprout: sprout.value,
   };
   raf = requestAnimationFrame(animate);
 }
@@ -130,7 +139,7 @@ function stop() {
   pointer = { x: 0, y: 0, inside: false }; director = createPetBehavior(); locomotion.reset();
   gazeX = spring(); gazeY = spring(); faceX = spring(); faceY = spring(); tilt = spring(desired.value.tilt);
   body = { x: spring(), y: spring(), sx: spring(1), sy: spring(1) };
-  feeling = { squint: spring(), widen: spring(), wink: spring(), smile: spring(), wake: spring() };
+  feeling = { squint: spring(), widen: spring(), wink: spring(), smile: spring(), wake: spring() }; sprout = spring();
   shownMood.value = desired.value.id; frame.value = still();
 }
 watch(running, active => { stop(); if (active) raf = requestAnimationFrame(animate); }, { flush: 'sync' });
@@ -175,6 +184,8 @@ function look(event: PointerEvent) {
         <radialGradient :id="glowId"><stop stop-color="#fffef1" stop-opacity=".75" /><stop offset="1" stop-color="#fffef1" stop-opacity="0" /></radialGradient>
         <linearGradient :id="eyeId" x1="0" y1="0" x2=".6" y2="1"><stop stop-color="#311e1d" /><stop offset=".55" stop-color="#4c2824" /><stop offset="1" stop-color="#8d4931" /></linearGradient>
         <clipPath :id="clipId"><path :d="outline" /></clipPath>
+        <radialGradient :id="blushId"><stop stop-color="#f3998b" stop-opacity=".9" /><stop offset=".55" stop-color="#f3a093" stop-opacity=".55" /><stop offset="1" stop-color="#f5a99c" stop-opacity="0" /></radialGradient>
+        <linearGradient :id="leafId" x1="0" y1="1" x2=".4" y2="0"><stop stop-color="#7fc493" /><stop offset="1" stop-color="#c4ecb8" /></linearGradient>
       </defs>
       <ellipse class="starpet-ground" cx="120" cy="217" :rx="47 * (1 + frame.y * .009)" ry="6" :fill="palette.shade" :opacity="Math.max(0, (.18 + frame.y * .002) * frame.ground)" />
 
@@ -193,17 +204,23 @@ function look(event: PointerEvent) {
             <path v-else d="m45 175 3 5 6 1-4 4 1 6-6-3-5 3 1-6-4-4 6-1Z" fill="#e8ce94" />
           </g>
           <g v-if="equipment?.back === 'comet-scarf'" data-equipment="comet-scarf" fill="#80b9ae" stroke="#497f82" stroke-width="1.8" stroke-linejoin="round"><path d="M157 142q24 8 27 32l-12-2-4 10q-6-23-25-30Z" /><path d="M159 145q29-2 42 13l-12 2-1 11q-14-14-36-17Z" /><path d="m174 173 5-2m11-13 4 5" stroke="#d4ead4" /></g>
-          <path class="starpet-body" :d="outline" :fill="`url(#${gradientId})`" :stroke="palette.base" stroke-width="1.5" stroke-linejoin="round" />
+          <g v-if="showSprout" class="starpet-sprout" :transform="sproutTransform" stroke="#5e9a74" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M0 6Q-1-4 1-12" stroke-width="2.6" />
+            <path d="M1-10C-3-19-14-20-17-13-12-7-4-6 1-10Z" :fill="`url(#${leafId})`" />
+            <path d="M1-12C4-25 18-27 22-19 18-10 8-8 1-12Z" :fill="`url(#${leafId})`" />
+            <path d="M4-13q7-6 14-6M-2-11q-5-4-11-3" stroke="#eaf8de" stroke-width="1.1" opacity=".85" />
+          </g>
+          <path class="starpet-body" :d="outline" :fill="`url(#${gradientId})`" :stroke="palette.edge" stroke-width="2" stroke-linejoin="round" />
           <g :clip-path="`url(#${clipId})`">
             <ellipse cx="108" cy="113" rx="77" ry="62" :fill="`url(#${glowId})`" opacity=".65" />
-            <ellipse cx="68" cy="94" rx="14" ry="5" transform="rotate(-20 68 94)" fill="#fffef1" opacity=".88" />
-            <ellipse cx="112" cy="60" rx="11" ry="5" transform="rotate(-48 112 60)" fill="#fffef1" opacity=".9" />
-            <ellipse cx="128" cy="47" rx="2.5" ry="2" fill="#fffef1" opacity=".92" />
-            <ellipse cx="88" cy="85" rx="2.5" ry="2" fill="#fffef1" opacity=".8" />
+            <ellipse cx="58" cy="103" rx="13" ry="4.6" transform="rotate(-16 58 103)" fill="#fffef1" opacity=".9" />
+            <ellipse cx="106" cy="60" rx="11" ry="4.4" transform="rotate(-64 106 60)" fill="#fffef1" opacity=".92" />
+            <circle cx="118" cy="45" r="2.4" fill="#fffef1" opacity=".92" />
+            <circle cx="79" cy="98" r="2.2" fill="#fffef1" opacity=".8" />
           </g>
           <g class="starpet-face" :transform="faceTransform">
 
-          <g :opacity="Math.min(1, expression.blush + frame.smile * .25)" fill="#ed9f8f"><ellipse cx="82" cy="132" rx="12" ry="8" transform="rotate(-10 82 132)" /><ellipse cx="158" cy="132" rx="12" ry="8" transform="rotate(10 158 132)" /></g>
+          <g :opacity="Math.min(1, .25 + expression.blush * 1.1 + frame.smile * .25)" :fill="`url(#${blushId})`"><ellipse cx="80" cy="135" :rx="15 + frame.smile * 2" :ry="10 + frame.smile" /><ellipse cx="160" cy="135" :rx="15 + frame.smile * 2" :ry="10 + frame.smile" /></g>
 
           <g v-if="expression.eyes === 'droop'" stroke="#7a6967" stroke-width="2.2" stroke-linecap="round"><path d="M87 103q8 0 17-7m32 0q9 7 17 7" /></g>
           <g v-if="expression.id === 'angry'" stroke="#6d5356" stroke-width="2.5" stroke-linecap="round"><path d="m88 101 17 5m30 0 17-5" /></g>
@@ -218,7 +235,7 @@ function look(event: PointerEvent) {
               <ellipse v-if="expression.eyes === 'wide'" cy="1" rx="14.5" ry="16" fill="#fff9e9" />
               <g :transform="`translate(${eyeOffset.x} ${eyeOffset.y})`">
                 <path v-if="expression.eyes === 'focused'" d="M-7 1h14" stroke="#57322c" stroke-width="4.5" stroke-linecap="round" />
-                <g v-else><ellipse :cy="expression.eyes === 'half' || expression.eyes === 'droop' ? 3 : 0" :rx="expression.eyes === 'uneven' && side === 0 ? 5.5 : expression.eyes === 'soft' ? 6.5 : 7.5" :ry="expression.eyes === 'half' ? 5 : expression.eyes === 'soft' ? 9 : expression.eyes === 'droop' || expression.eyes === 'uneven' && side === 0 ? 8 : 12" :fill="`url(#${eyeId})`" /><ellipse v-if="expression.eyes !== 'half'" cx="-2" :cy="expression.eyes === 'droop' ? 1 : -3" rx="2.4" ry="2.9" fill="#fffcef" opacity=".92" /><circle v-if="expression.eyes === 'wide'" cx="2" cy="4" r="1.1" fill="#c5d0dd" /></g>
+                <g v-else><ellipse :cy="expression.eyes === 'half' || expression.eyes === 'droop' ? 3 : 0" :rx="expression.eyes === 'uneven' && side === 0 ? 6 : expression.eyes === 'soft' ? 7.8 : 9.2" :ry="expression.eyes === 'half' ? 5.4 : expression.eyes === 'soft' ? 10 : expression.eyes === 'droop' || expression.eyes === 'uneven' && side === 0 ? 8.8 : 13.2" :fill="`url(#${eyeId})`" /><ellipse v-if="expression.eyes !== 'half'" cx="-2.6" :cy="expression.eyes === 'droop' ? 1 : -3.8" rx="3.2" ry="3.7" fill="#fffcef" opacity=".95" /><circle v-if="expression.eyes !== 'half' && expression.eyes !== 'droop'" cx="3" cy="4.6" r="1.6" fill="#fffcef" opacity=".7" /><circle v-if="expression.eyes === 'wide'" cx="2" cy="4" r="1.1" fill="#c5d0dd" /></g>
               </g>
               <path v-if="expression.eyes === 'half'" d="M-8 0h16" stroke="#5a5b69" stroke-width="2.2" stroke-linecap="round" />
               </g>

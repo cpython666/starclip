@@ -66,10 +66,39 @@ export function blinkOpenness(seconds: number): number {
   return 1;
 }
 
-// Rounded cubic lobes traced from the generated concept; delayed tip motion stays small.
+// A plump, round-tipped five-point star. Each lobe is a cubic cap between soft
+// valleys; the top lobe leans a touch left and the lower "feet" are shorter so
+// the face sits in a big, round belly. Delayed tip/side motion stays small.
+const lobes = [[-92, 92, 22], [-17, 90, 21], [56, 84, 23], [124, 84, 23], [197, 90, 21]] as const;
+const valleyRadius = 62, valleyPull = 22, center = [120, 127] as const, radian = Math.PI / 180;
+const tangent = (angle: number) => [-Math.sin(angle * radian), Math.cos(angle * radian)] as const;
 export function starOutline(tip: number, side: number) {
   const t = Number.isFinite(tip) ? Math.max(-6, Math.min(6, tip)) : 0;
   const s = Number.isFinite(side) ? Math.max(-5, Math.min(5, side)) : 0;
   const n = (value: number) => Math.round(value * 100) / 100;
-  return `M86 72C102 ${n(51 + t)} 117 ${n(30 + t)} 132 ${n(35 + t)}C148 ${n(40 + t)} 159 65 169 83C187 ${n(89 + s)} 209 ${n(98 + s)} 211 ${n(114 + s)}C212 ${n(130 + s)} 197 145 181 157C187 ${n(178 - s)} 182 ${n(199 - s)} 168 ${n(202 - s)}C153 ${n(205 - s)} 132 197 117 190C98 198 74 ${n(202 + s)} 59 ${n(196 + s)}C43 ${n(188 + s)} 46 165 51 150C37 ${n(134 - s)} 25 ${n(113 - s)} 33 ${n(98 - s)}C42 ${n(81 - s)} 64 75 86 72Z`;
+  // Top lobe bobs with tip; the side "arms" and feet counter-swing with side.
+  const lift = [0, s, -s * .6, s * .6, -s];
+  const points = lobes.map(([angle, radius], index) => {
+    const reach = radius - (index === 0 ? t : 0);
+    return [center[0] + Math.cos(angle * radian) * reach, center[1] + Math.sin(angle * radian) * reach + lift[index]!] as const;
+  });
+  const valleys = lobes.map(([angle], index) => {
+    const middle = (angle + lobes[(index + 1) % 5]![0] + (index === 4 ? 360 : 0)) / 2;
+    return { angle: middle, x: center[0] + Math.cos(middle * radian) * valleyRadius, y: center[1] + Math.sin(middle * radian) * valleyRadius };
+  });
+  let path = `M${n(valleys[4]!.x)} ${n(valleys[4]!.y)}`;
+  lobes.forEach(([angle, , cap], index) => {
+    const from = valleys[(index + 4) % 5]!, to = valleys[index]!, [x, y] = points[index]!;
+    const a = tangent(from.angle), b = tangent(angle), c = tangent(to.angle);
+    path += `C${n(from.x + a[0] * valleyPull)} ${n(from.y + a[1] * valleyPull)} ${n(x - b[0] * cap)} ${n(y - b[1] * cap)} ${n(x)} ${n(y)}`;
+    path += `C${n(x + b[0] * cap)} ${n(y + b[1] * cap)} ${n(to.x - c[0] * valleyPull)} ${n(to.y - c[1] * valleyPull)} ${n(to.x)} ${n(to.y)}`;
+  });
+  return `${path}Z`;
+}
+
+// The little sprout on the top lobe (星芽 means "star sprout"): where it is rooted.
+export function sproutRoot(tip: number) {
+  const t = Number.isFinite(tip) ? Math.max(-6, Math.min(6, tip)) : 0;
+  const [angle, radius] = lobes[0];
+  return { x: center[0] + Math.cos(angle * radian) * (radius - t - 3), y: center[1] + Math.sin(angle * radian) * (radius - t - 3) };
 }

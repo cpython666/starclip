@@ -72,3 +72,14 @@ test('星芽动作具有蓄力、起跳、落地和回弹，眨眼节奏变化�
   assert.equal(starOutline(100, -100), starOutline(6, -5));
   assert.equal(starOutline(NaN, Infinity), starOutline(0, 0));
 });
+
+test('plump star outline and sprout stay inside the canvas while they sway', async () => {
+  const { sproutRoot } = await import('../src/starpet-motion.ts');
+  for (const [tip, side] of [[0, 0], [6, 5], [-6, -5]] as const) {
+    const numbers = starOutline(tip, side).match(/-?\d+(\.\d+)?/g)!.map(Number);
+    assert.ok(numbers.every(value => value >= 20 && value <= 215));
+    const root = sproutRoot(tip);
+    assert.ok(root.y > 30 && root.y < 45 && Math.abs(root.x - 117) < 2);
+  }
+  assert.deepEqual(sproutRoot(NaN), sproutRoot(0));
+});
