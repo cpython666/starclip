@@ -323,4 +323,6 @@ export const enMore3: Record<string, string> = {
   "按需检查更新，不在启动时自动联网。": "Checks for updates on demand and never goes online at launch.",
   "此构建尚未配置更新服务。": "This build has no update service configured.",
   "大小未知": "Size unknown",
+  "自动识别": "Auto-detect",
+  "自动识别 · {language}": "Auto-detect · {language}",
 }
