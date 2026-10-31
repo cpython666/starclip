@@ -56,11 +56,79 @@ fn definition(id: &str) -> Result<&'static FontDefinition> {
         .find(|font| font.id == id)
         .ok_or_else(|| "请选择字体列表中的字体。".into())
 }
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PaperDefinition {
+    id: String,
+    name: String,
+    path: String,
+    file: Option<String>,
+    width: u32,
+    height: u32,
+    #[cfg(test)]
+    bytes: Option<u64>,
+    #[cfg(test)]
+    sha256: Option<String>,
+    color: Option<String>,
+    preview_url: Option<String>,
+}
+fn papers() -> &'static [PaperDefinition] {
+    static PAPERS: OnceLock<Vec<PaperDefinition>> = OnceLock::new();
+    PAPERS.get_or_init(|| {
+        serde_json::from_str(include_str!("../../public/handwriting-papers/catalog.json"))
+            .expect("built-in paper catalog must be valid")
+    })
+}
+/// Paper images ship inside the binary; nothing is read from disk or network.
+fn paper_bytes(file: &str) -> Option<&'static [u8]> {
+    macro_rules! papers {
+        ($($name:literal),*) => {
+            match file {
+                $($name => Some(include_bytes!(concat!("../assets/handwriting-papers/", $name)).as_slice()),)*
+                _ => None,
+            }
+        };
+    }
+    papers!(
+        "letter.png",
+        "grid.jpeg",
+        "clear-1000.png",
+        "clear-500.png",
+        "clear-200.png",
+        "pink.png",
+        "manuscript.png",
+        "cream.png",
+        "starlight.png"
+    )
+}
+fn paper_image(id: &str) -> Result<image::RgbaImage> {
+    let paper = papers()
+        .iter()
+        .find(|paper| paper.path.strip_prefix("paper:") == Some(id))
+        .ok_or("请选择纸张列表中的纸张。")?;
+    let bytes = paper
+        .file
+        .as_deref()
+        .and_then(paper_bytes)
+        .ok_or("内置纸张缺失，请重新安装。")?;
+    let image = image::load_from_memory(bytes)
+        .map_err(|_| "内置纸张无法读取，请重新安装。")?
+        .into_rgba8();
+    if image.dimensions() != (paper.width, paper.height) {
+        return Err("内置纸张尺寸不符，请重新安装。".into());
+    }
+    Ok(image)
+}
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HandwritingAsset {
+    pub id: String,
     pub name: String,
     pub path: String,
+    pub width: u32,
+    pub height: u32,
+    pub color: Option<String>,
+    pub preview_url: Option<String>,
 }
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -154,7 +222,18 @@ pub fn assets(directory: &Path) -> HandwritingAssets {
                 source_url: font.source_url.clone(),
             })
             .collect(),
-        backgrounds: vec![],
+        backgrounds: papers()
+            .iter()
+            .map(|paper| HandwritingAsset {
+                id: paper.id.clone(),
+                name: paper.name.clone(),
+                path: paper.path.clone(),
+                width: paper.width,
+                height: paper.height,
+                color: paper.color.clone(),
+                preview_url: paper.preview_url.clone(),
+            })
+            .collect(),
         error: None,
     }
 }
@@ -327,7 +406,14 @@ fn validate_options(options: &HandwritingOptions) -> Result<(u32, u32)> {
         return Err("字号需为 8–120，边距为 0–240，墨色为 #RRGGBB。".into());
     }
     definition(&options.font)?;
-    let dimensions = solid_dimensions(&options.background)?;
+    let dimensions = match options.background.strip_prefix("paper:") {
+        Some(id) => papers()
+            .iter()
+            .find(|paper| paper.path.strip_prefix("paper:") == Some(id))
+            .map(|paper| (paper.width, paper.height))
+            .ok_or("请选择纸张列表中的纸张。")?,
+        None => solid_dimensions(&options.background)?,
+    };
     if dimensions.0.saturating_sub(options.padding * 2) < options.font_size * 2
         || dimensions.1.saturating_sub(options.padding * 2) < options.font_size * 2
     {
@@ -341,13 +427,19 @@ pub fn render(directory: &Path, options: HandwritingOptions) -> Result<String> {
         .try_lock()
         .map_err(|_| "已有手写渲染任务，请等待完成后重试。")?;
     let bytes = installed_bytes(directory, definition(&options.font)?)?;
-    let paper = color(options.background.split(':').nth(1).unwrap());
+    let paper = match options.background.strip_prefix("paper:") {
+        Some(id) => paper_image(id)?,
+        None => image::RgbaImage::from_pixel(
+            dimensions.0,
+            dimensions.1,
+            image::Rgba(color(options.background.split(':').nth(1).unwrap())),
+        ),
+    };
     let image = rendering::render(
         &bytes,
         &options.text,
         options.font_size,
         options.padding,
-        dimensions,
         paper,
         color(&options.ink),
     )?;
@@ -448,6 +540,10 @@ mod tests {
         assert!(validate_options(&opts).is_err());
         opts.background = "solid:#fffaf1:4096:4096".into();
         assert!(validate_options(&opts).is_err());
+        opts.background = "paper:../../secret".into();
+        assert!(validate_options(&opts).is_err());
+        opts.background = "paper:original-letter".into();
+        assert_eq!(validate_options(&opts).unwrap(), (724, 1024));
         opts = options();
         opts.text = "星".repeat(MAX_TEXT + 1);
         assert!(validate_options(&opts).is_err());
@@ -455,6 +551,37 @@ mod tests {
         opts.padding = 240;
         opts.font_size = 120;
         assert!(validate_options(&opts).is_err());
+    }
+    #[test]
+    fn every_listed_paper_is_embedded_verified_and_previewed() {
+        let mut ids = std::collections::HashSet::new();
+        let public = Path::new(env!("CARGO_MANIFEST_DIR")).join("../public");
+        for paper in papers() {
+            assert!(ids.insert(&paper.id));
+            assert!(!paper.name.trim().is_empty());
+            if let Some(color) = &paper.color {
+                assert_eq!(
+                    paper.path,
+                    format!("solid:{color}:{}:{}", paper.width, paper.height)
+                );
+                assert_eq!(
+                    solid_dimensions(&paper.path).unwrap(),
+                    (paper.width, paper.height)
+                );
+                continue;
+            }
+            assert_eq!(paper.path, format!("paper:{}", paper.id));
+            let bytes = paper_bytes(paper.file.as_deref().unwrap()).unwrap();
+            assert_eq!(Some(bytes.len() as u64), paper.bytes);
+            assert_eq!(
+                Some(format!("{:x}", Sha256::digest(bytes))),
+                paper.sha256.clone()
+            );
+            assert!(u64::from(paper.width) * u64::from(paper.height) <= MAX_PIXELS);
+            paper_image(&paper.id).unwrap();
+            let preview = paper.preview_url.as_deref().unwrap();
+            assert!(public.join(preview.trim_start_matches('/')).is_file());
+        }
     }
     #[test]
     fn failed_hash_or_size_never_creates_a_font() {

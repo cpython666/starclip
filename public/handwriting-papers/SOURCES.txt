@@ -1,0 +1,8 @@
+月光笺内置纸张来源
+
+- original-*：来自作者本人的 HandwritingGenerator 仓库
+  https://github.com/cpython666/HandwritingGenerator/tree/d7036998501e9de3dbe57af4aaa1b7d289547ec8/bgs
+  原始字节随程序内置，catalog.json 记录大小与 SHA-256。
+  原仓库的「村庄信笺纸」「树信笺纸」带 Dreamstime 下载水印，my.jpg 为真实学校抬头信纸照片，均未接入。
+- starclip-*：星笺原创绘制的稿纸与信笺。
+- 本目录 PNG 为界面缩略图，不用于导出。

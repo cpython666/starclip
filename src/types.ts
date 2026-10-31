@@ -77,11 +77,20 @@ export interface HandwritingFont {
   licenseUrl?: string;
   sourceUrl: string;
 }
+export interface HandwritingPaper {
+  id: string;
+  name: string;
+  path: string;
+  width: number;
+  height: number;
+  color: string | null;
+  previewUrl: string | null;
+}
 export interface HandwritingAssets {
   available: boolean;
   path: string | null;
   fonts: HandwritingFont[];
-  backgrounds: Array<{ name: string; path: string }>;
+  backgrounds: HandwritingPaper[];
   error: string | null;
 }
 export interface HandwritingOptions {
