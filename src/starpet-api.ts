@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { StarPetMoodId } from './starpet';
+import type { DockEdge } from './starpet-locomotion';
 
 export const defaultStarPetColor = '#FFD66E';
 export interface StarPetPreferences { enabled: boolean; mood: StarPetMoodId; color: string; size: number }
@@ -44,4 +45,17 @@ export async function showStarPetMainWindow(): Promise<void> {
 }
 export async function dragStarPet(): Promise<void> {
   if (starPetDesktopAvailable) await invoke('starpet_start_dragging');
+}
+// Snaps the pet window onto a nearby work-area edge; null means it stays where it was dropped.
+export async function dockStarPet(): Promise<DockEdge | null> {
+  if (!starPetDesktopAvailable) return null;
+  const edge = await invoke<string | null>('starpet_dock');
+  return edge === 'left' || edge === 'right' || edge === 'top' || edge === 'bottom' ? edge : null;
+}
+// Native dragging moves the window outside the webview, so window moves are the only drag signal.
+export async function onStarPetMoved(callback: (position: { x: number; y: number }) => void): Promise<() => void> {
+  if (!starPetDesktopAvailable) return () => {};
+  return (await import('@tauri-apps/api/event')).listen<{ x: number; y: number }>('tauri://move', event => callback(event.payload), {
+    target: { kind: 'Window', label: 'starpet' },
+  });
 }

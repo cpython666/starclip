@@ -6,16 +6,20 @@ import { blinkOpenness, starOutline, stepSpring } from '../starpet-motion';
 import { createPetBehavior } from '../starpet-behavior';
 import type { PetBehavior, PetContext } from '../starpet-behavior';
 import { actionDuration, actionMood, actionPose } from '../starpet-action';
+import { createLocomotion } from '../starpet-locomotion';
+import type { DockEdge, Gait, Travel } from '../starpet-locomotion';
 import { growthCatalog } from '../starpet-growth';
 import type { ActionId, Equipment } from '../starpet-growth';
 
-const props = withDefaults(defineProps<{ mood?: string; size?: number; animated?: boolean; reaction?: number; color?: string; equipment?: Equipment; action?: ActionId; actionNonce?: number }>(), { mood: 'idle', size: 180, animated: true, reaction: 0, color: '#FFD66E', actionNonce: 0 });
+const props = withDefaults(defineProps<{ mood?: string; size?: number; animated?: boolean; reaction?: number; color?: string; equipment?: Equipment; action?: ActionId; actionNonce?: number; travel?: Travel; dock?: DockEdge | null }>(), { mood: 'idle', size: 180, animated: true, reaction: 0, color: '#FFD66E', actionNonce: 0 });
 const activeAction = ref<ActionId | null>(null), actionAge = ref(0);
 const desired = computed(() => getStarPetMood(activeAction.value ? actionMood[activeAction.value] : props.mood));
 const shownMood = ref(desired.value.id);
 const expression = computed(() => getStarPetMood(shownMood.value));
 // Most moods have no hands. Two small spheres only appear for a gesture or a held prop.
 const handPositions = computed<Array<[number, number]>>(() => {
+  // Running feet, climbing hands and edge grips take over while the window moves or rests on an edge.
+  if (frame.value.limbs) return frame.value.limbs;
   if (activeAction.value === 'highfive') return [[78, 162], [180, 108 - actionFrame.value.lift]];
   if (activeAction.value === 'heart') return [[110, 165], [130, 165]];
   switch (expression.value.prop) {
@@ -52,7 +56,7 @@ const context = computed<PetContext>(() => {
   if (['sleepy', 'sad', 'crying', 'angry', 'nervous', 'relieved'].includes(desired.value.id)) return 'quiet';
   return ['bounce', 'hop', 'party'].includes(desired.value.motion) ? 'playful' : 'social';
 });
-const still = () => ({ x: 0, y: 0, tilt: desired.value.tilt as number, sx: 1, sy: 1, eyeX: 0, eyeY: 0, faceX: 0, faceY: 0, blink: 1, reveal: 1, tip: 0, side: 0, hand: 0, burst: 0, burstRadius: 50, squint: 0, widen: 0, wink: 0, smile: 0, wake: 0, behavior: 'rest' as PetBehavior });
+const still = () => ({ x: 0, y: 0, tilt: desired.value.tilt as number, sx: 1, sy: 1, eyeX: 0, eyeY: 0, faceX: 0, faceY: 0, blink: 1, reveal: 1, tip: 0, side: 0, hand: 0, burst: 0, burstRadius: 50, squint: 0, widen: 0, wink: 0, smile: 0, wake: 0, behavior: 'rest' as PetBehavior, limbs: null as Array<[number, number]> | null, ground: 1, gait: null as Gait | null });
 const frame = ref(still());
 const bodyTransform = computed(() => `translate(${frame.value.x} ${frame.value.y}) rotate(${frame.value.tilt} 120 124) translate(120 190) scale(${frame.value.sx} ${frame.value.sy}) translate(-120 -190)`);
 const faceTransform = computed(() => `translate(${frame.value.faceX} ${frame.value.faceY})`);
@@ -63,6 +67,7 @@ let gazeX = spring(), gazeY = spring(), faceX = spring(), faceY = spring(), tilt
 let body = { x: spring(), y: spring(), sx: spring(1), sy: spring(1) };
 let feeling = { squint: spring(), widen: spring(), wink: spring(), smile: spring(), wake: spring() };
 let director = createPetBehavior();
+const locomotion = createLocomotion();
 let pointer = { x: 0, y: 0, inside: false };
 let raf = 0, lastStamp = 0, elapsed = 0, transitionAge = Infinity;
 const touchMessage = ref('');
@@ -81,22 +86,27 @@ function animate(stamp: number) {
   }
   if (transitionAge >= .1) shownMood.value = desired.value.id;
   const pose = director.step(dt, context.value, pointer), t = elapsed + phase;
+  // Dragging and edge poses blend over the everyday director instead of replacing it abruptly.
+  const travel = locomotion.step(dt, props.travel, props.dock), w = travel.weight;
+  const mix = (free: number, moved: number) => free + (moved - free) * w;
+  const stride = travel.gait === 'run' || travel.gait === 'climb' || travel.gait === 'fall' ? w : 0;
   const quiet = context.value === 'sleep' || context.value === 'focus';
   const breath = Math.sin(t * (context.value === 'sleep' ? 1.25 : 1.7));
   // Attention leads: quick eyes, a softer face, then the slower weight of the body.
-  gazeX = stepSpring(gazeX, pose.gazeX, dt, 28, .86);
-  gazeY = stepSpring(gazeY, pose.gazeY, dt, 26, .86);
-  tilt = stepSpring(tilt, desired.value.tilt + pose.tilt + gazeX.value * .55, dt, 9, .76);
-  const bodySpeed = pose.behavior === 'hop' ? 36 : pose.behavior === 'tickle' ? 24 : 12;
+  gazeX = stepSpring(gazeX, mix(pose.gazeX, travel.gazeX), dt, 28, .86);
+  gazeY = stepSpring(gazeY, mix(pose.gazeY, travel.gazeY), dt, 26, .86);
+  tilt = stepSpring(tilt, desired.value.tilt * (1 - w) + mix(pose.tilt, travel.tilt) + gazeX.value * .55, dt, 9 + 5 * stride, .76);
+  // Footsteps need a stiffer body spring, or the bounce would be smoothed away.
+  const bodySpeed = (pose.behavior === 'hop' ? 36 : pose.behavior === 'tickle' ? 24 : 12) * (1 - stride) + 34 * stride;
   body = {
-    x: stepSpring(body.x, pose.x + gazeX.value * .24, dt, bodySpeed, .74),
-    y: stepSpring(body.y, pose.y - (quiet ? .45 : 1) * breath, dt, bodySpeed, .74),
-    sx: stepSpring(body.sx, pose.sx + .008 * breath, dt, bodySpeed, .74),
-    sy: stepSpring(body.sy, pose.sy - .01 * breath, dt, bodySpeed, .74),
+    x: stepSpring(body.x, mix(pose.x, travel.x) + gazeX.value * .24, dt, bodySpeed, .74),
+    y: stepSpring(body.y, mix(pose.y, travel.y) - (quiet ? .45 : 1) * breath, dt, bodySpeed, .74),
+    sx: stepSpring(body.sx, mix(pose.sx, travel.sx) + .008 * breath, dt, bodySpeed, .74),
+    sy: stepSpring(body.sy, mix(pose.sy, travel.sy) - .01 * breath, dt, bodySpeed, .74),
   };
   faceX = stepSpring(faceX, gazeX.value * .45 - tilt.velocity * .016, dt, 15, .8);
   faceY = stepSpring(faceY, gazeY.value * .4 - body.y.velocity * .025, dt, 14, .8);
-  for (const key of ['squint', 'widen', 'wink', 'smile', 'wake'] as const) feeling[key] = stepSpring(feeling[key], pose[key], dt, key === 'wink' ? 24 : 17, .9);
+  for (const key of ['squint', 'widen', 'wink', 'smile', 'wake'] as const) feeling[key] = stepSpring(feeling[key], key === 'squint' || key === 'widen' || key === 'smile' ? mix(pose[key], travel[key]) : pose[key], dt, key === 'wink' ? 24 : 17, .9);
   frame.value = {
     x: body.x.value, y: body.y.value, tilt: tilt.value,
     sx: body.sx.value, sy: body.sy.value,
@@ -109,6 +119,7 @@ function animate(stamp: number) {
     burst: pose.energy * .8, burstRadius: 62 + pose.energy * 25,
     squint: feeling.squint.value, widen: feeling.widen.value, wink: feeling.wink.value,
     smile: feeling.smile.value, wake: feeling.wake.value, behavior: pose.behavior,
+    limbs: w > .35 && travel.limbs.length ? travel.limbs : null, ground: mix(1, travel.ground), gait: travel.gait,
   };
   raf = requestAnimationFrame(animate);
 }
@@ -116,7 +127,7 @@ function stop() {
   cancelAnimationFrame(raf); raf = 0; lastStamp = 0; elapsed = 0; transitionAge = Infinity;
   endAction();
   clearTimeout(touchTimer); touchMessage.value = '';
-  pointer = { x: 0, y: 0, inside: false }; director = createPetBehavior();
+  pointer = { x: 0, y: 0, inside: false }; director = createPetBehavior(); locomotion.reset();
   gazeX = spring(); gazeY = spring(); faceX = spring(); faceY = spring(); tilt = spring(desired.value.tilt);
   body = { x: spring(), y: spring(), sx: spring(1), sy: spring(1) };
   feeling = { squint: spring(), widen: spring(), wink: spring(), smile: spring(), wake: spring() };
@@ -157,7 +168,7 @@ function look(event: PointerEvent) {
 </script>
 
 <template>
-  <div class="starpet" :class="{ 'starpet-animated': running }" :data-mood="expression.id" :data-action="activeAction || undefined" :data-motion="running ? 'active' : 'still'" :data-behavior="frame.behavior" :style="{ width: `${pixels}px`, '--starpet-accent': expression.accent }" role="img" :aria-label="t('星芽，{name}', { name: t(expression.name) })" @pointerenter="look" @pointermove="look" @pointerleave="pointer.inside = false">
+  <div class="starpet" :class="{ 'starpet-animated': running }" :data-mood="expression.id" :data-action="activeAction || undefined" :data-motion="running ? 'active' : 'still'" :data-behavior="frame.behavior" :data-gait="frame.gait || undefined" :style="{ width: `${pixels}px`, '--starpet-accent': expression.accent }" role="img" :aria-label="t('星芽，{name}', { name: t(expression.name) })" @pointerenter="look" @pointermove="look" @pointerleave="pointer.inside = false">
     <svg class="starpet-canvas" viewBox="0 0 240 240" fill="none" aria-hidden="true" focusable="false">
       <defs>
         <radialGradient :id="gradientId" cx=".35" cy=".27" r=".8"><stop :stop-color="palette.light" /><stop offset=".52" :stop-color="palette.middle" /><stop offset=".83" :stop-color="palette.base" /><stop offset="1" :stop-color="palette.shade" /></radialGradient>
@@ -165,7 +176,7 @@ function look(event: PointerEvent) {
         <linearGradient :id="eyeId" x1="0" y1="0" x2=".6" y2="1"><stop stop-color="#311e1d" /><stop offset=".55" stop-color="#4c2824" /><stop offset="1" stop-color="#8d4931" /></linearGradient>
         <clipPath :id="clipId"><path :d="outline" /></clipPath>
       </defs>
-      <ellipse class="starpet-ground" cx="120" cy="217" :rx="47 * (1 + frame.y * .009)" ry="6" :fill="palette.shade" :opacity=".18 + frame.y * .002" />
+      <ellipse class="starpet-ground" cx="120" cy="217" :rx="47 * (1 + frame.y * .009)" ry="6" :fill="palette.shade" :opacity="Math.max(0, (.18 + frame.y * .002) * frame.ground)" />
 
       <g v-if="expression.prop === 'orbit'" class="starpet-orbit-decoration"><ellipse cx="120" cy="122" rx="107" ry="45" transform="rotate(-24 120 122)" stroke="var(--starpet-accent)" stroke-width="1.5" stroke-dasharray="2 5" /><g class="starpet-orbiter"><circle cx="218" cy="121" r="8" fill="#9fc8c0" stroke="#557580" stroke-width="1.6" /><path d="m213 119 7 3" stroke="#e9f7e9" stroke-width="2" stroke-linecap="round" /></g></g>
       <g v-if="expression.prop === 'confetti'" class="starpet-confetti" stroke-linecap="round"><path d="m45 38 4 8m145-15-5 8M23 127l8 3m181 21 7 3" stroke="#d996b1" stroke-width="4" /><path d="m25 75 8-3m173-1 8 4M46 179l-5 7m153 3 7-5" stroke="#91bfb2" stroke-width="4" /><path d="m67 29 2 6m100-13-2 6M29 157l5-2m181-45 5-1" stroke="#b1a1d6" stroke-width="3" /><path d="m180 54 2-5 3 5 5 1-4 4v5l-4-3-5 1 2-5-3-4Z" fill="#e4bd71" /></g>
@@ -270,7 +281,7 @@ function look(event: PointerEvent) {
           <g v-if="showToy" data-equipment="orbit-ball" transform="translate(121 173)"><circle r="22" fill="#a9cbd1" stroke="#597b95" stroke-width="2" /><path d="M-15-9q12-8 24 2M-11 9q8 7 17 4" stroke="#e4edce" stroke-width="4" stroke-linecap="round" /><ellipse rx="31" ry="9" transform="rotate(-23)" stroke="#cfae76" stroke-width="4" /><path d="M-28 12q7 2 16 0" stroke="#fff1c2" stroke-width="1.5" stroke-linecap="round" /></g>
           <g v-if="activeAction === 'highfive'" :opacity=".4 + actionFrame.energy * .6" stroke="#c7a46b" stroke-width="2.5" stroke-linecap="round"><path d="m180 88 0-7m13 11 5-5m-32 5-5-5" /></g>
           <path v-if="activeAction === 'heart'" d="M120 171c-22-13-8-27 0-16 8-11 22 3 0 16Z" fill="#e3a0b2" stroke="#b77992" stroke-width="1.4" />
-          <g v-for="([x, y], index) in handPositions" :key="index" class="starpet-hand" :class="{ 'starpet-wave-hand': expression.prop === 'wave' && index === 1 }">
+          <g v-for="([x, y], index) in handPositions" :key="index" class="starpet-hand" :class="{ 'starpet-wave-hand': expression.prop === 'wave' && index === 1 && !frame.limbs }">
             <g :transform="`translate(${x} ${y + frame.hand * (index ? .12 : -.12)})`">
               <circle class="starpet-hand-ball" r="9" :fill="`url(#${gradientId})`" :stroke="palette.base" stroke-width="1" />
               <ellipse cx="-3" cy="-4" rx="2.7" ry="1.7" transform="rotate(-25 -3 -4)" fill="#fffef1" opacity=".85" />

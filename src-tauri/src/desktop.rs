@@ -5,9 +5,9 @@ use crate::privacy::{PrivacyRescan, PrivacyRules};
 use crate::starpet_growth::{self, GrowthChange, GrowthState};
 use crate::storage::{DataDirectoryPlan, DataLocation, DirectoryMode, RecoveryPoint, Storage};
 use crate::store::{
-    starpet_resize_position, CleanupFilter, CleanupPreview, CleanupResult, CleanupSnapshot, Clip,
-    Group, HistoryQuery, HistorySummary, Result, Settings, StarpetPreferencePatch,
-    StarpetPreferences, Store, UpdatePreferences, STALE_CLEANUP,
+    starpet_dock_position, starpet_resize_position, CleanupFilter, CleanupPreview, CleanupResult,
+    CleanupSnapshot, Clip, Group, HistoryQuery, HistorySummary, Result, Settings,
+    StarpetPreferencePatch, StarpetPreferences, Store, UpdatePreferences, STALE_CLEANUP,
 };
 use crate::telemetry::{self, Telemetry, TelemetryState};
 use crate::updater::{self, UpdateStatus, Updates};
@@ -680,6 +680,42 @@ fn starpet_start_dragging(window: WebviewWindow) -> Result<()> {
     window
         .start_dragging()
         .map_err(|e| format!("无法拖动星伴：{e}"))
+}
+
+#[tauri::command]
+fn starpet_dock(window: WebviewWindow) -> Result<Option<&'static str>> {
+    if window.label() != "starpet" {
+        return Err("此操作仅用于星伴窗口。".into());
+    }
+    let monitor = match window.current_monitor().map_err(|e| e.to_string())? {
+        Some(monitor) => monitor,
+        None => return Ok(None),
+    };
+    let position = window.outer_position().map_err(|e| e.to_string())?;
+    let size = window.outer_size().map_err(|e| e.to_string())?;
+    let area = monitor.work_area();
+    let docked = starpet_dock_position(
+        (f64::from(position.x), f64::from(position.y)),
+        (f64::from(size.width), f64::from(size.height)),
+        (
+            f64::from(area.position.x),
+            f64::from(area.position.y),
+            f64::from(area.size.width),
+            f64::from(area.size.height),
+        ),
+        // About 28 logical pixels: close enough to feel magnetic, far enough to drop freely.
+        28.0 * monitor.scale_factor(),
+    );
+    let Some((edge, x, y)) = docked else {
+        return Ok(None);
+    };
+    window
+        .set_position(tauri::PhysicalPosition::new(
+            x.round() as i32,
+            y.round() as i32,
+        ))
+        .map_err(|e| format!("无法让星伴贴边：{e}"))?;
+    Ok(Some(edge))
 }
 
 fn publish_growth(app: &AppHandle, growth: &GrowthState) {
@@ -2776,6 +2812,7 @@ pub fn run() {
             set_starpet_preferences,
             show_main_window,
             starpet_start_dragging,
+            starpet_dock,
             get_starpet_growth,
             set_starpet_growth_enabled,
             interact_starpet,

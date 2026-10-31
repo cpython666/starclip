@@ -163,6 +163,7 @@ mod capability_tests {
                 "set_starpet_preferences",
                 "show_main_window",
                 "starpet_start_dragging",
+                "starpet_dock",
                 "get_starpet_growth",
                 "set_starpet_growth_enabled",
                 "interact_starpet",
