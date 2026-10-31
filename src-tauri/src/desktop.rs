@@ -141,6 +141,14 @@ fn record_usage_event(
     Ok(state)
 }
 #[tauri::command]
+fn reset_telemetry_install(app: AppHandle, context: AppContext<'_>) -> Result<TelemetryState> {
+    let mut telemetry = lock(&context.telemetry)?;
+    telemetry.reset_install()?;
+    let state = telemetry.state();
+    telemetry_changed(&app, &state);
+    Ok(state)
+}
+#[tauri::command]
 fn clear_telemetry_queue(app: AppHandle, context: AppContext<'_>) -> Result<TelemetryState> {
     let mut telemetry = lock(&context.telemetry)?;
     let cleared = telemetry.clear_queue();
@@ -166,7 +174,7 @@ fn flush_telemetry_with_context(app: &AppHandle, context: &Context) -> Result<Te
 }
 fn schedule_telemetry_flush(app: &AppHandle, context: &Arc<Context>) {
     if lock(&context.telemetry).is_ok_and(|mut telemetry| {
-        telemetry.checkpoint();
+        telemetry.tick();
         telemetry.ready()
     }) {
         let app = app.clone();
@@ -2656,7 +2664,8 @@ pub fn run() {
             let context = Arc::new(Context {
                 telemetry: Mutex::new(
                     Telemetry::new(store.telemetry_preferences())
-                        .with_cache(default.join("usage-counts.json")),
+                        .with_cache(default.join("usage-counts.json"))
+                        .with_install(default.join("usage-install.json")),
                 ),
                 storage: Mutex::new(storage),
                 ai: Mutex::new(AiAccess::default()),
@@ -2802,6 +2811,7 @@ pub fn run() {
             record_usage_event,
             flush_telemetry,
             clear_telemetry_queue,
+            reset_telemetry_install,
             get_state,
             get_startup_preferences,
             set_startup_preferences,
