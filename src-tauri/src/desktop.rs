@@ -1186,9 +1186,9 @@ fn start_ai_broker(
     let Ok(address) = listener.local_addr() else {
         return;
     };
-    if listener.set_nonblocking(true).is_err() {
-        return;
-    }
+    // Blocking accept: the worker sleeps in the kernel until a client connects
+    // instead of waking every 50 ms. It lives for the whole app process; the
+    // weak context check below still stops serving once the context is gone.
     if let Ok(mut ai) = context.ai.lock() {
         ai.port = Some(address.port());
     } else {
@@ -1202,8 +1202,11 @@ fn start_ai_broker(
                     if !address.ip().is_loopback() {
                         continue;
                     }
-                    // macOS inherits the listener's nonblocking flag. Frames
-                    // need bounded blocking reads while later packets arrive.
+                    if weak.strong_count() == 0 {
+                        break;
+                    }
+                    // Keep the stream explicitly blocking with bounded timeouts
+                    // so fragmented frames wait for later packets.
                     if stream.set_nonblocking(false).is_err() {
                         continue;
                     }
@@ -1240,10 +1243,8 @@ fn start_ai_broker(
                         );
                     }
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(50))
-                }
-                Err(_) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => thread::sleep(Duration::from_millis(200)),
             }
         }
     });

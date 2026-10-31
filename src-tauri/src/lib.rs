@@ -10,6 +10,7 @@ mod desktop;
 pub mod handwriting;
 pub mod images;
 pub mod privacy;
+pub mod search_index;
 pub mod share;
 pub mod starpet_growth;
 #[cfg(feature = "desktop")]

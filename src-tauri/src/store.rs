@@ -874,6 +874,7 @@ impl Store {
         if version == SCHEMA_VERSION {
             Self::validate_current_schema(&conn)?;
             clip_stats::ensure_table(&conn)?;
+            crate::search_index::ensure(&conn)?;
             let store = Self { conn };
             store.prune_history()?;
             return Ok(store);
@@ -989,6 +990,7 @@ impl Store {
         settings.validate()?;
         Self::prune_with_settings(&tx, &settings, now())?;
         clip_stats::ensure_table(&tx)?;
+        crate::search_index::ensure(&tx)?;
         tx.pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(sql_error)?;
         tx.commit().map_err(sql_error)?;
@@ -1552,6 +1554,15 @@ impl Store {
             } else {
                 ""
             };
+            // 标签只在 AI 授权列表里参与搜索，不在索引中；其余情况先用 trigram 索引缩小候选。
+            if let Some(phrase) = (!query.ai_eligible)
+                .then(|| crate::search_index::match_phrase(&search))
+                .flatten()
+            {
+                predicates
+                    .push("c.id IN (SELECT rowid FROM clips_fts WHERE clips_fts MATCH ?)".into());
+                values.push(phrase.into());
+            }
             predicates.push(format!("starclip_contains(c.title || char(10) || CASE WHEN c.kind='image' THEN '' ELSE c.content END{tags},?)"));
             values.push(search.into());
         }
@@ -5119,6 +5130,59 @@ mod tests {
             ..Settings::default()
         };
         assert!(unsupported.validate().is_err());
+    }
+
+    #[test]
+    fn trigram_index_matches_scan_results_and_forgets_deleted_text() {
+        let db = store();
+        let a = db.add("原创星图样例 ÄBC fixture", "", None).unwrap();
+        let b = db.add("另一段原创星图", "原创标题", None).unwrap();
+        let c = db.add("无关内容", "", None).unwrap();
+        let ids = |query: &str| {
+            let mut ids = db
+                .history_page(&HistoryQuery {
+                    query: query.into(),
+                    ..HistoryQuery::default()
+                })
+                .unwrap()
+                .clips
+                .iter()
+                .map(|clip| clip.id)
+                .collect::<Vec<_>>();
+            ids.sort();
+            ids
+        };
+        assert_eq!(ids("原创星图"), vec![a.id, b.id]);
+        assert_eq!(ids("äbc"), vec![a.id], "Unicode lowercase still matches");
+        assert_eq!(
+            ids("星图"),
+            vec![a.id, b.id],
+            "short queries fall back to scanning"
+        );
+        assert_eq!(ids("原创标题"), vec![b.id], "titles are indexed");
+        db.update(c.id, "新的原创星图标题", None, false).unwrap();
+        assert_eq!(
+            ids("原创星图"),
+            vec![a.id, b.id, c.id],
+            "updates refresh the index"
+        );
+        db.delete(a.id).unwrap();
+        assert_eq!(ids("原创星图"), vec![b.id, c.id]);
+        let indexed: i64 = db
+            .conn
+            .query_row(
+                "SELECT count(*) FROM clips_fts WHERE clips_fts MATCH '\"ÄBC fixture\"'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexed, 0, "deleted text leaves no index entry");
+        // A legacy rebuild of the clips table drops the triggers; reopening rebuilds the index.
+        db.conn
+            .execute_batch("DROP TRIGGER clips_fts_insert; DELETE FROM clips_fts;")
+            .unwrap();
+        crate::search_index::ensure(&db.conn).unwrap();
+        assert_eq!(ids("原创星图"), vec![b.id, c.id]);
     }
 
     #[test]
