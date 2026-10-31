@@ -2,8 +2,9 @@
 export const EVENT_NAMES = Object.freeze([
   'app_started', 'studio_opened', 'card_exported', 'backup_exported',
   'backup_imported', 'update_check_completed', 'font_downloaded',
-  'update_download_completed', 'update_install_started',
+  'update_download_completed', 'update_install_started', 'app_active',
 ]);
+const V2_EVENT_NAMES = EVENT_NAMES.slice(0, 9);
 const MAX_BODY_BYTES = 4096;
 const WINDOWS_MODELS = Object.freeze([
   'Surface', 'ThinkPad', 'ThinkCentre', 'Latitude', 'OptiPlex', 'Precision', 'XPS',
@@ -31,10 +32,23 @@ function validDevice(device, platform) {
   return platform === 'linux' && device.model === 'LinuxPC';
 }
 
+// A UTC calendar day, not in the future (one day of clock skew allowed).
+function validDay(day, now = Date.now()) {
+  if (typeof day !== 'string' || !/^20[2-9][0-9]-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$/.test(day)) return false;
+  const time = Date.parse(`${day}T00:00:00Z`);
+  return Number.isFinite(time) && new Date(time).toISOString().startsWith(day)
+    && time >= Date.UTC(2026, 0, 1) && time <= now + 86_400_000;
+}
+
 export function validPayload(value) {
   const fields = ['version', 'sessionId', 'appVersion', 'platform', 'events'];
+  // v3 adds a random install ID (persisted only while statistics are on) and its UTC creation day.
+  const v3 = value?.version === 3 && exactKeys(value, [...fields, 'device', 'installId', 'firstSeenDay'])
+    && typeof value.installId === 'string' && /^[a-f0-9]{32}$/.test(value.installId)
+    && value.installId !== value.sessionId && validDay(value.firstSeenDay);
+  const allowed = value?.version === 3 ? EVENT_NAMES : V2_EVENT_NAMES;
   return ((value?.version === 1 && exactKeys(value, fields))
-      || (value?.version === 2 && exactKeys(value, [...fields, 'device']) && validDevice(value.device, value.platform)))
+      || ((value?.version === 2 && exactKeys(value, [...fields, 'device'])) || v3) && validDevice(value.device, value.platform))
     && typeof value.sessionId === 'string' && /^[a-f0-9]{32}$/.test(value.sessionId)
     && typeof value.appVersion === 'string' && value.appVersion.length <= 64
     && /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(value.appVersion)
@@ -42,11 +56,11 @@ export function validPayload(value) {
     && Array.isArray(value.events) && value.events.length >= 1 && value.events.length <= EVENT_NAMES.length
     && new Set(value.events.map(event => event?.name)).size === value.events.length
     && value.events.every(event => exactKeys(event, ['name', 'count'])
-      && EVENT_NAMES.includes(event.name) && Number.isInteger(event.count) && event.count >= 1 && event.count <= 100);
+      && allowed.includes(event.name) && Number.isInteger(event.count) && event.count >= 1 && event.count <= 100);
 }
 
 function deviceProperties(payload) {
-  return payload.version === 2 ? {
+  return payload.version >= 2 ? {
     app_arch: payload.device.architecture,
     os_major: payload.device.osMajor,
     device_model: payload.device.model,
@@ -110,17 +124,28 @@ async function readPayload(request) {
   try { return JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(body)); } catch { throw 400; }
 }
 
+// GA4 accepts two positive decimal numbers; keep the desktop's 128-bit randomness.
+function gaClientId(hex) {
+  return [hex.slice(0, 16), hex.slice(16)].map(part => (BigInt(`0x${part}`) + 1n).toString()).join('.');
+}
+
 function googleBody(payload) {
-  // GA4 accepts two positive decimal numbers; keep the desktop's ephemeral 128-bit randomness.
-  const clientId = [payload.sessionId.slice(0, 16), payload.sessionId.slice(16)]
-    .map(hex => (BigInt(`0x${hex}`) + 1n).toString()).join('.');
+  // v1/v2: per-run random ID only. v3: the install ID, so GA can count users, DAU and retention.
+  const v3 = payload.version === 3;
+  const session = v3 ? {
+    // GA needs a numeric session_id and engagement time > 0 to count active users.
+    // This is a fixed marker, not measured engagement; do not read GA engagement time.
+    session_id: String(Number.parseInt(payload.sessionId.slice(0, 8), 16) + 1),
+    engagement_time_msec: 1,
+  } : {};
   return {
-    client_id: clientId,
+    client_id: gaClientId(v3 ? payload.installId : payload.sessionId),
+    ...(v3 ? { user_properties: { first_seen_day: { value: payload.firstSeenDay } } } : {}),
     non_personalized_ads: true,
     consent: { ad_user_data: 'DENIED', ad_personalization: 'DENIED' },
     events: payload.events.map(event => ({
       name: event.name,
-      params: { count: event.count, app_version: payload.appVersion, platform: payload.platform, ...deviceProperties(payload) },
+      params: { count: event.count, app_version: payload.appVersion, platform: payload.platform, ...deviceProperties(payload), ...session },
     })),
   };
 }

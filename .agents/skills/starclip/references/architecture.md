@@ -14,7 +14,7 @@
 | `src/components/StartupSettings.vue`、`src/startup-api.ts` | 使用习惯中的三项独立即时保存开关：登录自启动、启动收起、图标显隐；读取 / 保存中保护释放，失败可重读。退出事件交由 `App.vue` 核对草稿与子面板状态；浏览器只说明桌面限定 |
 | `src/privacy.ts`、`src/components/PrivacyRules.vue`、`src/components/AiSettings.vue` | 标签 / 来源 / 隐私筛选、规则与重扫、本地 AI 授权及连接配置；`src/api.ts` 包装命令，浏览器只作固定数据演示 |
 | `src/components/DataSettings.vue`、`src/components/CleanupPanel.vue` | 数据位置、备份回执与目录操作；整理预览和确认。父设置的挂载状态由 `src/App.vue` 保留 |
-| `src/components/CodeStudio.vue`、`src/code-card.ts`、`src/snippets.ts` | 星绘坊在打开时按需加载；Canvas 代码卡片、语言与导出工具，卡片预览和 PNG 共用渲染 |
+| `src/components/CodeStudio.vue`、`src/code-card.ts`、`src/snippets.ts`、`src/code-language.ts` | 星绘坊在打开时按需加载；Canvas 代码卡片、语言与导出工具，卡片预览和 PNG 共用渲染 |
 | `src/components/HandwritingPanel.vue`、`src/handwriting-preview.ts` | 字体预览图库、单款显式下载、已下载字体选择、本地预览调度、过期结果隔离与导出有效性；浏览器只展示预览，不下载字体或模拟渲染 |
 | `src/components/HistoryPagination.vue`、`src/types.ts::HistoryQuery` / `HistorySummary` | 主列表与 AI 授权选择共用分页控件；各自维护页码 / 查询，不将当前页当作全库 |
 | `src/components/ClipStatsPanel.vue`、`src/clip-stats.ts` | 「星迹统计」设置页：范围切换、日 / 周柱、类型、时段 / 星期、明细表与当前星系；按 `clips-changed` 防抖重读，清空期间保护窗口释放 |
@@ -24,7 +24,7 @@
 | `src/components/UiSelect.vue`、`src/components/UiColor.vue` | 统一下拉和颜色控件；保留字符串、数字、null 值语义、键盘与合法 HEX 校验 |
 | `src/components/StartupScreen.vue`、`src/components/OnboardingGuide.vue`、`src/components/StickerScene.vue` | 流星启动画面、四步教程和原创贴纸 |
 | `src/components/StarPet.vue`、`src/components/StarPetSettings.vue`、`src/components/StarPetDesktop.vue` | 共享 SVG 角色、设置预览、原生浮窗 UI |
-| `src/starpet.ts`、`src/starpet-api.ts`、`src/starpet-size.ts`、`src/starpet-motion.ts`、`src/starpet-behavior.ts`、`src/starpet-action.ts` | 表情定义、独立偏好通信、大小保存队列、运动、情境互动与主动动作姿态 |
+| `src/starpet.ts`、`src/starpet-api.ts`、`src/starpet-size.ts`、`src/starpet-motion.ts`、`src/starpet-behavior.ts`、`src/starpet-action.ts`、`src/starpet-locomotion.ts` | 表情定义、独立偏好通信、大小保存队列、运动、情境互动、主动动作姿态，以及拖动步态与贴边姿态 |
 | `src/starpet-growth-catalog.json`、`src/starpet-growth.ts`、`src/starpet-growth-api.ts`、`src/components/StarPetGrowth.vue` | 前后端共用任务 / 动作 / 物品 / 成就目录；成长类型与存档校验、浏览器内存演示、专用命令 / 事件和成长设置页。预览不记奖，窗口按修订号接收状态 |
 | `src/starpet-signal-api.ts`、`src/components/StarPetDesktop.vue` | Agent 临时状态 / 动作 / 短句；监听 `starpet-signal` 后读取 `get_starpet_signal` 快照，revision 防迟到覆盖，TTL与卸载清理，不走成长奖励命令 |
 

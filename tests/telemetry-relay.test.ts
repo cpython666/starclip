@@ -9,9 +9,11 @@ const env = {
   ENABLE_APPLICATION_INSIGHTS: 'true',
   APPLICATIONINSIGHTS_CONNECTION_STRING: 'InstrumentationKey=12345678-1234-1234-1234-123456789abc;IngestionEndpoint=https://westus2.in.applicationinsights.azure.com/;ApplicationId=ignored',
 };
+// v1 / v2 clients only know the original nine events; `app_active` arrived with v3.
+const LEGACY_EVENTS = EVENT_NAMES.filter(name => name !== 'app_active');
 const payload = {
   version: 1, sessionId: '0123456789abcdef0123456789abcdef', appVersion: '0.2.2', platform: 'macos',
-  events: EVENT_NAMES.map((name, index) => ({ name, count: index + 1 })),
+  events: LEGACY_EVENTS.map((name, index) => ({ name, count: index + 1 })),
 };
 function request(body: unknown = payload, extra: RequestInit = {}) {
   return new Request('https://relay.example/collect', {
@@ -49,7 +51,7 @@ test('explicitly enabled dual delivery rebuilds both payloads from fixed fields 
     events: payload.events.map(event => ({ name: event.name, params: expectedParams(event.count) })),
   });
   assert.equal(microsoft.url, 'https://westus2.in.applicationinsights.azure.com/v2/track');
-  assert.equal(microsoft.body.length, EVENT_NAMES.length);
+  assert.equal(microsoft.body.length, LEGACY_EVENTS.length);
   for (const [index, item] of microsoft.body.entries()) {
     assert.match(item.time, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
     assert.deepEqual(item, {
@@ -122,6 +124,42 @@ test('v2 rejects identity fields, arbitrary text, extra fields and models from a
   const { calls, fetch } = recorder();
   for (const body of invalid) assert.equal((await handleRequest(request(body), env, fetch)).status, 400);
   assert.equal(calls.length, 0);
+});
+
+test('v3 uses the install ID as GA client_id with a first-seen cohort and active-user markers', async () => {
+  const device = { architecture: 'aarch64', osMajor: '26', model: 'Mac' };
+  const v3 = {
+    ...payload, version: 3, device, installId: 'fedcba9876543210fedcba9876543210', firstSeenDay: '2026-10-31',
+    events: EVENT_NAMES.map((name, index) => ({ name, count: index + 1 })),
+  };
+  const { calls, fetch } = recorder();
+  assert.equal((await handleRequest(request(v3), env, fetch)).status, 204);
+  const [google, microsoft] = calls;
+  // Two runs of one install share client_id; the per-run session ID only feeds session_id.
+  assert.equal(google.body.client_id, '18364758544493064721.18364758544493064721');
+  assert.deepEqual(google.body.user_properties, { first_seen_day: { value: '2026-10-31' } });
+  assert.deepEqual(google.body.events.at(-1), {
+    name: 'app_active', params: {
+      count: 10, app_version: '0.2.2', platform: 'macos', app_arch: 'aarch64', os_major: '26', device_model: 'Mac',
+      session_id: String(0x01234567 + 1), engagement_time_msec: 1,
+    },
+  });
+  // Microsoft keeps receiving no identifier at all.
+  assert.doesNotMatch(JSON.stringify(microsoft.body), /fedcba98|first_seen|session_id|engagement/);
+  assert.deepEqual(Object.keys(microsoft.body[0].data.baseData.properties),
+    ['app_version', 'platform', 'app_arch', 'os_major', 'device_model']);
+
+  const invalid = [
+    { ...v3, installId: undefined }, { ...v3, firstSeenDay: undefined }, { ...v3, installId: v3.sessionId },
+    { ...v3, installId: 'F'.repeat(32) }, { ...v3, installId: 'user@example.test' }, { ...v3, hostname: 'fixed-private-host' },
+    ...['2026-02-30', '2025-12-31', '2999-01-01', '2026-1-01', '2026-10-31T00:00', 20261031]
+      .map(firstSeenDay => ({ ...v3, firstSeenDay })),
+    { ...v3, device: undefined }, { ...payload, events: [{ name: 'app_active', count: 1 }] },
+    { ...v3, version: 2, events: [{ name: 'app_active', count: 1 }] },
+  ];
+  const rejected = recorder();
+  for (const body of invalid) assert.equal((await handleRequest(request(body), env, rejected.fetch)).status, 400);
+  assert.equal(rejected.calls.length, 0);
 });
 
 test('default and explicitly disabled Microsoft configurations send only to Google', async () => {

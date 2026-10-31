@@ -77,7 +77,7 @@ v2 发送协议版本、应用版本、系统类别、每次运行随机编号�
 | `device.osMajor` | macOS 主版本；Windows 只区分 `10` / `11`；Linux 内核主版本；不可识别时 `unknown` |
 | `device.model` | Mac 的限定格式公开产品代号或 `Mac`；Windows 的固定产品系列白名单或 `WindowsPC`；Linux 固定 `LinuxPC` |
 
-客户端和 Worker 都限制字段和值，不把任意固件文字、细分配置当作机型上报。**不发送剪贴内容、图片、文件名、标题、搜索词、链接、路径、错误原文、账号、序列号、电脑名称、用户名或永久设备 ID。** 随机编号不会写入磁盘；GA4 必需的 `client_id` 由它转换而来。设备信息只在发送时附带，不进入本地统计缓存。
+客户端和 Worker 都限制字段和值，不把任意固件文字、细分配置当作机型上报。**不发送剪贴内容、图片、文件名、标题、搜索词、链接、路径、错误原文、账号、序列号、电脑名称、用户名或硬件标识。** 每次运行的随机会话编号不会写入磁盘。v3 起另有一个本机统计编号（见下文「v3：独立用户、日活与留存」），GA4 的 `client_id` 由它转换而来；v1 / v2 的 `client_id` 仍来自每次运行的随机编号。设备信息只在发送时附带，不进入本地统计缓存。
 
 固定计数暂存在默认应用数据目录的 `usage-counts.json`，不跟随剪贴历史数据目录迁移，也不进入历史 JSON 或完整恢复点。文件只包含缓存格式版本、应用版本、创建时间和 9 类计数；读取上限 2 KiB，每事件最多 100 次，最长保留 72 小时。同版本重启恢复未过期计数，应用版本变化则丢弃旧缓存；损坏、超限、未来时间及不受支持的缓存不恢复。缓存不含设备字段、会话编号或任何剪贴内容。
 
@@ -89,6 +89,39 @@ Worker 源码兼容 v1 与 v2，只接受 `POST /collect` 的 JSON；上限 4 Ki
 
 Worker 不保存请求，不打印密钥、载荷或错误原文；模板关闭 Worker Observability。不复制用户的 Cookie、User-Agent 或请求头，并为 IP 转发头设置固定占位值；参见 [Cloudflare Worker 子请求的 IP 规则](https://developers.cloudflare.com/fundamentals/reference/http-headers/#cf-connecting-ip-in-worker-subrequests)。相同发送逻辑的独立无 secret 探针已在回显端核对未观察到原始 IP / Cookie / User-Agent；这不是 Google 接收侧的完整抓包。接收端及其云平台仍会在网络层接触来源 IP，平台基础服务政策与日志设置需单独核查，不能把本实现理解为网络层匿名化。
 
+## v3：独立用户、日活与留存（未发布，待部署与 GA 核对）
+
+用户要求能统计独立用户、日活和留存，v3 在不收集任何硬件或账号信息的前提下加入一个本机随机编号。实现见 `src-tauri/src/telemetry.rs` 与 `telemetry-relay/worker.mjs`；目前只有单元测试，尚未部署 Worker、未在 GA 报表核对、也未原生验收。
+
+**本机统计编号**
+
+- 统计开启时由系统随机数生成 128 位编号（32 位小写十六进制），保存在默认应用数据目录的 `usage-install.json`，与 `usage-counts.json` 同目录：不跟随剪贴数据目录迁移，不进入历史 JSON 或完整恢复点；macOS / Linux 权限 0600，原子写入。文件只有格式版本、编号与生成时间（秒）三个字段，读取上限 512 字节，格式错误、多余字段或未来时间均丢弃并重新生成。
+- 编号不来自硬件、序列号、账号、用户名或电脑名称；两台电脑或重装后的同一台电脑是不同编号。
+- 关闭统计时删除文件并从内存清除；再次开启生成全新编号，前后数据无法关联。偏好为关闭时启动也会删除残留文件。设置页只显示前 6 位，并可「重置统计编号」，重置后视为新用户。
+- 写入失败时编号仅在本次运行有效，下次启动会被当成新用户，可能高估人数。
+
+**载荷与转发**
+
+- v3 在 v2 字段外增加 `installId` 与 `firstSeenDay`（编号生成的 UTC 日期，仅精确到天），并允许新事件 `app_active`。Worker 要求两者格式正确、`installId` 不等于 `sessionId`、日期不早于 2026-01-01 且不晚于次日；v1 / v2 不允许 `app_active`。
+- 转发 GA4 时：`client_id` 由 `installId` 转换，跨重启保持一致；`user_properties.first_seen_day` 携带首次日期；每个事件加 `session_id`（由每次运行的随机编号前 32 位转换）和固定 `engagement_time_msec=1`。后者只是让 GA 把事件计入活跃用户的标记，不是测量的使用时长。
+- 微软模板通道仍不发送任何编号或日期。
+
+**`app_active` 当日使用**
+
+- 每次运行在每个 UTC 日最多记录一次，由已有的分钟定时器触发；星笺常驻托盘、几天不重启时也能逐日计入日活。清空待发事件不会在同一天重新补记；关闭再开启或重置编号后，当天会再记一次。
+
+**在 GA4 中查看（待核对）**
+
+- 独立用户 / 日活：报表的「活跃用户」按 `client_id` 去重；日活可在探索中按「日期」查看活跃用户，或筛选事件 `app_active`。
+- 留存：在「探索 → 同类群组探索」中，以 `first_seen_day` 用户属性（需先在「自定义定义」注册为用户级维度）或首次接触日期分组，回访条件选 `app_active`。Measurement Protocol 不会产生 `first_visit` / `first_open`，GA 自带的「新用户 / 留存」概览可能与此不一致，以探索结果为准。
+- 按 GA 报告时区按收到时间计日；客户端以 UTC 日去重，跨时区边界时一天可能出现两次 `app_active`，不影响去重后的用户数。
+
+**仍需注意**
+
+- 统计默认开启，加入持续编号后，面向欧盟等地区用户时通常需要事先同意；当前未做地区区分，发布前请自行确认合规要求。
+- 公开接收端可被伪造请求，编号不能防止刷量。
+- 部署顺序：先部署兼容 v1 / v2 / v3 的 Worker，再发布新版客户端；旧 Worker 会以 400 拒绝 v3，客户端只会静默退避重试。
+
 ## 1. 准备 Google Analytics 4 标准版
 
 使用 [Google Analytics 免费标准版](https://marketingplatform.google.com/about/analytics/)，不选择 Analytics 360 或其他付费附加服务。
@@ -98,7 +131,7 @@ Worker 不保存请求，不打印密钥、载荷或错误原文；模板关闭 
 3. 关闭不需要的数据共享、广告个性化和增强型衡量；本代码也固定发送广告用途与广告个性化 `DENIED`，不发送广告标识或账号信息。
 4. 在「自定义定义」创建事件级自定义指标，事件参数填 **`count`**、单位为标准；可将 `app_version` 和 `platform` 注册为事件级自定义维度；当前 v2 的 `app_arch`、`os_major`、`device_model` 三个事件级维度已创建并在表格核对；三个参数及公开 Mac 产品代号也已在 Realtime 核对，但维度配置与实时参数不能代替常规汇总报表验收。看功能使用次数时汇总 `count`，GA4 默认的事件数量只代表聚合批次中的事件条目数。
 
-协议格式依据 [GA4 Measurement Protocol 参考](https://developers.google.com/analytics/devguides/collection/protocol/ga4/reference?client_type=gtag)。此方案仅发送自定义事件，未接入 gtag / Firebase 自动采集；[Google 说明纯服务端方案仅有部分报表可用](https://developers.google.com/analytics/devguides/collection/protocol/ga4#full_server-to-server)。本实现不补造会话或停留时长，不适合据此计算准确活跃人数、留存或参与时长。
+协议格式依据 [GA4 Measurement Protocol 参考](https://developers.google.com/analytics/devguides/collection/protocol/ga4/reference?client_type=gtag)。此方案仅发送自定义事件，未接入 gtag / Firebase 自动采集；[Google 说明纯服务端方案仅有部分报表可用](https://developers.google.com/analytics/devguides/collection/protocol/ga4#full_server-to-server)。v1 / v2 不含持续编号，不能计算活跃人数或留存；v3 的做法与边界见下文。本实现不测量停留时长，GA4 中的参与时长没有意义。
 
 ## 2. 配置接收端
 
