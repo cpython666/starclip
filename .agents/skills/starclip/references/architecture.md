@@ -23,7 +23,7 @@
 | `src/components/UiSelect.vue`、`src/components/UiColor.vue` | 统一下拉和颜色控件；保留字符串、数字、null 值语义、键盘与合法 HEX 校验 |
 | `src/components/StartupScreen.vue`、`src/components/OnboardingGuide.vue`、`src/components/StickerScene.vue` | 流星启动画面、四步教程和原创贴纸 |
 | `src/components/StarPet.vue`、`src/components/StarPetSettings.vue`、`src/components/StarPetDesktop.vue` | 共享 SVG 角色、设置预览、原生浮窗 UI |
-| `src/starpet.ts`、`src/starpet-api.ts`、`src/starpet-size.ts`、`src/starpet-motion.ts`、`src/starpet-behavior.ts`、`src/starpet-action.ts` | 表情定义、独立偏好通信、大小保存队列、运动、情境互动与主动动作姿态 |
+| `src/starpet.ts`、`src/starpet-api.ts`、`src/starpet-size.ts`、`src/starpet-motion.ts`、`src/starpet-behavior.ts`、`src/starpet-action.ts`、`src/starpet-locomotion.ts` | 表情定义、独立偏好通信、大小保存队列、运动、情境互动、主动动作姿态，以及拖动步态与贴边姿态 |
 | `src/starpet-growth-catalog.json`、`src/starpet-growth.ts`、`src/starpet-growth-api.ts`、`src/components/StarPetGrowth.vue` | 前后端共用任务 / 动作 / 物品 / 成就目录；成长类型与存档校验、浏览器内存演示、专用命令 / 事件和成长设置页。预览不记奖，窗口按修订号接收状态 |
 | `src/starpet-signal-api.ts`、`src/components/StarPetDesktop.vue` | Agent 临时状态 / 动作 / 短句；监听 `starpet-signal` 后读取 `get_starpet_signal` 快照，revision 防迟到覆盖，TTL与卸载清理，不走成长奖励命令 |
 

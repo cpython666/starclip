@@ -341,6 +341,34 @@ pub(crate) fn starpet_resize_position(
     )
 }
 
+/// Picks the work-area edge closest to a dropped pet window, if any is within
+/// `threshold`, and returns that edge with the window position flush against it.
+/// The other axis is only clamped, so the pet stays where it was dropped along the edge.
+#[cfg(any(feature = "desktop", test))]
+pub(crate) fn starpet_dock_position(
+    position: (f64, f64),
+    size: (f64, f64),
+    work_area: (f64, f64, f64, f64),
+    threshold: f64,
+) -> Option<(&'static str, f64, f64)> {
+    let (left, top, width, height) = work_area;
+    let right = (left + width - size.0).max(left);
+    let bottom = (top + height - size.1).max(top);
+    let x = position.0.clamp(left, right);
+    let y = position.1.clamp(top, bottom);
+    // Side walls win ties: clinging sideways reads better than lying in a corner.
+    [
+        ("left", position.0 - left, left, y),
+        ("right", right - position.0, right, y),
+        ("bottom", bottom - position.1, x, bottom),
+        ("top", position.1 - top, x, top),
+    ]
+    .into_iter()
+    .filter(|(_, gap, _, _)| *gap <= threshold)
+    .min_by(|a, b| a.1.total_cmp(&b.1))
+    .map(|(edge, _, x, y)| (edge, x, y))
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StarpetPreferencePatch {
@@ -3563,6 +3591,47 @@ mod tests {
                 (10.0, 20.0, 100.0, 100.0)
             ),
             (10.0, 20.0)
+        );
+    }
+
+    #[test]
+    fn starpet_docks_only_near_an_edge_and_keeps_the_other_axis() {
+        let area = (0.0, 25.0, 1920.0, 1055.0);
+        let size = (230.0, 260.0);
+        assert_eq!(
+            starpet_dock_position((800.0, 400.0), size, area, 28.0),
+            None
+        );
+        assert_eq!(
+            starpet_dock_position((12.0, 400.0), size, area, 28.0),
+            Some(("left", 0.0, 400.0))
+        );
+        assert_eq!(
+            starpet_dock_position((1675.0, 400.0), size, area, 28.0),
+            Some(("right", 1690.0, 400.0))
+        );
+        assert_eq!(
+            starpet_dock_position((900.0, 30.0), size, area, 28.0),
+            Some(("top", 900.0, 25.0))
+        );
+        assert_eq!(
+            starpet_dock_position((900.0, 810.0), size, area, 28.0),
+            Some(("bottom", 900.0, 820.0))
+        );
+        // Dragged partly off screen: snap back onto the nearest edge.
+        assert_eq!(
+            starpet_dock_position((-60.0, 300.0), size, area, 28.0),
+            Some(("left", 0.0, 300.0))
+        );
+        // In a corner the side wall wins a tie, and the other axis is clamped on screen.
+        assert_eq!(
+            starpet_dock_position((1700.0, 830.0), size, area, 28.0),
+            Some(("right", 1690.0, 820.0))
+        );
+        assert_eq!(
+            starpet_dock_position((-1910.0, 500.0), size, (-1920.0, 0.0, 1920.0, 1080.0), 28.0),
+            Some(("left", -1920.0, 500.0)),
+            "secondary displays left of the primary use negative coordinates"
         );
     }
 
