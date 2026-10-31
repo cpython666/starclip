@@ -129,6 +129,10 @@ pub struct Clip {
     /// 浏览器提供的来源页面（无查询与片段）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_url: Option<String>,
+    /// 采集时附带了 HTML 格式；复制回去会同时恢复格式，可选择只复制纯文本。
+    /// JSON 备份不含 HTML，完整数据目录迁移保留。
+    #[serde(default, skip_deserializing)]
+    pub rich: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -507,7 +511,13 @@ struct BackupImage {
 // A legacy image capability marker is not a privacy match; image pixels
 // remain unscanned and can never become AI-eligible via this predicate.
 const PRIVATE_PREDICATE: &str = "(COALESCE(json_extract(p.metadata,'$.privacyManual'),0)=1 OR EXISTS(SELECT 1 FROM json_each(p.metadata,'$.privacyReasons') WHERE c.kind!='image' OR value!='图片尚未进行文字识别'))";
-const CLIP_SELECT: &str = "SELECT c.id,c.content,c.title,c.kind,c.pinned,c.group_id,c.created_at,c.updated_at,c.copy_count,c.language,c.keep_forever,i.width,i.height,i.bytes,p.metadata FROM clips c LEFT JOIN clip_images i ON i.clip_id=c.id LEFT JOIN clip_privacy p ON p.clip_id=c.id";
+/// 采集时随正文附带的数据。
+#[derive(Clone, Copy)]
+enum CaptureExtra<'a> {
+    Html(Option<&'a str>),
+    Files,
+}
+const CLIP_SELECT: &str = "SELECT c.id,c.content,c.title,c.kind,c.pinned,c.group_id,c.created_at,c.updated_at,c.copy_count,c.language,c.keep_forever,i.width,i.height,i.bytes,p.metadata,EXISTS(SELECT 1 FROM clip_rich r WHERE r.clip_id=c.id) FROM clips c LEFT JOIN clip_images i ON i.clip_id=c.id LEFT JOIN clip_privacy p ON p.clip_id=c.id";
 
 pub struct Store {
     conn: Connection,
@@ -557,6 +567,7 @@ fn clip_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Clip> {
         link_hosts: metadata.link_hosts,
         app_tags: metadata.app_tags,
         origin_url: (!metadata.origin_url.is_empty()).then_some(metadata.origin_url),
+        rich: row.get(15)?,
     })
 }
 
@@ -616,6 +627,14 @@ fn read_privacy_rules(conn: &Connection) -> Result<PrivacyRules> {
     rules.validate()?;
     Ok(rules)
 }
+/// 富文本只作为文字记录的附加格式保存，随记录删除。
+pub const MAX_RICH_BYTES: usize = 256 * 1024;
+pub const MAX_FILES: usize = 64;
+fn ensure_rich_table(conn: &Connection) -> Result<()> {
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS clip_rich (clip_id INTEGER PRIMARY KEY REFERENCES clips(id) ON DELETE CASCADE, html TEXT NOT NULL);")
+        .map_err(sql_error)
+}
+
 fn scan_clip(conn: &Connection, id: i64, rules: &PrivacyRules, reviewed: bool) -> Result<Metadata> {
     let (content, title, kind): (String, String, String) = conn
         .query_row(
@@ -874,6 +893,7 @@ impl Store {
         if version == SCHEMA_VERSION {
             Self::validate_current_schema(&conn)?;
             clip_stats::ensure_table(&conn)?;
+            ensure_rich_table(&conn)?;
             crate::search_index::ensure(&conn)?;
             let store = Self { conn };
             store.prune_history()?;
@@ -990,6 +1010,7 @@ impl Store {
         settings.validate()?;
         Self::prune_with_settings(&tx, &settings, now())?;
         clip_stats::ensure_table(&tx)?;
+        ensure_rich_table(&tx)?;
         crate::search_index::ensure(&tx)?;
         tx.pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(sql_error)?;
@@ -1536,7 +1557,7 @@ impl Store {
             "kept" => predicates.push("c.keep_forever=1".into()),
             "link" => predicates
                 .push("(c.kind='link' OR json_array_length(p.metadata,'$.linkHosts')>0)".into()),
-            "text" | "code" | "color" | "image" => {
+            "text" | "code" | "color" | "image" | "file" => {
                 predicates.push("c.kind=?".into());
                 values.push(query.filter.clone().into());
             }
@@ -1854,7 +1875,53 @@ impl Store {
 
     /// Clipboard capture path: also counts the activity for 星迹统计 in the same transaction.
     pub fn capture_text(&self, content: &str, context: &CaptureContext) -> Result<Clip> {
-        self.insert_text(content, "", None, false, Some(context))
+        self.capture_rich_text(content, None, context)
+    }
+
+    /// 文字采集；`html` 为同一次复制附带的格式，最新一次复制决定是否保留格式。
+    pub fn capture_rich_text(
+        &self,
+        content: &str,
+        html: Option<&str>,
+        context: &CaptureContext,
+    ) -> Result<Clip> {
+        let html = html.filter(|html| !html.trim().is_empty() && html.len() <= MAX_RICH_BYTES);
+        self.insert_text(
+            content,
+            "",
+            None,
+            false,
+            Some((context, CaptureExtra::Html(html))),
+        )
+    }
+
+    /// 文件采集：正文是换行连接的绝对路径，复制回去写入文件列表，不读取文件内容。
+    pub fn capture_files(&self, paths: &[String], context: &CaptureContext) -> Result<Clip> {
+        if paths.is_empty() || paths.len() > MAX_FILES {
+            return Err(format!("一次复制的文件需为 1–{MAX_FILES} 个。"));
+        }
+        if paths
+            .iter()
+            .any(|path| path.trim().is_empty() || path.contains('\n'))
+        {
+            return Err("文件路径无效。".into());
+        }
+        self.insert_text(
+            &paths.join("\n"),
+            "",
+            None,
+            false,
+            Some((context, CaptureExtra::Files)),
+        )
+    }
+
+    pub fn clip_html(&self, id: i64) -> Result<Option<String>> {
+        self.conn
+            .query_row("SELECT html FROM clip_rich WHERE clip_id=?1", [id], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(sql_error)
     }
 
     /// 写入复制上下文；随后的 `scan_clip` 会带着来源域名重新匹配规则。
@@ -1887,9 +1954,13 @@ impl Store {
         title: &str,
         group_id: Option<i64>,
         keep_forever: bool,
-        capture: Option<&CaptureContext>,
+        capture: Option<(&CaptureContext, CaptureExtra<'_>)>,
     ) -> Result<Clip> {
         validate_content(content, title)?;
+        let kind = match capture {
+            Some((_, CaptureExtra::Files)) => "file",
+            _ => classify(content),
+        };
         let timestamp = now();
         let tx = self.conn.unchecked_transaction().map_err(sql_error)?;
         let existed = capture.is_some() && Self::content_exists(&tx, content, false)?;
@@ -1897,7 +1968,7 @@ impl Store {
             ON CONFLICT(content) WHERE kind<>'image' DO UPDATE SET updated_at=excluded.updated_at,
             title=CASE WHEN excluded.title<>'' THEN excluded.title ELSE clips.title END,
             group_id=COALESCE(excluded.group_id,clips.group_id),
-            keep_forever=MAX(clips.keep_forever,excluded.keep_forever)", params![content, title.trim(), classify(content), group_id, timestamp, keep_forever]).map_err(sql_error)?;
+            keep_forever=MAX(clips.keep_forever,excluded.keep_forever)", params![content, title.trim(), kind, group_id, timestamp, keep_forever]).map_err(sql_error)?;
         let id = tx
             .query_row(
                 "SELECT id FROM clips WHERE content=?1 AND kind<>'image'",
@@ -1905,8 +1976,18 @@ impl Store {
                 |row| row.get(0),
             )
             .map_err(sql_error)?;
-        if let Some(context) = capture {
+        if let Some((context, extra)) = capture {
             Self::apply_capture(&tx, id, context)?;
+            match extra {
+                CaptureExtra::Html(Some(html)) => {
+                    tx.execute("INSERT INTO clip_rich(clip_id,html) VALUES(?1,?2) ON CONFLICT(clip_id) DO UPDATE SET html=excluded.html", params![id, html]).map_err(sql_error)?;
+                }
+                CaptureExtra::Html(None) => {
+                    tx.execute("DELETE FROM clip_rich WHERE clip_id=?1", [id])
+                        .map_err(sql_error)?;
+                }
+                CaptureExtra::Files => {}
+            }
             // A repeat keeps the stored kind, e.g. text later saved as code.
             let kind: String = tx
                 .query_row("SELECT kind FROM clips WHERE id=?1", [id], |row| row.get(0))
@@ -1939,8 +2020,10 @@ impl Store {
         let tx = self.conn.unchecked_transaction().map_err(sql_error)?;
         let clip = match id {
             Some(id) => {
-                if self.clip(id)?.kind == "image" {
-                    return Err("图片不能转换为代码，请新建代码片段。".into());
+                match self.clip(id)?.kind.as_str() {
+                    "image" => return Err("图片不能转换为代码，请新建代码片段。".into()),
+                    "file" => return Err("文件记录不能转换为代码，请新建代码片段。".into()),
+                    _ => {}
                 }
                 self.conn.execute("UPDATE clips SET content=?1,title=?2,kind='code',language=?3,group_id=?4,updated_at=?5,pinned=1 WHERE id=?6", params![content,title.trim(),language,group_id,timestamp,id])
                     .map_err(|error| match error {
@@ -2061,7 +2144,9 @@ impl Store {
 
     /// This only reads rows, file sizes and SQLite page statistics; it never prunes.
     pub fn preview_cleanup(&self, filter: &CleanupFilter) -> Result<CleanupSnapshot> {
-        if !["all", "text", "link", "code", "color", "image"].contains(&filter.kind.as_str()) {
+        if !["all", "text", "link", "code", "color", "image", "file"]
+            .contains(&filter.kind.as_str())
+        {
             return Err("不支持的清理内容类型。".into());
         }
         let cutoff = now().saturating_sub(i64::from(filter.older_than_days) * 86_400_000);
@@ -2495,6 +2580,8 @@ impl Store {
                 "image"
             } else if clip.language.is_some() {
                 "code"
+            } else if clip.kind == "file" && clip.content.lines().count() <= MAX_FILES {
+                "file"
             } else {
                 classify(&clip.content)
             };
@@ -5130,6 +5217,60 @@ mod tests {
             ..Settings::default()
         };
         assert!(unsupported.validate().is_err());
+    }
+
+    #[test]
+    fn rich_text_and_file_captures_keep_formats_separately() {
+        let db = store();
+        let ctx = CaptureContext::default();
+        let rich = db
+            .capture_rich_text("原创加粗样例", Some("<b>原创加粗样例</b>"), &ctx)
+            .unwrap();
+        assert!(rich.rich);
+        assert_eq!(
+            db.clip_html(rich.id).unwrap().as_deref(),
+            Some("<b>原创加粗样例</b>")
+        );
+        // The latest copy decides: copying the same text without formatting drops the HTML.
+        let plain = db.capture_text("原创加粗样例", &ctx).unwrap();
+        assert!(!plain.rich);
+        assert_eq!(db.clip_html(rich.id).unwrap(), None);
+        let huge = "x".repeat(MAX_RICH_BYTES + 1);
+        assert!(
+            !db.capture_rich_text("原创超长格式", Some(&huge), &ctx)
+                .unwrap()
+                .rich
+        );
+
+        let files = db
+            .capture_files(
+                &["/fixture/原创/a.txt".into(), "/fixture/原创/b.png".into()],
+                &ctx,
+            )
+            .unwrap();
+        assert_eq!(files.kind, "file");
+        assert_eq!(files.content, "/fixture/原创/a.txt\n/fixture/原创/b.png");
+        assert!(db.capture_files(&[], &ctx).is_err());
+        assert!(db.capture_files(&["bad\npath".into()], &ctx).is_err());
+        assert!(db
+            .save_code(Some(files.id), "", "x", "plaintext", None)
+            .is_err());
+        let page = db
+            .history_page(&HistoryQuery {
+                filter: "file".into(),
+                ..HistoryQuery::default()
+            })
+            .unwrap();
+        assert_eq!(
+            page.clips.iter().map(|c| c.id).collect::<Vec<_>>(),
+            vec![files.id]
+        );
+        db.delete(rich.id).unwrap();
+        let orphans: i64 = db
+            .conn
+            .query_row("SELECT count(*) FROM clip_rich", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(orphans, 0);
     }
 
     #[test]

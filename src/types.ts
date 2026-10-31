@@ -2,7 +2,7 @@ export interface Clip {
   id: number;
   content: string;
   title: string;
-  kind: 'text' | 'link' | 'code' | 'color' | 'image';
+  kind: 'text' | 'link' | 'code' | 'color' | 'image' | 'file';
   image?: { width: number; height: number; bytes: number } | null;
   language: string | null;
   pinned: boolean;
@@ -23,6 +23,8 @@ export interface Clip {
   appTags?: string[];
   /** 浏览器提供的来源页面，已去掉查询与片段。 */
   originUrl?: string;
+  /** 复制时附带了 HTML 格式。 */
+  rich?: boolean;
 }
 export interface Group { id: number; name: string; color: string }
 export type UILanguage = 'system' | 'zh-CN' | 'en-US';

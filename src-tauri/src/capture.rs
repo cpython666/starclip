@@ -3,6 +3,8 @@
 pub enum CaptureKey {
     Text(String),
     Image(String),
+    /// 换行连接的文件绝对路径。
+    Files(String),
 }
 
 #[derive(Default)]

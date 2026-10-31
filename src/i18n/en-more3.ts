@@ -330,4 +330,12 @@ export const enMore3: Record<string, string> = {
   "快选复制": "Quick copy",
   "按住 {key} 查看序号；搜索框内也可用，回车复制第一条": "Hold {key} to see numbers. Also works in the search box, where Return copies the first result",
   "已复制，回到原应用即可粘贴": "Copied. Paste it in the previous app",
+  "文件": "Files",
+  "{name} 等 {count} 个文件": "{name} and {count} files",
+  "还有 {count} 个": "{count} more",
+  "已复制为纯文本": "Copied as plain text",
+  "文件记录可直接复制到目标应用，或复制为纯文本路径。": "File clips can be copied straight into another app, or copied as plain-text paths.",
+  "只复制文件路径": "Copy only the file paths",
+  "去掉原有格式，只复制文字": "Drop the original formatting and copy only the text",
+  "复制为纯文本": "Copy as plain text",
 }

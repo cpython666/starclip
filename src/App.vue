@@ -163,8 +163,8 @@ let unsubscribe: (() => void) | undefined
 let unsubscribeGrowthError: (() => void) | undefined
 let unsubscribeCloseRequest: (() => void) | undefined
 const colors = ['#8b93d9', '#71baad', '#d7b678', '#d98eaa', '#89afd5', '#b3a192']
-const kindNames = computed<Record<Clip['kind'], string>>(() => ({ text: t('文本'), link: t('链接'), code: t('代码'), color: t('色彩'), image: t('图片') }))
-const navItems = computed(() => [{ key: 'all', name: t('全部记录'), icon: 'grid' }, { key: 'pinned', name: t('星标收藏'), icon: 'star' }, { key: 'kept', name: t('永久保留'), icon: 'shield' }, { key: 'link', name: t('链接'), icon: 'link' }, { key: 'image', name: t('图片'), icon: 'image' }, { key: 'code', name: t('星码集'), icon: 'code' }])
+const kindNames = computed<Record<Clip['kind'], string>>(() => ({ text: t('文本'), link: t('链接'), code: t('代码'), color: t('色彩'), image: t('图片'), file: t('文件') }))
+const navItems = computed(() => [{ key: 'all', name: t('全部记录'), icon: 'grid' }, { key: 'pinned', name: t('星标收藏'), icon: 'star' }, { key: 'kept', name: t('永久保留'), icon: 'shield' }, { key: 'link', name: t('链接'), icon: 'link' }, { key: 'image', name: t('图片'), icon: 'image' }, { key: 'file', name: t('文件'), icon: 'file' }, { key: 'code', name: t('星码集'), icon: 'code' }])
 const visible = computed(() => historyLoading.value ? [] : state.value.clips)
 const sectionName = computed(() => navItems.value.find(n => n.key === filter.value)?.name || state.value.groups.find(g => `group-${g.id}` === filter.value)?.name || t('全部记录'))
 const currentGroup = computed(() => state.value.groups.find(g => `group-${g.id}` === filter.value))
@@ -278,16 +278,21 @@ async function run(action: () => Promise<unknown>, success?: string): Promise<bo
 function count(key: string) { return state.value.history?.counts[key] ?? state.value.clips.filter(c => key === 'all' || (key === 'pinned' && c.pinned) || (key === 'kept' && c.keepForever) || (key === 'link' ? c.kind === 'link' || !!c.linkHosts?.length : c.kind === key)).length }
 function groupFor(clip: Clip) { return state.value.groups.find(g => g.id === clip.groupId) }
 function relativeTime(time: number) { return formatRelativeTime(time) }
-function titleFor(clip: Clip) { if (protectedClip(clip)) return t('隐私记录'); return clip.title || (clip.kind === 'image' ? t('未命名图片') : clip.content.trim().split('\n')[0]?.slice(0, 44)) || t('未命名片段') }
+function fileNames(clip: Clip) { return clip.content.split('\n').filter(Boolean).map(path => path.split(/[\\/]/).filter(Boolean).pop() || path) }
+function titleFor(clip: Clip) {
+  if (protectedClip(clip)) return t('隐私记录')
+  if (!clip.title && clip.kind === 'file') { const names = fileNames(clip); return names.length > 1 ? t('{name} 等 {count} 个文件', { name: names[0]!, count: names.length }) : names[0] || t('未命名片段') }
+  return clip.title || (clip.kind === 'image' ? t('未命名图片') : clip.content.trim().split('\n')[0]?.slice(0, 44)) || t('未命名片段')
+}
 function imageLabel(clip: Clip) { const image = clip.image; if (!image) return t('PNG 图片'); const size = image.bytes < 1024 ? `${image.bytes} B` : image.bytes < 1048576 ? `${(image.bytes / 1024).toFixed(1)} KiB` : `${(image.bytes / 1048576).toFixed(1)} MiB`; return `${image.width} × ${image.height} · ${size}` }
 function linkHost(content: string) { try { return new URL(content.trim()).hostname } catch { return t('网页链接') } }
 function colorValue(content: string) { return /^#[\da-f]{3,8}$/i.test(content.trim()) ? content.trim() : '#8b93d9' }
-async function copy(clip: Clip, quick = false) {
+async function copy(clip: Clip, quick = false, plain = false) {
   try {
-    await api.copyClip(clip.id); copied.value = clip.id; clearTimeout(copyTimer); copyTimer = setTimeout(() => { copied.value = null }, 1800)
+    await api.copyClip(clip.id, plain); copied.value = clip.id; clearTimeout(copyTimer); copyTimer = setTimeout(() => { copied.value = null }, 1800)
     // 键盘快选 / 回车 / 双击后收起窗口，回到原应用直接粘贴；隐私内容同样收起，但提示仍保留在下次打开时可见。
     const hide = quick && isDesktop && state.value.settings.hideAfterCopy !== false
-    notify(protectedClip(clip) ? t('隐私内容已复制，请留意目标应用。') : hide ? t('已复制，回到原应用即可粘贴') : t('已复制，切换到目标应用即可粘贴'))
+    notify(protectedClip(clip) ? t('隐私内容已复制，请留意目标应用。') : plain && (clip.rich || clip.kind === 'file') ? t('已复制为纯文本') : hide ? t('已复制，回到原应用即可粘贴') : t('已复制，切换到目标应用即可粘贴'))
     if (hide) { query.value = ''; void hideMainWindow(undefined, true) }
     await refresh()
   } catch (error) { notify(errorText(error), true) }
@@ -316,7 +321,7 @@ function cleanupClosed() {
 }
 async function cleanupChanged() { await Promise.all([refresh(), dataSettings.value?.refresh()]) }
 function openClip(clip?: Clip) { ++clipDetailVersion; clipDetailsLoading.value = false; clipDetailsError.value = ''; privateRevealed.value = false; editing.value = clip ?? null; clipTitle.value = clip?.title || ''; clipContent.value = clip?.kind === 'image' ? '' : clip?.content || ''; clipGroup.value = clip?.groupId ?? currentGroup.value?.id ?? null; clipPinned.value = clip?.pinned ?? false; clipKept.value = clip?.keepForever ?? false; modal.value = 'clip' }
-function openStudio(clip: Clip | null = null) { if (clip?.kind === 'image') return notify(t('星绘坊用于文字和代码，图片可直接复制到目标应用。'), true); modal.value = ''; studioClip.value = clip; studioOpen.value = true; recordStudioOpened() }
+function openStudio(clip: Clip | null = null) { if (clip?.kind === 'file') return notify(t('文件记录可直接复制到目标应用，或复制为纯文本路径。'), true); if (clip?.kind === 'image') return notify(t('星绘坊用于文字和代码，图片可直接复制到目标应用。'), true); modal.value = ''; studioClip.value = clip; studioOpen.value = true; recordStudioOpened() }
 async function saveClip() {
   if (clipDetailsBlocked.value) return
   if (editing.value?.kind !== 'image' && !clipContent.value.trim()) return notify(t('先写下一点内容吧'), true)
@@ -537,14 +542,16 @@ function keyboard(event: KeyboardEvent) {
   if (modifier && event.key.toLowerCase() === 'k') { event.preventDefault(); searchInput.value?.focus(); return }
   // 搜索框内也能 ⌘/Ctrl + 1–9 快选、↓ 进入结果、回车复制第一条，呼出后输入即可选取。
   const inSearch = target === searchInput.value
-  if (inSearch && modifier && !event.shiftKey && !event.altKey && /^[1-9]$/.test(event.key)) {
-    const clip = visible.value[Number(event.key) - 1]
-    if (clip) { event.preventDefault(); void copy(clip, true) }
+  // ⇧ 组合：⇧⌘1–9 / ⇧回车复制为纯文本（去掉格式，文件只复制路径）。Shift+数字在部分键盘上报符号，用 code 判断。
+  const digit = /^Digit[1-9]$/.test(event.code ?? '') ? event.code.slice(5) : /^[1-9]$/.test(event.key) ? event.key : ''
+  if (inSearch && modifier && !event.altKey && digit) {
+    const clip = visible.value[Number(digit) - 1]
+    if (clip) { event.preventDefault(); void copy(clip, true, event.shiftKey) }
     return
   }
-  if (inSearch && !modifier && !event.altKey && !event.shiftKey && visible.value.length) {
-    if (event.key === 'ArrowDown') { event.preventDefault(); selected.value = null; moveSelection(0); return }
-    if (event.key === 'Enter') { event.preventDefault(); void copy(visible.value.find(c => c.id === selected.value) ?? visible.value[0]!, true); return }
+  if (inSearch && !modifier && !event.altKey && visible.value.length) {
+    if (event.key === 'ArrowDown' && !event.shiftKey) { event.preventDefault(); selected.value = null; moveSelection(0); return }
+    if (event.key === 'Enter') { event.preventDefault(); void copy(visible.value.find(c => c.id === selected.value) ?? visible.value[0]!, true, event.shiftKey); return }
   }
   if (typing) return
   if (modifier && event.shiftKey && !event.altKey && ['ArrowLeft', 'ArrowRight'].includes(event.key)) {
@@ -556,9 +563,14 @@ function keyboard(event: KeyboardEvent) {
     return
   }
   if (target.closest('button, a')) return
-  if (modifier && !event.shiftKey && !event.altKey && /^[1-9]$/.test(event.key)) {
-    const clip = visible.value[Number(event.key) - 1]
-    if (clip) { event.preventDefault(); void copy(clip, true) }
+  if (modifier && !event.altKey && digit) {
+    const clip = visible.value[Number(digit) - 1]
+    if (clip) { event.preventDefault(); void copy(clip, true, event.shiftKey) }
+    return
+  }
+  if (!modifier && !event.altKey && event.shiftKey && event.key === 'Enter' && selected.value !== null) {
+    const clip = visible.value.find(c => c.id === selected.value)
+    if (clip) { event.preventDefault(); void copy(clip, true, true) }
     return
   }
   if (modifier || event.altKey || event.shiftKey) return
@@ -626,7 +638,7 @@ onUnmounted(() => { disposed = true; pendingWindowClose = null; clearTimeout(win
           <div v-else :class="['clip-collection', state.settings.layout]" :aria-label="state.settings.layout === 'horizontal' ? t('流星栏：横向片段列表') : undefined">
             <article v-for="(clip, index) in visible" :key="clip.id" :data-clip-id="clip.id" :class="['clip-card', `kind-${clip.kind}`, { 'is-selected': selected === clip.id, 'is-copied': copied === clip.id }]" tabindex="0" :aria-label="t('{title}，{kind}，双击复制', { title: titleFor(clip), kind: kindNames[clip.kind] })" @click="selected = clip.id" @focus="selected = clip.id" @dblclick="copy(clip, true)" @keydown.enter="event => { if (event.target === event.currentTarget) { event.stopPropagation(); event.preventDefault(); copy(clip, true) } }">
               <div class="card-top"><span :class="['kind-icon', clip.kind]"><Icon :name="clip.kind" :size="16" /></span><span class="kind-label">{{ clip.language || kindNames[clip.kind] }}</span><kbd v-if="quickKeysVisible && index < 9" class="quick-key" aria-hidden="true">{{ modKey }}{{ index + 1 }}</kbd><div class="card-top-actions" @dblclick.stop><button :class="['icon-button', 'keep-button', { kept: clip.keepForever }]" :title="clip.keepForever ? t('永久保留中 · 点击取消') : t('永久保留，不参与清理')" :aria-label="`${clip.keepForever ? t('取消永久保留') : t('永久保留')} ${titleFor(clip)}`" :aria-pressed="clip.keepForever" @click.stop="toggleKept(clip)"><Icon name="shield" :size="15" /></button><button :class="['icon-button', 'pin-button', { pinned: clip.pinned }]" :title="clip.pinned ? t('取消星标') : t('收藏到星标')" :aria-label="clip.pinned ? t('取消星标') : t('收藏到星标')" :aria-pressed="clip.pinned" @click.stop="togglePin(clip)"><Icon name="star" :size="15" /></button><button class="icon-button edit-button" :title="t('查看和编辑')" :aria-label="t('查看和编辑')" @click.stop="openClip(clip)"><Icon name="more" :size="17" /></button></div></div>
-              <div class="card-main" @click="selected = clip.id"><template v-if="protectedClip(clip)"><h3>{{ t('隐私记录') }}</h3><p class="private-card-note"><Icon name="shield" :size="18" />{{ t('隐私 · 不向 AI 提供') }}</p><button type="button" class="private-card-open" @click.stop="openClip(clip)" @dblclick.stop>{{ t('在本机查看与复核') }}</button></template><template v-else-if="clip.kind === 'image'"><h3>{{ titleFor(clip) }}</h3><button class="image-open" type="button" :aria-label="t('预览图片：{title}', { title: titleFor(clip) })" @click.stop="openClip(clip)" @dblclick.stop><ClipImage :id="clip.id" :alt="titleFor(clip)" /><span class="image-card-meta">{{ imageLabel(clip) }}</span></button></template><template v-else-if="clip.kind === 'color'"><div class="color-preview" :style="{ background: colorValue(clip.content) }"><span>{{ clip.content.trim() }}</span></div><h3>{{ titleFor(clip) }}</h3></template><template v-else><h3>{{ titleFor(clip) }}</h3><div v-if="clip.kind === 'link'" class="link-preview"><span class="link-favicon">{{ linkHost(clip.content)[0]?.toUpperCase() }}</span><div><strong>{{ linkHost(clip.content) }}</strong><span>{{ clip.content }}</span></div><Icon name="arrow" :size="15" /></div><pre v-else-if="clip.kind === 'code'" class="code-preview">{{ clip.content }}</pre><p v-else class="text-preview">{{ clip.content }}</p></template></div>
+              <div class="card-main" @click="selected = clip.id"><template v-if="protectedClip(clip)"><h3>{{ t('隐私记录') }}</h3><p class="private-card-note"><Icon name="shield" :size="18" />{{ t('隐私 · 不向 AI 提供') }}</p><button type="button" class="private-card-open" @click.stop="openClip(clip)" @dblclick.stop>{{ t('在本机查看与复核') }}</button></template><template v-else-if="clip.kind === 'image'"><h3>{{ titleFor(clip) }}</h3><button class="image-open" type="button" :aria-label="t('预览图片：{title}', { title: titleFor(clip) })" @click.stop="openClip(clip)" @dblclick.stop><ClipImage :id="clip.id" :alt="titleFor(clip)" /><span class="image-card-meta">{{ imageLabel(clip) }}</span></button></template><template v-else-if="clip.kind === 'color'"><div class="color-preview" :style="{ background: colorValue(clip.content) }"><span>{{ clip.content.trim() }}</span></div><h3>{{ titleFor(clip) }}</h3></template><template v-else><h3>{{ titleFor(clip) }}</h3><div v-if="clip.kind === 'link'" class="link-preview"><span class="link-favicon">{{ linkHost(clip.content)[0]?.toUpperCase() }}</span><div><strong>{{ linkHost(clip.content) }}</strong><span>{{ clip.content }}</span></div><Icon name="arrow" :size="15" /></div><pre v-else-if="clip.kind === 'code'" class="code-preview">{{ clip.content }}</pre><ul v-else-if="clip.kind === 'file'" class="file-preview"><li v-for="name in fileNames(clip).slice(0, 4)" :key="name"><Icon name="file" :size="13" />{{ name }}</li><li v-if="fileNames(clip).length > 4" class="file-more">{{ t('还有 {count} 个', { count: fileNames(clip).length - 4 }) }}</li></ul><p v-else class="text-preview">{{ clip.content }}</p></template></div>
               <div v-if="!protectedClip(clip) && (clip.tags?.length || clip.linkSources?.length)" class="card-metadata"><span v-for="source in (clip.linkSources ?? []).slice(0, 1)" :key="source">{{ t(sourceNames[source] ?? source) }}</span><span v-for="tag in (clip.tags ?? []).slice(0, 2)" :key="tag">#{{ tag }}</span><small v-if="(clip.tags?.length ?? 0) > 2">+{{ clip.tags!.length - 2 }}</small></div>
               <div class="card-bottom"><span v-if="groupFor(clip)" class="group-tag" :style="{ '--group-color': groupFor(clip)?.color }"><span />{{ groupFor(clip)?.name }}</span><span v-else class="time-label">{{ relativeTime(clip.updatedAt) }}</span><div class="card-copy-area" @dblclick.stop><kbd v-if="index < 9">{{ modKey }} {{ index + 1 }}</kbd><button :class="['copy-button', { copied: copied === clip.id }]" @click.stop="copy(clip)" :title="t('复制{title}', { title: titleFor(clip) })" :aria-label="t('复制{title}', { title: titleFor(clip) })"><Icon :name="copied === clip.id ? 'check' : 'copy'" :size="14" /><span>{{ copied === clip.id ? t('已复制') : t('复制') }}</span></button></div></div>
             </article>
@@ -651,7 +663,7 @@ onUnmounted(() => { disposed = true; pendingWindowClose = null; clearTimeout(win
           <ClipPrivacy v-if="editing" :clip="editing" :revision="rulesRevision" :disabled="busy || clipDetailsBlocked || dataOperationBusy || updateBusy || shareBusy || appearanceBusy || privacyBusy || telemetryBusy || aiBusy" @busy="clipPrivacyBusy = $event" @changed="privacyChanged" />
           <div class="form-row"><div class="group-field"><span>{{ t('所属星座') }}</span><UiSelect v-model="clipGroup" :options="groupChoices" :label="t('所属星座')" :disabled="busy || dataBusy" /></div><label class="checkbox-label"><input type="checkbox" v-model="clipPinned" /><Icon name="star" :size="17" />{{ t('加入星标收藏') }}</label></div>
           <label class="checkbox-label keep-setting"><input type="checkbox" v-model="clipKept" /><Icon name="shield" :size="17" />{{ t('永久保留，不参与清理') }}</label><p v-if="editing?.keepForever" class="field-note">{{ t('这条记录已受保护；如需删除，请先取消永久保留并保存。') }}</p>
-          <div class="modal-actions"><button v-if="editing" type="button" class="button danger-quiet" @click="deleteEditing" :disabled="busy || dataBusy || editing.keepForever"><Icon name="trash" :size="16" />{{ t('删除') }}</button><span class="spacer" /><button v-if="editing?.kind === 'image'" type="button" class="button subtle" :disabled="busy || dataBusy || clipDetailsBlocked" @click="copy(editing)"><Icon name="copy" :size="15" />{{ t('复制图片') }}</button><button v-else-if="editing" type="button" class="button subtle" :disabled="busy || dataBusy || clipDetailsBlocked || (protectedClip(editing) && !privateRevealed)" @click="openStudio(editing)"><Icon name="code" :size="15" />{{ t('带入星绘坊') }}</button><button type="submit" class="button primary" :disabled="busy || dataBusy || clipDetailsBlocked || (editing?.kind !== 'image' && !clipContent.trim())">{{ editing ? t('保存修改') : t('收下这颗灵感') }}<Icon name="check" :size="16" /></button></div>
+          <div class="modal-actions"><button v-if="editing" type="button" class="button danger-quiet" @click="deleteEditing" :disabled="busy || dataBusy || editing.keepForever"><Icon name="trash" :size="16" />{{ t('删除') }}</button><span class="spacer" /><button v-if="editing && (editing.rich || editing.kind === 'file')" type="button" class="button subtle" :disabled="busy || dataBusy || clipDetailsBlocked || (protectedClip(editing) && !privateRevealed)" :title="editing.kind === 'file' ? t('只复制文件路径') : t('去掉原有格式，只复制文字')" @click="copy(editing, false, true)"><Icon name="text" :size="15" />{{ t('复制为纯文本') }}</button><button v-if="editing?.kind === 'image'" type="button" class="button subtle" :disabled="busy || dataBusy || clipDetailsBlocked" @click="copy(editing)"><Icon name="copy" :size="15" />{{ t('复制图片') }}</button><button v-else-if="editing && editing.kind !== 'file'" type="button" class="button subtle" :disabled="busy || dataBusy || clipDetailsBlocked || (protectedClip(editing) && !privateRevealed)" @click="openStudio(editing)"><Icon name="code" :size="15" />{{ t('带入星绘坊') }}</button><button type="submit" class="button primary" :disabled="busy || dataBusy || clipDetailsBlocked || (editing?.kind !== 'image' && !clipContent.trim())">{{ editing ? t('保存修改') : t('收下这颗灵感') }}<Icon name="check" :size="16" /></button></div>
         </form>
         <form v-else-if="modal === 'group'" @submit.prevent="saveGroup"><p class="modal-intro">{{ t('把常用片段放在一起，下次相遇更容易。') }}</p><label>{{ t('星座名称') }}<input v-model="groupName" maxlength="40" :placeholder="t('例如：工作碎片、值得一读')" required autofocus /></label><label class="color-label">{{ t('标记颜色') }}<div class="color-choices"><button v-for="color in colors" :key="color" type="button" :style="{ background: color }" :class="{ chosen: groupColor === color }" :aria-label="t('选择颜色 {color}', { color })" :aria-pressed="groupColor === color" @click="groupColor = color"><Icon v-if="groupColor === color" name="check" :size="16" /></button></div></label><div class="modal-actions"><button type="button" class="button subtle" :disabled="dataBusy" @click="closeModal">{{ t('取消') }}</button><button class="button primary" :disabled="busy || dataBusy || !groupName.trim()">{{ t('创建分组') }}<Icon name="plus" :size="16" /></button></div></form>
         <form v-else-if="modal === 'settings'" @submit.prevent="saveSettings" class="settings-form">

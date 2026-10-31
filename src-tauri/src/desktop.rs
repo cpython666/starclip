@@ -1010,7 +1010,9 @@ async fn get_clip_image(context: AppContext<'_>, id: i64, thumbnail: bool) -> Re
 }
 enum ClipboardWrite {
     Text(String),
+    Html(String, String),
     Image((u32, u32, Vec<u8>)),
+    Files(Vec<String>),
 }
 fn write_and_suppress(
     capture: &mut CaptureState,
@@ -1023,7 +1025,10 @@ fn write_and_suppress(
 }
 fn write_clipboard(context: &Context, content: ClipboardWrite) -> Result<()> {
     let key = match &content {
-        ClipboardWrite::Text(text) => CaptureKey::Text(text.clone()),
+        ClipboardWrite::Text(text) | ClipboardWrite::Html(_, text) => {
+            CaptureKey::Text(text.clone())
+        }
+        ClipboardWrite::Files(paths) => CaptureKey::Files(paths.join("\n")),
         ClipboardWrite::Image((width, height, rgba)) => {
             CaptureKey::Image(images::fingerprint_rgba(*width, *height, rgba)?)
         }
@@ -1039,6 +1044,17 @@ fn write_clipboard(context: &Context, content: ClipboardWrite) -> Result<()> {
             .unwrap()
             .set_text(text)
             .map_err(|e| format!("复制失败：{e}")),
+        ClipboardWrite::Html(html, text) => clipboard
+            .as_mut()
+            .unwrap()
+            .set_html(html, Some(text))
+            .map_err(|e| format!("复制失败：{e}")),
+        ClipboardWrite::Files(paths) => clipboard
+            .as_mut()
+            .unwrap()
+            .set()
+            .file_list(&paths)
+            .map_err(|e| format!("文件复制失败：{e}")),
         ClipboardWrite::Image((width, height, rgba)) => clipboard
             .as_mut()
             .unwrap()
@@ -1125,11 +1141,17 @@ async fn save_product_share_image(
     .map_err(|_| "产品介绍图保存失败，请重试。".to_string())?
 }
 #[tauri::command]
-async fn copy_clip(app: AppHandle, context: AppContext<'_>, id: i64) -> Result<()> {
+async fn copy_clip(
+    app: AppHandle,
+    context: AppContext<'_>,
+    id: i64,
+    plain: Option<bool>,
+) -> Result<()> {
     let context = context.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _write = write_guard(&context)?;
-        let (clip, png) = {
+        let plain = plain.unwrap_or(false);
+        let (clip, png, html) = {
             let store = lock(&context.store)?;
             let clip = store.clip(id)?;
             let png = if clip.kind == "image" {
@@ -1137,11 +1159,24 @@ async fn copy_clip(app: AppHandle, context: AppContext<'_>, id: i64) -> Result<(
             } else {
                 None
             };
-            (clip, png)
+            let html = if clip.rich && !plain {
+                store.clip_html(id)?
+            } else {
+                None
+            };
+            (clip, png, html)
         };
-        let content = match png {
-            Some(png) => ClipboardWrite::Image(images::decode_png(&png)?),
-            None => ClipboardWrite::Text(clip.content),
+        let content = match (png, html) {
+            (Some(png), _) => ClipboardWrite::Image(images::decode_png(&png)?),
+            (None, Some(html)) => ClipboardWrite::Html(html, clip.content),
+            (None, None) if clip.kind == "file" && !plain => {
+                let paths: Vec<String> = clip.content.lines().map(str::to_owned).collect();
+                if !paths.iter().all(|path| std::path::Path::new(path).exists()) {
+                    return Err("部分文件已移动或删除，可选择「复制为纯文本」只复制路径。".into());
+                }
+                ClipboardWrite::Files(paths)
+            }
+            (None, None) => ClipboardWrite::Text(clip.content),
         };
         write_clipboard(&context, content)?;
         lock(&context.store)?.mark_copied(id)?;
@@ -2391,12 +2426,24 @@ fn clipboard_sequence() -> Option<u64> {
 }
 enum ClipboardContent {
     Empty,
-    Text(String),
+    Text(String, Option<String>),
     Image(ImageData<'static>),
+    Files(Vec<String>),
 }
 fn read_clipboard(
     clipboard: &mut Clipboard,
 ) -> std::result::Result<ClipboardContent, arboard::Error> {
+    // Files first: Finder also offers the file icon as an image and names as text.
+    if let Ok(files) = clipboard.get().file_list() {
+        let paths: Vec<String> = files
+            .iter()
+            .filter_map(|path| path.to_str().map(str::to_owned))
+            .filter(|path| !path.is_empty() && !path.contains('\n'))
+            .collect();
+        if !paths.is_empty() && paths.len() == files.len() {
+            return Ok(ClipboardContent::Files(paths));
+        }
+    }
     let image_error = match clipboard.get_image() {
         Ok(image) => return Ok(ClipboardContent::Image(image)),
         Err(arboard::Error::ContentNotAvailable) => None,
@@ -2404,7 +2451,15 @@ fn read_clipboard(
         Err(error) => return Err(error),
     };
     match clipboard.get_text() {
-        Ok(text) => Ok(ClipboardContent::Text(text)),
+        Ok(text) => {
+            // Formatting is optional: any failure keeps the plain text.
+            let html = clipboard
+                .get()
+                .html()
+                .ok()
+                .filter(|html| html.len() <= crate::store::MAX_RICH_BYTES);
+            Ok(ClipboardContent::Text(text, html))
+        }
         Err(arboard::Error::ContentNotAvailable) => match image_error {
             Some(error) => Err(error),
             None => Ok(ClipboardContent::Empty),
@@ -2573,7 +2628,17 @@ fn monitor(app: AppHandle, context: Arc<Context>) {
                             }
                         }
                     }
-                    ClipboardContent::Text(text) if !text.trim().is_empty() => {
+                    ClipboardContent::Files(paths) => {
+                        if paths.len() > crate::store::MAX_FILES {
+                            reader.capture.skip_invalid(sequence);
+                            return Err(format!(
+                                "一次复制超过 {} 个文件，未记录。",
+                                crate::store::MAX_FILES
+                            ));
+                        }
+                        Some(CaptureKey::Files(paths.join("\n")))
+                    }
+                    ClipboardContent::Text(text, _) if !text.trim().is_empty() => {
                         if text.len() > crate::store::MAX_CONTENT_BYTES {
                             reader.capture.skip_invalid(sequence);
                             return Err("单条文字超过 256 KiB，未记录。".into());
@@ -2599,8 +2664,15 @@ fn monitor(app: AppHandle, context: Arc<Context>) {
                             };
                             lock(&context.store)?.capture_image(&prepared, &source)?;
                         }
-                        ClipboardContent::Text(text) => {
-                            lock(&context.store)?.capture_text(&text, &source)?;
+                        ClipboardContent::Text(text, html) => {
+                            lock(&context.store)?.capture_rich_text(
+                                &text,
+                                html.as_deref(),
+                                &source,
+                            )?;
+                        }
+                        ClipboardContent::Files(paths) => {
+                            lock(&context.store)?.capture_files(&paths, &source)?;
                         }
                         ClipboardContent::Empty => {}
                     }

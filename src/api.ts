@@ -213,8 +213,8 @@ export const api = {
     const clip = requiredClip(id); Object.assign(clip, analyzeDemoClip({ ...clip, title: title.trim(), groupId, pinned }, demoRules)); changed();
   },
   async deleteClip(id: number): Promise<void> { if (isDesktop) return invoke('delete_clip', { id }); if (requiredClip(id).keepForever) throw new Error('请先取消这条记录的永久保留，再删除。'); demo.clips = demo.clips.filter((clip) => clip.id !== id); pendingCleanup = null; changed(); },
-  async copyClip(id: number): Promise<void> {
-    if (isDesktop) return invoke('copy_clip', { id });
+  async copyClip(id: number, plain = false): Promise<void> {
+    if (isDesktop) return invoke('copy_clip', plain ? { id, plain } : { id });
     const clip = requiredClip(id);
     if (clip.kind === 'image') {
       if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') throw new Error('当前浏览器不支持复制图片，请使用桌面版。');
