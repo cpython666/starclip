@@ -301,7 +301,7 @@ test('vertical settings tabs use Up/Down and Home/End while preserving drafts an
     assert.equal(await press('ArrowDown'), true); assert.equal(vm.settingsTab, 'appearance');
     await press('End'); assert.equal(vm.settingsTab, 'help');
     await press('Home'); assert.equal(vm.settingsTab, 'appearance');
-    for (const tab of ['starpet', 'habits', 'privacy', 'ai', 'data', 'share']) {
+    for (const tab of ['starpet', 'habits', 'privacy', 'ai', 'data', 'stats', 'share']) {
       await press('ArrowDown'); assert.equal(vm.settingsTab, tab);
       assert.equal(focused.at(-1), `#settings-tab-${tab}`);
     }

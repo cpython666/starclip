@@ -4,6 +4,8 @@
 export const backendEn: Record<string, string> = {
   "应用内部状态异常，请重新启动星笺。": "Internal app state is invalid. Restart Starclip.",
   "不支持的界面语言。": "Unsupported interface language.",
+  "统计范围需为 1–366 天。": "The insights range must be 1–366 days.",
+  "时区偏移无效。": "Invalid time zone offset.",
   "快捷键格式无效，例如 CommandOrControl+Shift+V。": "Invalid shortcut format. Use something like CommandOrControl+Shift+V.",
   "该快捷键无法注册，可能被其他应用占用。": "This shortcut could not be registered; another app may already use it.",
   "主窗口配置不存在。": "The main window configuration is missing.",

@@ -83,6 +83,13 @@
 
 - 2026-10-26 本轮已通过 Node 76 项、Rust 无 desktop 73 项 + 1 ignored、desktop 单元 78 项 + 1 ignored，以及真实主程序 CLI / MCP stdio 集成 1 项；涵盖迁移失败回滚、JSON 重扫与保护合并、域名欺骗、记录身份复用隔离。原生 UI / 跨平台验收须按 [验证记录](../../../../docs/verification.md) 区分，不由这些测试推定完成。
 
+## 星迹统计（本地活动计数）
+
+- 未发布、源码已实现：`src-tauri/src/clip_stats.rs` 管理 `clip_activity`（15 分钟时段 × kind × new/repeat/reuse 的次数与大小），`store.rs::capture_text` / `capture_image` 只供 `desktop.rs` 采集循环调用，与写入同事务计数；`mark_copied` 计 reuse。`add` / `add_protected` / `add_image` / 导入 / 保存代码不计数。
+- 原因：历史去重只更新 `updated_at`、清理会删行，每日次数不能从 `clips` 倒推。表用 `CREATE TABLE IF NOT EXISTS` 在 `from_connection` 两条路径补建，不提升 `SCHEMA_VERSION`，旧版可打开。
+- 不存正文 / 标题 / 域名 / 记录 ID；保留 400 天；不进 JSON 备份与可选统计；随目录迁移和恢复点。`get_clip_stats(days ≤ 366, utcOffsetMinutes 为 15 的倍数)` 与 `clear_clip_stats` 仅主窗。常见域名排除隐私记录（`PRIVATE_PREDICATE` 与历史筛选共用）。
+- 界面 `src/components/ClipStatsPanel.vue`、`src/clip-stats.ts`（浏览器演示为固定原创数据）；用户说明见 [星迹统计](../../../docs/clip-insights.md)。原生桌面验收待做。
+
 ## 可选统计
 
 2026-10-28 用户已授权云端配置与入库验证，随后明确仅使用免费服务：当前方案为 GA4 标准版 + Cloudflare Workers Free，不开通 Azure、不绑卡、不升级付费计划；软件发布仍须用户明确确认。微软通道保留为默认关闭的可选模板，只有 `ENABLE_APPLICATION_INSIGHTS=true` 才校验并启用；未设置或为 `false` 时不请求 Azure，残留连接字符串不启用它。
