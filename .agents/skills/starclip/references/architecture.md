@@ -14,7 +14,7 @@
 | `src/components/StartupSettings.vue`、`src/startup-api.ts` | 使用习惯中的三项独立即时保存开关：登录自启动、启动收起、图标显隐；读取 / 保存中保护释放，失败可重读。退出事件交由 `App.vue` 核对草稿与子面板状态；浏览器只说明桌面限定 |
 | `src/privacy.ts`、`src/components/PrivacyRules.vue`、`src/components/AiSettings.vue` | 标签 / 来源 / 隐私筛选、规则与重扫、本地 AI 授权及连接配置；`src/api.ts` 包装命令，浏览器只作固定数据演示 |
 | `src/components/DataSettings.vue`、`src/components/CleanupPanel.vue` | 数据位置、备份回执与目录操作；整理预览和确认。父设置的挂载状态由 `src/App.vue` 保留 |
-| `src/components/CodeStudio.vue`、`src/code-card.ts`、`src/snippets.ts` | 星绘坊在打开时按需加载；Canvas 代码卡片、语言与导出工具，卡片预览和 PNG 共用渲染 |
+| `src/components/CodeStudio.vue`、`src/code-card.ts`、`src/snippets.ts`、`src/code-language.ts` | 星绘坊在打开时按需加载；Canvas 代码卡片、语言与导出工具，卡片预览和 PNG 共用渲染 |
 | `src/components/HandwritingPanel.vue`、`src/handwriting-preview.ts` | 字体预览图库、单款显式下载、已下载字体选择、本地预览调度、过期结果隔离与导出有效性；浏览器只展示预览，不下载字体或模拟渲染 |
 | `src/components/HistoryPagination.vue`、`src/types.ts::HistoryQuery` / `HistorySummary` | 主列表与 AI 授权选择共用分页控件；各自维护页码 / 查询，不将当前页当作全库 |
 | `src/components/ClipImage.vue` | 可见区加载图片，详情原图与缩略图分开取用 |
