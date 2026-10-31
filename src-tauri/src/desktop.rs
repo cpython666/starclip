@@ -5,9 +5,9 @@ use crate::privacy::{PrivacyRescan, PrivacyRules};
 use crate::starpet_growth::{self, GrowthChange, GrowthState};
 use crate::storage::{DataDirectoryPlan, DataLocation, DirectoryMode, RecoveryPoint, Storage};
 use crate::store::{
-    starpet_resize_position, CleanupFilter, CleanupPreview, CleanupResult, CleanupSnapshot, Clip,
-    Group, HistoryQuery, HistorySummary, Result, Settings, StarpetPreferencePatch,
-    StarpetPreferences, Store, UpdatePreferences, STALE_CLEANUP,
+    starpet_dock_position, starpet_resize_position, CleanupFilter, CleanupPreview, CleanupResult,
+    CleanupSnapshot, Clip, Group, HistoryQuery, HistorySummary, Result, Settings,
+    StarpetPreferencePatch, StarpetPreferences, Store, UpdatePreferences, STALE_CLEANUP,
 };
 use crate::telemetry::{self, Telemetry, TelemetryState};
 use crate::updater::{self, UpdateStatus, Updates};
@@ -141,6 +141,14 @@ fn record_usage_event(
     Ok(state)
 }
 #[tauri::command]
+fn reset_telemetry_install(app: AppHandle, context: AppContext<'_>) -> Result<TelemetryState> {
+    let mut telemetry = lock(&context.telemetry)?;
+    telemetry.reset_install()?;
+    let state = telemetry.state();
+    telemetry_changed(&app, &state);
+    Ok(state)
+}
+#[tauri::command]
 fn clear_telemetry_queue(app: AppHandle, context: AppContext<'_>) -> Result<TelemetryState> {
     let mut telemetry = lock(&context.telemetry)?;
     let cleared = telemetry.clear_queue();
@@ -166,7 +174,7 @@ fn flush_telemetry_with_context(app: &AppHandle, context: &Context) -> Result<Te
 }
 fn schedule_telemetry_flush(app: &AppHandle, context: &Arc<Context>) {
     if lock(&context.telemetry).is_ok_and(|mut telemetry| {
-        telemetry.checkpoint();
+        telemetry.tick();
         telemetry.ready()
     }) {
         let app = app.clone();
@@ -680,6 +688,42 @@ fn starpet_start_dragging(window: WebviewWindow) -> Result<()> {
     window
         .start_dragging()
         .map_err(|e| format!("无法拖动星伴：{e}"))
+}
+
+#[tauri::command]
+fn starpet_dock(window: WebviewWindow) -> Result<Option<&'static str>> {
+    if window.label() != "starpet" {
+        return Err("此操作仅用于星伴窗口。".into());
+    }
+    let monitor = match window.current_monitor().map_err(|e| e.to_string())? {
+        Some(monitor) => monitor,
+        None => return Ok(None),
+    };
+    let position = window.outer_position().map_err(|e| e.to_string())?;
+    let size = window.outer_size().map_err(|e| e.to_string())?;
+    let area = monitor.work_area();
+    let docked = starpet_dock_position(
+        (f64::from(position.x), f64::from(position.y)),
+        (f64::from(size.width), f64::from(size.height)),
+        (
+            f64::from(area.position.x),
+            f64::from(area.position.y),
+            f64::from(area.size.width),
+            f64::from(area.size.height),
+        ),
+        // About 28 logical pixels: close enough to feel magnetic, far enough to drop freely.
+        28.0 * monitor.scale_factor(),
+    );
+    let Some((edge, x, y)) = docked else {
+        return Ok(None);
+    };
+    window
+        .set_position(tauri::PhysicalPosition::new(
+            x.round() as i32,
+            y.round() as i32,
+        ))
+        .map_err(|e| format!("无法让星伴贴边：{e}"))?;
+    Ok(Some(edge))
 }
 
 fn publish_growth(app: &AppHandle, growth: &GrowthState) {
@@ -1436,6 +1480,19 @@ fn set_native_language(app: AppHandle, context: AppContext<'_>, language: String
     refresh_tray(&app, &context, &settings);
     apply_window_titles(&app, native_is_english(&context));
     Ok(())
+}
+#[tauri::command]
+fn get_clip_stats(
+    context: AppContext<'_>,
+    days: u32,
+    utc_offset_minutes: i32,
+) -> Result<crate::clip_stats::ClipStats> {
+    lock(&context.store)?.clip_stats(days, utc_offset_minutes)
+}
+#[tauri::command]
+fn clear_clip_stats(context: AppContext<'_>) -> Result<()> {
+    let _write = write_guard(&context)?;
+    lock(&context.store)?.clear_clip_stats()
 }
 #[tauri::command]
 fn clear_history(app: AppHandle, context: AppContext<'_>) -> Result<()> {
@@ -2519,10 +2576,10 @@ fn monitor(app: AppHandle, context: Arc<Context>) {
                                     return Err(error);
                                 }
                             };
-                            lock(&context.store)?.add_image(&prepared, "", None, false)?;
+                            lock(&context.store)?.capture_image(&prepared)?;
                         }
                         ClipboardContent::Text(text) => {
-                            lock(&context.store)?.add(&text, "", None)?;
+                            lock(&context.store)?.capture_text(&text)?;
                         }
                         ClipboardContent::Empty => {}
                     }
@@ -2620,7 +2677,8 @@ pub fn run() {
             let context = Arc::new(Context {
                 telemetry: Mutex::new(
                     Telemetry::new(store.telemetry_preferences())
-                        .with_cache(default.join("usage-counts.json")),
+                        .with_cache(default.join("usage-counts.json"))
+                        .with_install(default.join("usage-install.json")),
                 ),
                 storage: Mutex::new(storage),
                 ai: Mutex::new(AiAccess::default()),
@@ -2763,9 +2821,12 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_telemetry_state,
             set_telemetry_enabled,
+            get_clip_stats,
+            clear_clip_stats,
             record_usage_event,
             flush_telemetry,
             clear_telemetry_queue,
+            reset_telemetry_install,
             get_state,
             get_startup_preferences,
             set_startup_preferences,
@@ -2776,6 +2837,7 @@ pub fn run() {
             set_starpet_preferences,
             show_main_window,
             starpet_start_dragging,
+            starpet_dock,
             get_starpet_growth,
             set_starpet_growth_enabled,
             interact_starpet,

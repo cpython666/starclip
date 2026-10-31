@@ -2,6 +2,7 @@ pub mod ai_access;
 pub mod ai_transport;
 pub mod appearance;
 pub mod capture;
+pub mod clip_stats;
 #[cfg(feature = "desktop")]
 mod desktop;
 pub mod handwriting;
@@ -103,6 +104,9 @@ mod capability_tests {
             "record_usage_event",
             "flush_telemetry",
             "clear_telemetry_queue",
+            "reset_telemetry_install",
+            "get_clip_stats",
+            "clear_clip_stats",
         ] {
             assert!(main_commands["commands"]["allow"]
                 .as_array()
@@ -163,6 +167,7 @@ mod capability_tests {
                 "set_starpet_preferences",
                 "show_main_window",
                 "starpet_start_dragging",
+                "starpet_dock",
                 "get_starpet_growth",
                 "set_starpet_growth_enabled",
                 "interact_starpet",

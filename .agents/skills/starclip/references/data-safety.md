@@ -83,11 +83,20 @@
 
 - 2026-10-26 本轮已通过 Node 76 项、Rust 无 desktop 73 项 + 1 ignored、desktop 单元 78 项 + 1 ignored，以及真实主程序 CLI / MCP stdio 集成 1 项；涵盖迁移失败回滚、JSON 重扫与保护合并、域名欺骗、记录身份复用隔离。原生 UI / 跨平台验收须按 [验证记录](../../../../docs/verification.md) 区分，不由这些测试推定完成。
 
+## 星迹统计（本地活动计数）
+
+- 未发布、源码已实现：`src-tauri/src/clip_stats.rs` 管理 `clip_activity`（15 分钟时段 × kind × new/repeat/reuse 的次数与大小），`store.rs::capture_text` / `capture_image` 只供 `desktop.rs` 采集循环调用，与写入同事务计数；`mark_copied` 计 reuse。`add` / `add_protected` / `add_image` / 导入 / 保存代码不计数。
+- 原因：历史去重只更新 `updated_at`、清理会删行，每日次数不能从 `clips` 倒推。表用 `CREATE TABLE IF NOT EXISTS` 在 `from_connection` 两条路径补建，不提升 `SCHEMA_VERSION`，旧版可打开。
+- 不存正文 / 标题 / 域名 / 记录 ID；保留 400 天；不进 JSON 备份与可选统计；随目录迁移和恢复点。`get_clip_stats(days ≤ 366, utcOffsetMinutes 为 15 的倍数)` 与 `clear_clip_stats` 仅主窗。常见域名排除隐私记录（`PRIVATE_PREDICATE` 与历史筛选共用）。
+- 界面 `src/components/ClipStatsPanel.vue`、`src/clip-stats.ts`（浏览器演示为固定原创数据）；用户说明见 [星迹统计](../../../docs/clip-insights.md)。原生桌面验收待做。
+
 ## 可选统计
 
 2026-10-28 用户已授权云端配置与入库验证，随后明确仅使用免费服务：当前方案为 GA4 标准版 + Cloudflare Workers Free，不开通 Azure、不绑卡、不升级付费计划；软件发布仍须用户明确确认。微软通道保留为默认关闭的可选模板，只有 `ENABLE_APPLICATION_INSIGHTS=true` 才校验并启用；未设置或为 `false` 时不请求 Azure，残留连接字符串不启用它。
 
-统计缺省开启，但仅在编译了 HTTPS 接收端且统计未关闭时计数；已保存 false 保留，损坏或读取失败显式关闭，不使用新的 true 默认兜底。允许固定 9 种事件、次数、版本、系统类型与每次运行随机编号；v2 另含应用二进制架构、系统主版本与白名单产品机型 / 系列，不能传原始固件文字。不得加入剪贴内容、图片、搜索、标题、来源、路径、原始错误、真实账号、序列号、主机名、用户名或永久设备编号。
+统计缺省开启，但仅在编译了 HTTPS 接收端且统计未关闭时计数；已保存 false 保留，损坏或读取失败显式关闭，不使用新的 true 默认兜底。允许固定 9 种事件、次数、版本、系统类型与每次运行随机编号；v2 另含应用二进制架构、系统主版本与白名单产品机型 / 系列，不能传原始固件文字。不得加入剪贴内容、图片、搜索、标题、来源、路径、原始错误、真实账号、序列号、主机名、用户名或硬件标识。
+
+2026-10-31 按用户要求（统计独立用户、日活和留存）在源码实现 v3，尚未发布 / 部署 / GA 核对：统计开启时在默认应用目录 `usage-install.json` 保存随机 128 位 `installId`（0600，三字段，512 B 上限），作为 GA `client_id`；附 UTC 日精度 `firstSeenDay` 用户属性与固定 `engagement_time_msec=1`、按运行的 `session_id`。新增 `app_active`，每运行每 UTC 日最多一次，由分钟定时器 `Telemetry::tick` 触发（`checkpoint` 本身不记，避免清空后被补记）。关闭统计删除编号、再开换新，设置页只显示前 6 位并可重置。Worker v1 / v2 不允许 `app_active`；须先部署新 Worker 再发客户端。默认开启 + 持续编号的地区合规仍待用户决定。
 
 0.2.3 的发送成功与网络失败均静默。仅固定次数写到默认应用目录 `usage-counts.json`：读取上限 2 KiB、每事件最多 100、TTL 72 小时，字段只有格式 / 应用版本、创建时间与次数，不存设备或 sessionId，不进入历史 JSON、恢复点或数据目录迁移。同版本重启恢复，换版本 / 损坏 / 过期缓存丢弃。每分钟、发送前后、正常退出尝试 checkpoint；崩溃可能丢最后一分钟新增计数，补报按收到时间统计，可能漏计或重复。本次运行按 1 / 5 / 15 / 60 分钟退避，重启重置。关闭清空内存与磁盘缓存并轮换临时身份，generation 隔离已清空的旧批次完成回调；已开始发送的请求无法撤回。用户主动清空或关闭时的本地保存错误不能伪装成已成功持久化，网络失败仍不提示。
 

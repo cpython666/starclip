@@ -36,6 +36,7 @@ description: 星笺 Starclip 项目共享知识库。处理本仓库的功能开
 | 规划星伴养成、检查贴纸来源与授权边界 | [养成规划与素材核对](references/growth-and-artwork.md) |
 | 改采集、图片、保留策略、备份或迁移 | [数据与隐私边界](references/data-safety.md) |
 | 内存过大、隐藏窗口、历史规模与分页 | [架构与实现入口](references/architecture.md)、[开发验证与测量方法](references/development.md)、[数据与隐私边界](references/data-safety.md) |
+| 本地剪贴活动统计（星迹统计）、计数口径与清空 | [数据与隐私边界](references/data-safety.md)、[星迹统计](../../../docs/clip-insights.md) |
 | 静默埋点、离线补报、设备字段、GA4 / Worker | [数据与隐私边界](references/data-safety.md)、[开发验证](references/development.md)、[接入说明](../../../docs/telemetry.md) |
 | 内置手写渲染、字体预览 / 按需下载及署名 | [产品与交互约定](references/product-decisions.md)、[架构与实现入口](references/architecture.md) |
 | 实施升级、恢复与签名发布 | [数据与隐私边界](references/data-safety.md)、[开发验证](references/development.md)、[发布指南](../../../docs/releases.md) |
