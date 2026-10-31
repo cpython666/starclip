@@ -53,8 +53,8 @@ async function loadApi(desktop: boolean) {
   return import('data:text/javascript;base64,' + Buffer.from(code + `\n// module ${moduleNumber++}`).toString('base64'));
 }
 
-const initialState = (): TelemetryState => ({ revision: 0, enabled: false, configured: false, endpointHost: null, queuedEvents: [], lastResult: 'never' });
-const eventNames = ['app_started', 'studio_opened', 'card_exported', 'backup_exported', 'backup_imported', 'update_check_completed', 'update_download_completed', 'update_install_started', 'font_downloaded'];
+const initialState = (): TelemetryState => ({ revision: 0, enabled: false, configured: false, endpointHost: null, queuedEvents: [], lastResult: 'never', installHint: null });
+const eventNames = ['app_started', 'studio_opened', 'card_exported', 'backup_exported', 'backup_imported', 'update_check_completed', 'update_download_completed', 'update_install_started', 'font_downloaded', 'app_active'];
 function nativeMock(initial: TelemetryState = initialState()) {
   let state = { ...initial };
   let receive: (value: TelemetryState) => void = () => {};
@@ -66,11 +66,12 @@ function nativeMock(initial: TelemetryState = initialState()) {
     send(value: TelemetryState) { state = value; receive(value); },
     async setTelemetryEnabled(enabled: boolean) {
       calls.push(`enabled:${enabled}`);
-      state = { ...state, revision: state.revision + 1, enabled, queuedEvents: enabled ? state.queuedEvents : [], lastResult: enabled ? 'never' : 'disabled' };
+      state = { ...state, revision: state.revision + 1, enabled, queuedEvents: enabled ? state.queuedEvents : [], lastResult: enabled ? 'never' : 'disabled', installHint: enabled ? state.installHint : null };
       return { ...state };
     },
     async flushTelemetry() { calls.push('send'); state = { ...state, revision: state.revision + 1, queuedEvents: [], lastResult: 'sent' }; return { ...state }; },
     async clearTelemetryQueue() { calls.push('clear'); state = { ...state, revision: state.revision + 1, queuedEvents: [] }; return { ...state }; },
+    async resetTelemetryInstall() { calls.push('reset'); state = { ...state, revision: state.revision + 1, installHint: 'bbbbbb', queuedEvents: [{ name: 'app_active', count: 1 }] }; return { ...state }; },
   };
   return mock;
 }
@@ -124,7 +125,7 @@ test('statistics deliveries and network failures stay silent, including an IPC r
   assert.doesNotMatch(text(root), /FIXTURE_NETWORK_FAILURE/);
   assert.equal(nodes(root).some(item => item.props.role === 'alert'), false);
   assert.match(text(root), /最多保留 72 小时、每种 100 次/);
-  assert.match(text(root), /不收集序列号、电脑名称、用户名或永久设备标识/);
+  assert.match(text(root), /不收集序列号、电脑名称、用户名或硬件标识/);
   app.unmount();
 });
 
@@ -261,6 +262,25 @@ test('retry after subscription failure reconnects before reading local telemetry
   assert.equal(telemetrySwitch(root).props['aria-checked'], true); app.unmount();
 });
 
+test('the install ID is disclosed, shown only as a prefix and can be reset', async () => {
+  const mock = nativeMock({ ...initialState(), configured: true, enabled: true, endpointHost: 'fixture.example', installHint: 'aaaaaa' });
+  const { root, app } = await mount(mock);
+  assert.match(text(root), /统计使用人数、每日活跃和留存/);
+  assert.match(text(root), /关闭统计即删除/);
+  assert.match(text(root), /本机统计编号：aaaaaa…/);
+  await button(root, '重置统计编号').props.onClick(); await flush();
+  assert.match(text(root), /本机统计编号：bbbbbb…/);
+  assert.match(text(root), /当日使用 · 1/);
+  // Anything other than a short hex prefix is never rendered.
+  mock.send({ ...initialState(), revision: 9, configured: true, enabled: true, installHint: 'fixture-not-hex-0123456789abcdef' }); await flush();
+  assert.doesNotMatch(text(root), /本机统计编号：|fixture-not-hex/);
+  assert.equal(nodes(root).some(item => item.type === 'button' && text(item) === '重置统计编号'), false);
+  await telemetrySwitch(root).props.onClick(); await flush();
+  assert.deepEqual(mock.calls, ['listen', 'read', 'reset', 'enabled:false']);
+  assert.doesNotMatch(text(root), /本机统计编号：/);
+  app.unmount();
+});
+
 test('actual browser API never invokes native IPC or subscribes, and studio events are ignored', async () => {
   let invokes = 0, subscriptions = 0;
   Object.assign(globalThis, {
@@ -275,6 +295,7 @@ test('actual browser API never invokes native IPC or subscribes, and studio even
   await assert.rejects(api.setTelemetryEnabled(true), /桌面版/);
   await assert.rejects(api.flushTelemetry(), /桌面版/);
   await assert.rejects(api.clearTelemetryQueue(), /桌面版/);
+  await assert.rejects(api.resetTelemetryInstall(), /桌面版/);
   (await api.onTelemetryStateChanged(() => assert.fail('browser event')))();
   api.recordStudioOpened(); await flush();
   assert.equal(invokes, 0); assert.equal(subscriptions, 0);

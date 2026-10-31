@@ -103,6 +103,7 @@ mod capability_tests {
             "record_usage_event",
             "flush_telemetry",
             "clear_telemetry_queue",
+            "reset_telemetry_install",
         ] {
             assert!(main_commands["commands"]["allow"]
                 .as_array()
