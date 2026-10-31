@@ -26,7 +26,7 @@
       "identifier": "starpet-commands",
       "description": "Manage the star companion without access to clipboard or history",
       "commands": {
-        "allow": ["get_starpet_preferences", "get_starpet_signal", "set_starpet_preferences", "show_main_window", "starpet_start_dragging", "get_starpet_growth", "set_starpet_growth_enabled", "interact_starpet", "equip_starpet_item"]
+        "allow": ["get_starpet_preferences", "get_starpet_signal", "set_starpet_preferences", "show_main_window", "starpet_start_dragging", "starpet_dock", "get_starpet_growth", "set_starpet_growth_enabled", "interact_starpet", "equip_starpet_item"]
       }
     }
   ]

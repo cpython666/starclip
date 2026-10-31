@@ -20,6 +20,7 @@ import UiColor from './UiColor.vue';
 import type { Clip, Group } from '../types';
 import { api } from '../api';
 import { languages, formatJson, markdownCode, safeFilename } from '../snippets';
+import { detectLanguage } from '../code-language';
 import { defaultCodeCardStyle, renderCodeCard } from '../code-card';
 
 Object.entries({ javascript, typescript, python, rust, json, html: xml, css, bash, sql, markdown, go, java }).forEach(([name, definition]) => hljs.registerLanguage(name, definition));
@@ -30,9 +31,19 @@ const mode = ref<'code' | 'handwriting'>(props.initialMode);
 const title = ref(props.clip?.title || (props.initialMode === 'handwriting' ? t('写给星空的信') : t('一页星码')));
 // Switching modes shares the user's original text; neither tab replaces or rewrites it.
 const content = ref(props.clip?.content ?? (props.initialMode === 'handwriting' ? t('让散落的灵感，\n在这里连成星座。') : 'fn main() {\n    println!("Hello, stars. ✦");\n}'));
-const language = ref(props.clip?.language || (props.clip || props.initialMode === 'handwriting' ? 'plaintext' : 'rust'));
+// Auto stays on until the user picks a language; a saved, specific language is kept as chosen.
+const autoLanguage = ref(!props.clip?.language || props.clip.language === 'plaintext');
+const pickedLanguage = ref(props.clip?.language || 'plaintext');
+const language = computed(() => autoLanguage.value ? detectLanguage(content.value) : pickedLanguage.value);
+const languageChoice = computed({
+  get: () => autoLanguage.value ? 'auto' : pickedLanguage.value,
+  set: value => { autoLanguage.value = value === 'auto'; if (value !== 'auto') pickedLanguage.value = value; },
+});
 const groupId = ref<number | null>(props.clip?.groupId ?? null);
-const languageOptions = computed(() => languages.map(([value, label]) => ({ value, label: t(label) })));
+const languageOptions = computed(() => {
+  const detected = languages.find(([value]) => value === language.value)?.[1] ?? '纯文本';
+  return [{ value: 'auto', label: autoLanguage.value ? t('自动识别 · {language}', { language: t(detected) }) : t('自动识别') }, ...languages.map(([value, label]) => ({ value, label: t(label) }))];
+});
 const groupOptions = computed(() => [{ value: null, label: t('未分组') }, ...props.groups.map(group => ({ value: group.id, label: group.name }))]);
 const codeThemeOptions = computed(() => [{ value: 'dark', label: t('深空 · 深色') }, { value: 'light', label: t('晨光 · 浅色') }] as const);
 const paletteOptions = computed(() => [{ value: 'night', label: t('深空蓝') }, { value: 'nebula', label: t('星云紫') }, { value: 'solid', label: t('自选纯色') }] as const);
@@ -101,7 +112,7 @@ function exportImage() {
     <div class="studio-heading"><div><span class="studio-eyebrow">A LITTLE PIECE OF YOUR UNIVERSE</span><h2>{{ t('星绘坊') }} <span>✦</span></h2><p>{{ t('让代码有星光，让文字有温度。') }}</p></div><button class="studio-close" :aria-label="t('关闭星绘坊')" :disabled="busy" @click="emit('close')">×</button></div>
     <div class="studio-tabs" role="tablist" :aria-label="t('卡片类型')"><button id="code-tab" role="tab" :aria-selected="mode === 'code'" aria-controls="studio-workspace" :class="{ active: mode === 'code' }" :disabled="busy" @click="mode = 'code'"><span aria-hidden="true">〈/〉</span>{{ t('星码卡') }}<em>{{ t('代码卡片') }}</em></button><button id="handwriting-tab" role="tab" :aria-selected="mode === 'handwriting'" aria-controls="studio-workspace" :class="{ active: mode === 'handwriting' }" :disabled="busy" @click="mode = 'handwriting'"><span aria-hidden="true">✎</span>{{ t('月光笺') }}<em>{{ t('手写纸笺') }}</em></button><small>{{ t('切换样式，正文保留') }}</small></div>
     <div id="studio-workspace" role="tabpanel" :aria-labelledby="mode === 'code' ? 'code-tab' : 'handwriting-tab'">
-      <div class="studio-meta" :class="{ 'handwriting-meta': mode === 'handwriting' }"><label>{{ t('标题') }}<input v-model="title" maxlength="200" :aria-label="t('卡片标题')" /></label><template v-if="mode === 'code'"><div class="studio-field"><span>{{ t('语言') }}</span><UiSelect v-model="language" :options="languageOptions" :label="t('代码语言')" :disabled="busy" /></div><div class="studio-field"><span>{{ t('分组') }}</span><UiSelect v-model="groupId" :options="groupOptions" :label="t('代码分组')" :disabled="busy" /></div></template><p v-else>{{ t('把文字变成一张纸笺。选择字体与纸张，预览会自动更新。') }}</p></div>
+      <div class="studio-meta" :class="{ 'handwriting-meta': mode === 'handwriting' }"><label>{{ t('标题') }}<input v-model="title" maxlength="200" :aria-label="t('卡片标题')" /></label><template v-if="mode === 'code'"><div class="studio-field"><span>{{ t('语言') }}</span><UiSelect v-model="languageChoice" :options="languageOptions" :label="t('代码语言')" :disabled="busy" /></div><div class="studio-field"><span>{{ t('分组') }}</span><UiSelect v-model="groupId" :options="groupOptions" :label="t('代码分组')" :disabled="busy" /></div></template><p v-else>{{ t('把文字变成一张纸笺。选择字体与纸张，预览会自动更新。') }}</p></div>
       <div class="studio-panels" :class="{ 'handwriting-workspace': mode === 'handwriting' }">
         <section class="studio-editor"><div class="studio-panel-label">{{ mode === 'code' ? t('编辑代码') : t('纸笺正文') }}<button v-if="mode === 'code' && language === 'json'" @click="format">{{ t('格式化 JSON') }}</button><span v-else>{{ content.split('\n').length }} {{ t('行 ·') }} {{ [...content].length }} {{ t('字符') }}</span></div><textarea v-model="content" :aria-label="mode === 'code' ? t('代码内容') : t('纸笺正文')" :class="{ 'handwriting-text': mode === 'handwriting' }" spellcheck="false" autocomplete="off" autocapitalize="off" @keydown="insertTab" /><p class="editor-note">{{ mode === 'code' ? t('Tab 插入两个空格 · 原文只在本机处理') : t('切换卡片类型不会改写正文，也不会保存为代码。') }}</p></section>
         <section v-if="mode === 'code'" class="studio-preview"><div class="studio-panel-label">{{ t('导出效果预览') }} <span v-if="preview">{{ preview.width }} × {{ preview.height }}</span></div><div class="canvas-preview"><img v-if="preview" :src="preview.url" :alt="t('{title}，星码卡导出预览', { title })" /><div v-else class="preview-placeholder"><span>✦</span><p>{{ previewError || t('正在点亮这张卡片…') }}</p></div></div><p class="preview-note">{{ style.widthMode === 'fixed' ? t('长行软换行，原文与行号保留 · PNG 以 2 倍分辨率生成') : t('预览即导出 · PNG 以 2 倍分辨率生成') }}</p></section>

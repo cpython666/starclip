@@ -50,7 +50,7 @@ function button(root: MemoryNode, label: string) { const found = nodes(root).fin
 function opened(root: MemoryNode) { return button(root, '和星芽互动').props['aria-expanded']; }
 async function flush() { await new Promise(resolve => setImmediate(resolve)); await nextTick(); }
 let sequence = 0;
-async function mount(options: { delayedBlur?: boolean; delayedSignal?: boolean; delayedSignalListener?: boolean; delayedInteractionListener?: boolean; initialSignal?: PetSnapshot; initialMood?: StarPetMoodId } = {}) {
+async function mount(options: { delayedBlur?: boolean; delayedSignal?: boolean; delayedSignalListener?: boolean; delayedInteractionListener?: boolean; initialSignal?: PetSnapshot; initialMood?: StarPetMoodId; dockEdge?: string | null } = {}) {
   const document = currentDocument = eventHub(), window = eventHub();
   const globals = ['document', 'window', 'Node', 'petDesktopMenuMock'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
   let nativeBlur = () => {}, stopBlur = 0, finishBlur!: (stop: () => void) => void;
@@ -58,6 +58,7 @@ async function mount(options: { delayedBlur?: boolean; delayedSignal?: boolean; 
   let signalCallback = (_snapshot: PetSnapshot) => {}, finishSignal!: (snapshot: PetSnapshot) => void, finishSignalListener!: (stop: () => void) => void, stopSignal = 0;
   let interactionCallback = (_interaction: StarPetInteraction) => {}, finishInteractionListener!: (stop: () => void) => void, stopInteraction = 0;
   let interactionRevision = options.initialSignal?.revision ?? 0;
+  let movedCallback = (_position: { x: number; y: number }) => {}, stopMoved = 0, dockEdge: string | null = options.dockEdge ?? null;
   let preferences = { enabled: true, mood: options.initialMood ?? 'idle', color: '#FFD66E', size: 100 };
   const mock = {
     async getStarPetPreferences() { return { ...preferences }; },
@@ -75,13 +76,15 @@ async function mount(options: { delayedBlur?: boolean; delayedSignal?: boolean; 
       signalCallback = callback;
       return options.delayedSignalListener ? new Promise(resolve => { finishSignalListener = resolve; }) : Promise.resolve(() => { stopSignal++; });
     },
+    async dockStarPet() { calls.push('dock'); return dockEdge; },
+    async onStarPetMoved(callback: (position: { x: number; y: number }) => void) { movedCallback = callback; return () => { stopMoved++; }; },
     onStarPetWindowBlur(callback: () => void): Promise<() => void> {
       nativeBlur = callback;
       return options.delayedBlur ? new Promise(resolve => { finishBlur = resolve; }) : Promise.resolve(() => { stopBlur++; });
     },
   };
   Object.assign(globalThis, { document, window, Node: MemoryNode, petDesktopMenuMock: mock });
-  const api = `const api=globalThis.petDesktopMenuMock; export const { getStarPetPreferences, onStarPetChanged, setStarPetPreferences, showStarPetMainWindow, dragStarPet, getStarPetGrowth, onStarPetGrowthChanged, onStarPetWindowBlur, getStarPetSignal, onStarPetSignal, onStarPetInteraction }=api; export { petStatusLabel, petStatusMood } from '${new URL('../src/starpet-signal-api.ts', import.meta.url).href}'; export const interactStarPet=(...args)=>api.interactStarPet(...args); // ${sequence++}`;
+  const api = `const api=globalThis.petDesktopMenuMock; export const { dockStarPet, onStarPetMoved, getStarPetPreferences, onStarPetChanged, setStarPetPreferences, showStarPetMainWindow, dragStarPet, getStarPetGrowth, onStarPetGrowthChanged, onStarPetWindowBlur, getStarPetSignal, onStarPetSignal, onStarPetInteraction }=api; export { petStatusLabel, petStatusMood } from '${new URL('../src/starpet-signal-api.ts', import.meta.url).href}'; export const interactStarPet=(...args)=>api.interactStarPet(...args); // ${sequence++}`;
   const apiUrl = 'data:text/javascript;base64,' + Buffer.from(api).toString('base64');
   const { descriptor } = parse(fs.readFileSync(new URL('../src/components/StarPetDesktop.vue', import.meta.url), 'utf8'));
   const script = compileScript(descriptor, { id: 'starpet-menu-test', inlineTemplate: true });
@@ -91,7 +94,7 @@ async function mount(options: { delayedBlur?: boolean; delayedSignal?: boolean; 
     .replaceAll("'../starpet'", `'${new URL('../src/starpet.ts', import.meta.url).href}'`)
     .replaceAll("'../starpet-growth'", `'${new URL('../src/starpet-growth.ts', import.meta.url).href}'`)
     .replaceAll("'./Icon.vue'", "'data:text/javascript,export default {render(){return null}}'")
-    .replaceAll("'./StarPet.vue'", `'data:text/javascript;base64,${Buffer.from(`import {h} from '${import.meta.resolve('vue')}'; export default {props:['mood','action','actionNonce'],render(){return h('pet-fixture',{...this.$props})}}`).toString('base64')}'`).replaceAll("'../i18n'", `'${new URL('../src/i18n/index.ts', import.meta.url).href}'`).replaceAll("'./i18n'", `'${new URL('../src/i18n/index.ts', import.meta.url).href}'`);
+    .replaceAll("'./StarPet.vue'", `'data:text/javascript;base64,${Buffer.from(`import {h} from '${import.meta.resolve('vue')}'; export default {props:['mood','action','actionNonce','travel','dock'],render(){return h('pet-fixture',{...this.$props})}}`).toString('base64')}'`).replaceAll("'../i18n'", `'${new URL('../src/i18n/index.ts', import.meta.url).href}'`).replaceAll("'./i18n'", `'${new URL('../src/i18n/index.ts', import.meta.url).href}'`);
   const component = await import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'));
   const root = new MemoryNode('root'), app = renderer.createApp(component.default); app.mount(root); await flush();
   const open = async () => { assert.equal(opened(root), false); await button(root, '和星芽互动').props.onClick(); await flush(); assert.equal(opened(root), true); };
@@ -102,6 +105,7 @@ async function mount(options: { delayedBlur?: boolean; delayedSignal?: boolean; 
     signal: (snapshot: PetSnapshot) => { interactionRevision = Math.max(interactionRevision, snapshot.revision); signalCallback(snapshot); }, finishSignal: (snapshot: PetSnapshot) => finishSignal(snapshot),
     finishSignalListener: () => finishSignalListener(() => { stopSignal++; }), stopSignal: () => stopSignal,
     interaction: (value: StarPetInteraction) => interactionCallback(value),
+    move: (x: number, y: number) => movedCallback({ x, y }), stopMoved: () => stopMoved,
     finishInteractionListener: () => finishInteractionListener(() => { stopInteraction++; }), stopInteraction: () => stopInteraction,
     cleanup() { unmount(); for (const [key, descriptor] of globals) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); } },
   };
@@ -301,4 +305,34 @@ test('routine mood cycling stays positive or neutral while saved choices and exp
     await button(fixture.root, '收起 Agent 提示').props.onClick(); await flush();
     assert.equal(pet().props.mood, savedMood, 'dismissing explicit status returns to the chosen everyday mood');
   } finally { fixture.cleanup(); }
+});
+
+test('window moves drive the running direction, a pause docks to the edge and a new drag leaves it', async () => {
+  const pet = await mount({ dockEdge: 'right' });
+  try {
+    const fixture = () => nodes(pet.root).find(item => item.type === 'pet-fixture')!;
+    const main = () => nodes(pet.root).find(item => item.type === 'main')!;
+    pet.move(100, 100);
+    await new Promise(resolve => setTimeout(resolve, 16));
+    pet.move(130, 102);
+    await flush();
+    assert.ok(fixture().props.travel.x > .3 && Math.abs(fixture().props.travel.y) < fixture().props.travel.x, 'rightward drag runs right');
+    assert.equal(fixture().props.dock, null);
+    await new Promise(resolve => setTimeout(resolve, 400));
+    await flush();
+    assert.deepEqual(fixture().props.travel, { x: 0, y: 0 }, 'stopping settles the gait');
+    assert.equal(fixture().props.dock, 'right');
+    assert.ok(pet.calls.includes('dock'));
+    assert.match(String(main().props.class), /docked-right/);
+    // The snap's own move event is not treated as a drag.
+    pet.move(140, 102);
+    await flush();
+    assert.equal(fixture().props.dock, 'right');
+    await new Promise(resolve => setTimeout(resolve, 220));
+    pet.move(120, 60);
+    await flush();
+    assert.equal(fixture().props.dock, null, 'grabbing the pet again leaves the edge');
+    pet.unmount();
+    assert.equal(pet.stopMoved(), 1);
+  } finally { pet.cleanup(); }
 });
