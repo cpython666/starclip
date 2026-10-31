@@ -17,6 +17,7 @@
 | `src/components/CodeStudio.vue`、`src/code-card.ts`、`src/snippets.ts`、`src/code-language.ts` | 星绘坊在打开时按需加载；Canvas 代码卡片、语言与导出工具，卡片预览和 PNG 共用渲染 |
 | `src/components/HandwritingPanel.vue`、`src/handwriting-preview.ts` | 字体预览图库、单款显式下载、已下载字体选择、本地预览调度、过期结果隔离与导出有效性；浏览器只展示预览，不下载字体或模拟渲染 |
 | `src/components/HistoryPagination.vue`、`src/types.ts::HistoryQuery` / `HistorySummary` | 主列表与 AI 授权选择共用分页控件；各自维护页码 / 查询，不将当前页当作全库 |
+| `src/components/ClipStatsPanel.vue`、`src/clip-stats.ts` | 「星迹统计」设置页：范围切换、日 / 周柱、类型、时段 / 星期、明细表与当前星系；按 `clips-changed` 防抖重读，清空期间保护窗口释放 |
 | `src/components/ClipImage.vue` | 可见区加载图片，详情原图与缩略图分开取用 |
 | `src/theme.ts`、`src/color.ts`、`src/styles.css` | 即时主题保存、扩散效果、颜色规范及全局样式 |
 | `src/appearance.ts`、`src/appearance-api.ts`、`src/components/AppearanceSettings.vue` | 独立强调色 / 渐变 / 本地 PNG 外观、可读性调整、失败回退；`StickerScene.vue` 显示自定义图 |
@@ -40,6 +41,7 @@
 | `src-tauri/src/startup.rs` | 系统登录项读取与显式启停，按应用标识隔离；核对可执行路径和可检测的系统禁用，macOS 后台运行审批仍是额外限制，不从数据库偏好重建注册 |
 | `src-tauri/src/updater.rs` | 原生更新状态与互斥、正式下载源限制、旧应用备份；desktop.rs 包装检查 / 下载 / 备份 / 安装命令 |
 | `src-tauri/src/telemetry.rs`、`src-tauri/src/telemetry_device.rs` | 固定功能计数、临时会话、有界磁盘缓存与重试；架构 / 系统主版本 / 机型按白名单归一化，禁止原始固件内容或永久身份 |
+| `src-tauri/src/clip_stats.rs` | 本机剪贴活动计数表、记录 / 清空、按本地时区汇总与现存历史构成；见 [数据与隐私边界](data-safety.md) |
 | `src-tauri/src/capture.rs` | 开启时捕获当前内容、变更和重试状态机；本模块不访问真实剪贴板 |
 | `src-tauri/src/store.rs` | schema 2 升级、记录 / 分组、隐私元数据与随机记录身份、规则 / 重扫、保留清理和 JSON v3 备份事务；所有内容写入在同事务扫描 |
 | `src-tauri/src/privacy.rs`、`src-tauri/resources/bip39/` | 本地敏感检测、URL 解析与来源、关键词 / 精确域名规则、手动和自动标签区分；词表来源许可随资源保存 |

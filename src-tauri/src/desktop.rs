@@ -1482,6 +1482,19 @@ fn set_native_language(app: AppHandle, context: AppContext<'_>, language: String
     Ok(())
 }
 #[tauri::command]
+fn get_clip_stats(
+    context: AppContext<'_>,
+    days: u32,
+    utc_offset_minutes: i32,
+) -> Result<crate::clip_stats::ClipStats> {
+    lock(&context.store)?.clip_stats(days, utc_offset_minutes)
+}
+#[tauri::command]
+fn clear_clip_stats(context: AppContext<'_>) -> Result<()> {
+    let _write = write_guard(&context)?;
+    lock(&context.store)?.clear_clip_stats()
+}
+#[tauri::command]
 fn clear_history(app: AppHandle, context: AppContext<'_>) -> Result<()> {
     let _write = write_guard(&context)?;
     lock(&context.store)?.clear_history()?;
@@ -2563,10 +2576,10 @@ fn monitor(app: AppHandle, context: Arc<Context>) {
                                     return Err(error);
                                 }
                             };
-                            lock(&context.store)?.add_image(&prepared, "", None, false)?;
+                            lock(&context.store)?.capture_image(&prepared)?;
                         }
                         ClipboardContent::Text(text) => {
-                            lock(&context.store)?.add(&text, "", None)?;
+                            lock(&context.store)?.capture_text(&text)?;
                         }
                         ClipboardContent::Empty => {}
                     }
@@ -2808,6 +2821,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_telemetry_state,
             set_telemetry_enabled,
+            get_clip_stats,
+            clear_clip_stats,
             record_usage_event,
             flush_telemetry,
             clear_telemetry_queue,

@@ -21,6 +21,7 @@ import StarPetSettings from './components/StarPetSettings.vue'
 import AppearanceSettings from './components/AppearanceSettings.vue'
 import PrivacyRules from './components/PrivacyRules.vue'
 import TelemetrySettings from './components/TelemetrySettings.vue'
+import ClipStatsPanel from './components/ClipStatsPanel.vue'
 import { recordStudioOpened } from './telemetry-api'
 import ClipPrivacy from './components/ClipPrivacy.vue'
 import AiSettings from './components/AiSettings.vue'
@@ -47,6 +48,8 @@ const appearance = ref(defaultAppearance())
 const appearanceBusy = ref(false)
 const privacyBusy = ref(false)
 const telemetryBusy = ref(false)
+const statsBusy = ref(false)
+const statsRevision = ref(0)
 const aiBusy = ref(false)
 const clipPrivacyBusy = ref(false)
 const clipDetailsLoading = ref(false), clipDetailsError = ref('')
@@ -56,7 +59,7 @@ const rulesRevision = ref(0)
 const privateRevealed = ref(false)
 const appearanceLoading = ref(true)
 const appearanceError = ref('')
-const dataBusy = computed(() => startupBusy.value || dataOperationBusy.value || updateBusy.value || shareBusy.value || appearanceBusy.value || privacyBusy.value || telemetryBusy.value || aiBusy.value || clipPrivacyBusy.value || clipDetailsLoading.value)
+const dataBusy = computed(() => startupBusy.value || dataOperationBusy.value || updateBusy.value || shareBusy.value || appearanceBusy.value || privacyBusy.value || telemetryBusy.value || statsBusy.value || aiBusy.value || clipPrivacyBusy.value || clipDetailsLoading.value)
 const customSticker = computed(() => appearance.value.stickerEnabled ? appearance.value.stickerDataUrl : null)
 const startupVisible = ref(false)
 const firstGuidePending = ref(false)
@@ -106,7 +109,7 @@ const groupName = ref('')
 const groupColor = ref('#8b93d9')
 const settingsDraft = ref<Settings>({ ...state.value.settings })
 const settingsSaving = ref(false)
-const settingsTabKeys = ['appearance', 'starpet', 'habits', 'privacy', 'ai', 'data', 'share', 'help'] as const
+const settingsTabKeys = ['appearance', 'starpet', 'habits', 'privacy', 'ai', 'data', 'stats', 'share', 'help'] as const
 type SettingsTab = typeof settingsTabKeys[number]
 const settingsTabs = computed<Array<{ key: SettingsTab; label: string; icon: string }>>(() => [
   { key: 'appearance', label: t('外观'), icon: 'moon' },
@@ -115,6 +118,7 @@ const settingsTabs = computed<Array<{ key: SettingsTab; label: string; icon: str
   { key: 'privacy', label: t('规则与隐私'), icon: 'shield' },
   { key: 'ai', label: t('AI 与自动化'), icon: 'code' },
   { key: 'data', label: t('数据管理'), icon: 'folder' },
+  { key: 'stats', label: t('星迹统计'), icon: 'chart' },
   { key: 'share', label: t('分享'), icon: 'spark' },
   { key: 'help', label: t('帮助'), icon: 'spark' },
 ])
@@ -127,6 +131,7 @@ const privacySettings = ref<InstanceType<typeof PrivacyRules>>()
 const telemetrySettings = ref<InstanceType<typeof TelemetrySettings>>()
 const aiSettings = ref<InstanceType<typeof AiSettings>>()
 const productShare = ref<InstanceType<typeof ProductShare>>()
+const clipStatsPanel = ref<InstanceType<typeof ClipStatsPanel>>()
 const updateSettings = ref<InstanceType<typeof UpdateSettings>>()
 const startupSettings = ref<InstanceType<typeof StartupSettings>>()
 const dataTabVisited = ref(false)
@@ -140,6 +145,7 @@ const settingsCanRelease = computed(() => !settingsDirty.value && !appearanceLoa
   && (!dataTabVisited.value || dataSettings.value?.canRelease === true)
   && (settingsTab.value !== 'habits' || startupSettings.value?.canRelease === true)
   && (settingsTab.value !== 'starpet' || starPetSettings.value?.canRelease === true)
+  && (settingsTab.value !== 'stats' || clipStatsPanel.value?.canRelease === true)
   && (settingsTab.value !== 'share' || productShare.value?.canRelease === true)
   && (settingsTab.value !== 'help' || updateSettings.value?.canRelease === true))
 const updateNoticeBlocked = computed(() => !windowReady.value || loading.value || busy.value || dataBusy.value || themeSaving.value
@@ -548,7 +554,7 @@ onMounted(async () => {
   firstGuidePending.value = !state.value.onboardingCompleted;
   startupVisible.value = state.value.settings.showStartup && !(window as Window & { __STARCLIP_REOPENED__?: boolean }).__STARCLIP_REOPENED__;
   if (!startupVisible.value) finishStartup();
-  unsubscribe = await api.onChange(() => { void refresh() });
+  unsubscribe = await api.onChange(() => { statsRevision.value++; void refresh() });
   if (disposed) { unsubscribe(); return; }
   if (isDesktop) {
     try {
@@ -652,6 +658,9 @@ onUnmounted(() => { disposed = true; pendingWindowClose = null; clearTimeout(win
             </section>
             <section v-show="settingsTab === 'data'" id="settings-panel-data" role="tabpanel" aria-labelledby="settings-tab-data" class="settings-panel">
               <div class="settings-section backup-section"><h3><Icon name="folder" :size="16" />{{ t('你的数据，由你保管') }}</h3><fieldset class="data-settings-boundary" :disabled="busy || themeSaving || appearanceBusy || privacyBusy || telemetryBusy || aiBusy || clipPrivacyBusy"><DataSettings v-if="dataTabVisited" ref="dataSettings" @busy="dataOperationBusy = $event" /></fieldset><div class="backup-buttons"><button type="button" class="button subtle" @click="exportBackup" :disabled="busy || dataBusy" :aria-busy="!!backupPhase"><Icon name="down" :size="16" />{{ backupPhase === 'choosing' ? t('选择保存位置…') : backupPhase ? t('正在导出…') : t('导出备份') }}</button><button type="button" class="button subtle" @click="fileInput?.click()" :disabled="busy || dataBusy"><Icon name="upload" :size="16" />{{ t('导入备份') }}</button><button type="button" class="button subtle" :disabled="busy || dataBusy" @click="openCleanup">{{ t('星尘整理') }}</button></div><p v-if="backupStatus" :class="['backup-status', backupStatusKind]" :role="backupStatusKind === 'error' ? 'alert' : 'status'">{{ backupStatus }}</p><p class="field-note">{{ t('导入、清理与目录操作会单独执行，不会替你保存其他 Tab 的修改。') }}{{ isDesktop ? t('完整备份是本机明文 JSON，包含全部记录（含隐私）、标签、规则、分组及图片；不含 AI 凭证。导入会合并记录并重新检测；导入规则仅保存为停用草稿，需手动启用。') : t('浏览器演示暂不支持含图片的备份，请在桌面版导入或导出完整备份。') }}</p></div>
+            </section>
+            <section v-show="settingsTab === 'stats'" id="settings-panel-stats" role="tabpanel" aria-labelledby="settings-tab-stats" class="settings-panel">
+              <ClipStatsPanel ref="clipStatsPanel" v-if="settingsTab === 'stats'" :revision="statsRevision" :disabled="busy || themeSaving || dataOperationBusy || updateBusy || startupBusy || shareBusy || appearanceBusy || privacyBusy || telemetryBusy || aiBusy || clipPrivacyBusy" @busy="statsBusy = $event" />
             </section>
             <section v-show="settingsTab === 'share'" id="settings-panel-share" role="tabpanel" aria-labelledby="settings-tab-share" class="settings-panel">
               <ProductShare ref="productShare" v-if="settingsTab === 'share'" :disabled="busy || themeSaving || dataOperationBusy || updateBusy || startupBusy || appearanceBusy || privacyBusy || telemetryBusy || aiBusy || clipPrivacyBusy" @busy="shareBusy = $event" />

@@ -1,4 +1,5 @@
 use crate::appearance::{self, Appearance};
+use crate::clip_stats::{self, ClipStats};
 use crate::images::{self, ImageMetadata, PreparedImage};
 use crate::privacy::{self, Metadata, PrivacyRescan, PrivacyRules};
 use crate::starpet_growth::{GrowthChange, GrowthState, MAX_REVISION};
@@ -490,13 +491,16 @@ struct BackupImage {
     png: String,
 }
 
+// A legacy image capability marker is not a privacy match; image pixels
+// remain unscanned and can never become AI-eligible via this predicate.
+const PRIVATE_PREDICATE: &str = "(COALESCE(json_extract(p.metadata,'$.privacyManual'),0)=1 OR EXISTS(SELECT 1 FROM json_each(p.metadata,'$.privacyReasons') WHERE c.kind!='image' OR value!='图片尚未进行文字识别'))";
 const CLIP_SELECT: &str = "SELECT c.id,c.content,c.title,c.kind,c.pinned,c.group_id,c.created_at,c.updated_at,c.copy_count,c.language,c.keep_forever,i.width,i.height,i.bytes,p.metadata FROM clips c LEFT JOIN clip_images i ON i.clip_id=c.id LEFT JOIN clip_privacy p ON p.clip_id=c.id";
 
 pub struct Store {
     conn: Connection,
 }
 
-fn sql_error(error: rusqlite::Error) -> String {
+pub(crate) fn sql_error(error: rusqlite::Error) -> String {
     format!("本地数据库操作失败：{error}")
 }
 fn now() -> i64 {
@@ -854,6 +858,7 @@ impl Store {
             .map_err(sql_error)?;
         if version == SCHEMA_VERSION {
             Self::validate_current_schema(&conn)?;
+            clip_stats::ensure_table(&conn)?;
             let store = Self { conn };
             store.prune_history()?;
             return Ok(store);
@@ -968,6 +973,7 @@ impl Store {
         };
         settings.validate()?;
         Self::prune_with_settings(&tx, &settings, now())?;
+        clip_stats::ensure_table(&tx)?;
         tx.pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(sql_error)?;
         tx.commit().map_err(sql_error)?;
@@ -1552,9 +1558,7 @@ impl Store {
             predicates.push("(EXISTS(SELECT 1 FROM json_each(p.metadata,'$.manualTags') WHERE value=?) OR EXISTS(SELECT 1 FROM json_each(p.metadata,'$.ruleTags') WHERE value=?))".into());
             values.extend([query.tag.clone().into(), query.tag.clone().into()]);
         }
-        // A legacy image capability marker is not a privacy match; image pixels
-        // remain unscanned and can never become AI-eligible via this query.
-        let private = "(COALESCE(json_extract(p.metadata,'$.privacyManual'),0)=1 OR EXISTS(SELECT 1 FROM json_each(p.metadata,'$.privacyReasons') WHERE c.kind!='image' OR value!='图片尚未进行文字识别'))";
+        let private = PRIVATE_PREDICATE;
         let pending = format!(
             "(c.kind='image' OR COALESCE(json_extract(p.metadata,'$.scanVersion'),0)!={revision})"
         );
@@ -1752,9 +1756,26 @@ impl Store {
         group_id: Option<i64>,
         keep_forever: bool,
     ) -> Result<Clip> {
+        self.insert_image(image, title, group_id, keep_forever, false)
+    }
+
+    /// Clipboard capture path: also counts the activity for 星迹统计 in the same transaction.
+    pub fn capture_image(&self, image: &PreparedImage) -> Result<Clip> {
+        self.insert_image(image, "", None, false, true)
+    }
+
+    fn insert_image(
+        &self,
+        image: &PreparedImage,
+        title: &str,
+        group_id: Option<i64>,
+        keep_forever: bool,
+        capture: bool,
+    ) -> Result<Clip> {
         validate_content(image.digest(), title)?;
         let timestamp = now();
         let tx = self.conn.unchecked_transaction().map_err(sql_error)?;
+        let existed = capture && Self::content_exists(&tx, image.digest(), true)?;
         tx.execute("INSERT INTO clips(content,title,kind,group_id,created_at,updated_at,keep_forever) VALUES(?1,?2,'image',?3,?4,?4,?5)
             ON CONFLICT(content) WHERE kind='image' DO UPDATE SET updated_at=excluded.updated_at,
             title=CASE WHEN excluded.title<>'' THEN excluded.title ELSE clips.title END,
@@ -1768,6 +1789,14 @@ impl Store {
             )
             .map_err(sql_error)?;
         Self::put_image(&tx, id, image)?;
+        if capture {
+            let event = if existed {
+                clip_stats::Event::Repeat
+            } else {
+                clip_stats::Event::New
+            };
+            clip_stats::record(&tx, timestamp, "image", event, image.metadata().bytes)?;
+        }
         scan_clip(&tx, id, &self.privacy_rules()?, false)?;
         Self::prune_with_settings(&tx, &self.settings()?, timestamp)?;
         let clip = self.clip(id)?;
@@ -1789,9 +1818,40 @@ impl Store {
         group_id: Option<i64>,
         keep_forever: bool,
     ) -> Result<Clip> {
+        self.insert_text(content, title, group_id, keep_forever, false)
+    }
+
+    /// Clipboard capture path: also counts the activity for 星迹统计 in the same transaction.
+    pub fn capture_text(&self, content: &str) -> Result<Clip> {
+        self.insert_text(content, "", None, false, true)
+    }
+
+    fn content_exists(conn: &Connection, content: &str, image: bool) -> Result<bool> {
+        let predicate = if image {
+            "kind='image'"
+        } else {
+            "kind<>'image'"
+        };
+        conn.query_row(
+            &format!("SELECT EXISTS(SELECT 1 FROM clips WHERE content=?1 AND {predicate})"),
+            [content],
+            |row| row.get(0),
+        )
+        .map_err(sql_error)
+    }
+
+    fn insert_text(
+        &self,
+        content: &str,
+        title: &str,
+        group_id: Option<i64>,
+        keep_forever: bool,
+        capture: bool,
+    ) -> Result<Clip> {
         validate_content(content, title)?;
         let timestamp = now();
         let tx = self.conn.unchecked_transaction().map_err(sql_error)?;
+        let existed = capture && Self::content_exists(&tx, content, false)?;
         tx.execute("INSERT INTO clips(content,title,kind,group_id,created_at,updated_at,keep_forever) VALUES(?1,?2,?3,?4,?5,?5,?6)
             ON CONFLICT(content) WHERE kind<>'image' DO UPDATE SET updated_at=excluded.updated_at,
             title=CASE WHEN excluded.title<>'' THEN excluded.title ELSE clips.title END,
@@ -1804,6 +1864,18 @@ impl Store {
                 |row| row.get(0),
             )
             .map_err(sql_error)?;
+        if capture {
+            // A repeat keeps the stored kind, e.g. text later saved as code.
+            let kind: String = tx
+                .query_row("SELECT kind FROM clips WHERE id=?1", [id], |row| row.get(0))
+                .map_err(sql_error)?;
+            let event = if existed {
+                clip_stats::Event::Repeat
+            } else {
+                clip_stats::Event::New
+            };
+            clip_stats::record(&tx, timestamp, &kind, event, content.chars().count() as u64)?;
+        }
         scan_clip(&tx, id, &self.privacy_rules()?, false)?;
         Self::prune_with_settings(&tx, &self.settings()?, timestamp)?;
         let clip = self.clip(id)?;
@@ -1872,10 +1944,31 @@ impl Store {
     }
 
     pub fn mark_copied(&self, id: i64) -> Result<()> {
-        self.conn
-            .execute("UPDATE clips SET copy_count=copy_count+1 WHERE id=?1", [id])
+        let tx = self.conn.unchecked_transaction().map_err(sql_error)?;
+        let kind: Option<String> = tx
+            .query_row("SELECT kind FROM clips WHERE id=?1", [id], |row| row.get(0))
+            .optional()
             .map_err(sql_error)?;
-        Ok(())
+        if let Some(kind) = kind {
+            tx.execute("UPDATE clips SET copy_count=copy_count+1 WHERE id=?1", [id])
+                .map_err(sql_error)?;
+            clip_stats::record(&tx, now(), &kind, clip_stats::Event::Reuse, 0)?;
+        }
+        tx.commit().map_err(sql_error)
+    }
+
+    pub fn clip_stats(&self, days: u32, utc_offset_minutes: i32) -> Result<ClipStats> {
+        clip_stats::activity(
+            &self.conn,
+            now(),
+            days,
+            utc_offset_minutes,
+            PRIVATE_PREDICATE,
+        )
+    }
+
+    pub fn clear_clip_stats(&self) -> Result<()> {
+        clip_stats::clear(&self.conn)
     }
 
     pub fn delete(&self, id: i64) -> Result<()> {
@@ -4983,5 +5076,116 @@ mod tests {
             ..Settings::default()
         };
         assert!(unsupported.validate().is_err());
+    }
+
+    #[test]
+    fn clip_stats_count_captures_repeats_and_reuse_without_content() {
+        let db = store();
+        let first = db.capture_text("原创星迹样例").unwrap();
+        db.capture_text("原创星迹样例").unwrap();
+        db.capture_text("https://linux.do/t/stats-fixture").unwrap();
+        db.capture_image(&image_fixture(31)).unwrap();
+        db.add("手动新建不算采集", "", None).unwrap();
+        db.mark_copied(first.id).unwrap();
+        let stats = db.clip_stats(7, 0).unwrap();
+        assert_eq!(stats.daily.len(), 1);
+        let today = &stats.daily[0];
+        assert_eq!((today.new, today.repeat, today.reuse), (3, 1, 1));
+        assert_eq!(today.captures.get("text"), Some(&2));
+        assert_eq!(today.captures.get("link"), Some(&1));
+        assert_eq!(today.captures.get("image"), Some(&1));
+        assert_eq!(
+            stats.kinds["text"].size, 12,
+            "two captures of six characters"
+        );
+        assert!(stats.kinds["image"].size > 0);
+        assert_eq!(stats.hours.iter().sum::<u64>(), 4);
+        assert_eq!(stats.weekdays.iter().sum::<u64>(), 4);
+        assert_eq!(stats.library.total, 4);
+        assert_eq!(stats.library.copy_total, 1);
+        assert_eq!(stats.library.top_hosts.len(), 1);
+        let columns: Vec<String> = db
+            .conn
+            .prepare("SELECT name FROM pragma_table_info('clip_activity')")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(columns, ["bucket", "kind", "event", "count", "size"]);
+
+        db.clear_history().unwrap();
+        assert_eq!(
+            db.clip_stats(7, 0).unwrap().daily[0].new,
+            3,
+            "cleanup keeps counts"
+        );
+        db.clear_clip_stats().unwrap();
+        let cleared = db.clip_stats(7, 0).unwrap();
+        assert!(cleared.daily.is_empty() && cleared.recording_since.is_none());
+    }
+
+    #[test]
+    fn clip_stats_repeat_keeps_saved_kind_and_hide_private_hosts() {
+        let db = store();
+        let clip = db.capture_text("let fixture = 1").unwrap();
+        db.save_code(Some(clip.id), "", "let fixture = 1", "rust", None)
+            .unwrap();
+        db.capture_text("let fixture = 1").unwrap();
+        let private = db.capture_text("https://private.example/fixture").unwrap();
+        db.set_clip_privacy(private.id, true, false).unwrap();
+        let stats = db.clip_stats(1, 0).unwrap();
+        assert_eq!(stats.kinds["code"].repeat, 1);
+        assert_eq!(stats.library.private, 1);
+        assert!(stats.library.top_hosts.is_empty());
+    }
+
+    #[test]
+    fn clip_stats_group_by_local_day_and_prune_old_buckets() {
+        let db = store();
+        // 2026-01-01T16:30Z is 00:30 on 2026-01-02 in UTC+8, a Friday.
+        let at = 1_767_285_000_000;
+        clip_stats::record(&db.conn, at, "text", clip_stats::Event::New, 5).unwrap();
+        clip_stats::record(&db.conn, at, "unknown", clip_stats::Event::New, 1).unwrap();
+        let stats = clip_stats::activity(&db.conn, at, 1, 480, PRIVATE_PREDICATE).unwrap();
+        assert_eq!(stats.daily.len(), 1);
+        assert_eq!(stats.daily[0].day, stats.last_day);
+        assert_eq!(
+            stats.daily[0].captures.get("text"),
+            Some(&2),
+            "unknown kinds fold into text"
+        );
+        assert_eq!(stats.hours[0], 2);
+        assert_eq!(stats.weekdays[5], 2);
+        let utc = clip_stats::activity(&db.conn, at, 1, 0, PRIVATE_PREDICATE).unwrap();
+        assert_eq!(utc.hours[16], 2);
+        let tomorrow =
+            clip_stats::activity(&db.conn, at + 86_400_000, 1, 480, PRIVATE_PREDICATE).unwrap();
+        assert!(
+            tomorrow.daily.is_empty(),
+            "range ends on the local day of now"
+        );
+        let later = at + (clip_stats::RETENTION_DAYS + 1) * 86_400_000;
+        clip_stats::record(&db.conn, later, "link", clip_stats::Event::Reuse, 0).unwrap();
+        let since = clip_stats::activity(&db.conn, later, 366, 0, PRIVATE_PREDICATE).unwrap();
+        assert_eq!(
+            since.recording_since,
+            Some(later.div_euclid(clip_stats::BUCKET_MS) * clip_stats::BUCKET_MS)
+        );
+        assert!(clip_stats::validate_range(0, 0).is_err());
+        assert!(clip_stats::validate_range(367, 0).is_err());
+        assert!(clip_stats::validate_range(7, 7).is_err());
+        assert!(clip_stats::validate_range(7, 345).is_ok());
+    }
+
+    #[test]
+    fn current_schema_gains_activity_table_without_version_change() {
+        let db = store();
+        db.conn.execute("DROP TABLE clip_activity", []).unwrap();
+        let db = Store::from_connection(db.conn).unwrap();
+        assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION);
+        assert!(db.clip_stats(7, 0).unwrap().daily.is_empty());
+        db.capture_text("原创升级后计数").unwrap();
+        assert_eq!(db.clip_stats(7, 0).unwrap().daily[0].new, 1);
     }
 }
