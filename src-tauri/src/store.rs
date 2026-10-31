@@ -1,7 +1,7 @@
 use crate::appearance::{self, Appearance};
 use crate::clip_stats::{self, ClipStats};
 use crate::images::{self, ImageMetadata, PreparedImage};
-use crate::privacy::{self, Metadata, PrivacyRescan, PrivacyRules};
+use crate::privacy::{self, CaptureContext, Metadata, PrivacyRescan, PrivacyRules};
 use crate::starpet_growth::{GrowthChange, GrowthState, MAX_REVISION};
 use crate::telemetry::TelemetryPreferences;
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -123,6 +123,12 @@ pub struct Clip {
     pub link_sources: Vec<String>,
     #[serde(default)]
     pub link_hosts: Vec<String>,
+    /// 复制时记录的来源应用，同时出现在 `tags` 中。
+    #[serde(default)]
+    pub app_tags: Vec<String>,
+    /// 浏览器提供的来源页面（无查询与片段）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -542,6 +548,8 @@ fn clip_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Clip> {
         scan_version: metadata.scan_version,
         link_sources: metadata.link_sources,
         link_hosts: metadata.link_hosts,
+        app_tags: metadata.app_tags,
+        origin_url: (!metadata.origin_url.is_empty()).then_some(metadata.origin_url),
     })
 }
 
@@ -1533,7 +1541,7 @@ impl Store {
         let search = query.query.trim().to_lowercase();
         if !search.is_empty() {
             let tags = if query.ai_eligible {
-                " || COALESCE(json_extract(p.metadata,'$.manualTags'),'') || COALESCE(json_extract(p.metadata,'$.ruleTags'),'')"
+                " || COALESCE(json_extract(p.metadata,'$.manualTags'),'') || COALESCE(json_extract(p.metadata,'$.ruleTags'),'') || COALESCE(json_extract(p.metadata,'$.appTags'),'')"
             } else {
                 ""
             };
@@ -1543,20 +1551,24 @@ impl Store {
         if !query.sources.is_empty() {
             let mut sources = vec![];
             for source in &query.sources {
-                let (path, value) = match source.strip_prefix("host:") {
-                    Some(host) => ("linkHosts", host),
-                    None => ("linkSources", source.as_str()),
+                let ((path, origin), value) = match source.strip_prefix("host:") {
+                    Some(host) => (("linkHosts", "originHosts"), host),
+                    None => (("linkSources", "originSources"), source.as_str()),
                 };
                 sources.push(format!(
-                    "EXISTS(SELECT 1 FROM json_each(p.metadata,'$.{path}') WHERE value=?)"
+                    "EXISTS(SELECT 1 FROM json_each(p.metadata,'$.{path}') WHERE value=?) OR EXISTS(SELECT 1 FROM json_each(p.metadata,'$.{origin}') WHERE value=?)"
                 ));
-                values.push(value.to_owned().into());
+                values.extend([value.to_owned().into(), value.to_owned().into()]);
             }
             predicates.push(format!("({})", sources.join(" OR ")));
         }
         if !query.tag.is_empty() {
-            predicates.push("(EXISTS(SELECT 1 FROM json_each(p.metadata,'$.manualTags') WHERE value=?) OR EXISTS(SELECT 1 FROM json_each(p.metadata,'$.ruleTags') WHERE value=?))".into());
-            values.extend([query.tag.clone().into(), query.tag.clone().into()]);
+            predicates.push("(EXISTS(SELECT 1 FROM json_each(p.metadata,'$.manualTags') WHERE value=?) OR EXISTS(SELECT 1 FROM json_each(p.metadata,'$.ruleTags') WHERE value=?) OR EXISTS(SELECT 1 FROM json_each(p.metadata,'$.appTags') WHERE value=?))".into());
+            values.extend([
+                query.tag.clone().into(),
+                query.tag.clone().into(),
+                query.tag.clone().into(),
+            ]);
         }
         let private = PRIVATE_PREDICATE;
         let pending = format!(
@@ -1664,9 +1676,9 @@ impl Store {
                 total,
                 counts,
                 group_counts,
-                sources: facets(&["linkSources"])?,
-                hosts: facets(&["linkHosts"])?,
-                tags: facets(&["manualTags", "ruleTags"])?,
+                sources: facets(&["linkSources", "originSources"])?,
+                hosts: facets(&["linkHosts", "originHosts"])?,
+                tags: facets(&["manualTags", "ruleTags", "appTags"])?,
             },
         })
     }
@@ -1756,12 +1768,12 @@ impl Store {
         group_id: Option<i64>,
         keep_forever: bool,
     ) -> Result<Clip> {
-        self.insert_image(image, title, group_id, keep_forever, false)
+        self.insert_image(image, title, group_id, keep_forever, None)
     }
 
     /// Clipboard capture path: also counts the activity for 星迹统计 in the same transaction.
-    pub fn capture_image(&self, image: &PreparedImage) -> Result<Clip> {
-        self.insert_image(image, "", None, false, true)
+    pub fn capture_image(&self, image: &PreparedImage, context: &CaptureContext) -> Result<Clip> {
+        self.insert_image(image, "", None, false, Some(context))
     }
 
     fn insert_image(
@@ -1770,12 +1782,12 @@ impl Store {
         title: &str,
         group_id: Option<i64>,
         keep_forever: bool,
-        capture: bool,
+        capture: Option<&CaptureContext>,
     ) -> Result<Clip> {
         validate_content(image.digest(), title)?;
         let timestamp = now();
         let tx = self.conn.unchecked_transaction().map_err(sql_error)?;
-        let existed = capture && Self::content_exists(&tx, image.digest(), true)?;
+        let existed = capture.is_some() && Self::content_exists(&tx, image.digest(), true)?;
         tx.execute("INSERT INTO clips(content,title,kind,group_id,created_at,updated_at,keep_forever) VALUES(?1,?2,'image',?3,?4,?4,?5)
             ON CONFLICT(content) WHERE kind='image' DO UPDATE SET updated_at=excluded.updated_at,
             title=CASE WHEN excluded.title<>'' THEN excluded.title ELSE clips.title END,
@@ -1789,7 +1801,8 @@ impl Store {
             )
             .map_err(sql_error)?;
         Self::put_image(&tx, id, image)?;
-        if capture {
+        if let Some(context) = capture {
+            Self::apply_capture(&tx, id, context)?;
             let event = if existed {
                 clip_stats::Event::Repeat
             } else {
@@ -1818,12 +1831,22 @@ impl Store {
         group_id: Option<i64>,
         keep_forever: bool,
     ) -> Result<Clip> {
-        self.insert_text(content, title, group_id, keep_forever, false)
+        self.insert_text(content, title, group_id, keep_forever, None)
     }
 
     /// Clipboard capture path: also counts the activity for 星迹统计 in the same transaction.
-    pub fn capture_text(&self, content: &str) -> Result<Clip> {
-        self.insert_text(content, "", None, false, true)
+    pub fn capture_text(&self, content: &str, context: &CaptureContext) -> Result<Clip> {
+        self.insert_text(content, "", None, false, Some(context))
+    }
+
+    /// 写入复制上下文；随后的 `scan_clip` 会带着来源域名重新匹配规则。
+    fn apply_capture(conn: &Connection, id: i64, context: &CaptureContext) -> Result<()> {
+        if *context == CaptureContext::default() {
+            return Ok(());
+        }
+        let mut metadata = read_metadata(conn, id)?;
+        metadata.apply_capture(context);
+        put_metadata(conn, id, &metadata)
     }
 
     fn content_exists(conn: &Connection, content: &str, image: bool) -> Result<bool> {
@@ -1846,12 +1869,12 @@ impl Store {
         title: &str,
         group_id: Option<i64>,
         keep_forever: bool,
-        capture: bool,
+        capture: Option<&CaptureContext>,
     ) -> Result<Clip> {
         validate_content(content, title)?;
         let timestamp = now();
         let tx = self.conn.unchecked_transaction().map_err(sql_error)?;
-        let existed = capture && Self::content_exists(&tx, content, false)?;
+        let existed = capture.is_some() && Self::content_exists(&tx, content, false)?;
         tx.execute("INSERT INTO clips(content,title,kind,group_id,created_at,updated_at,keep_forever) VALUES(?1,?2,?3,?4,?5,?5,?6)
             ON CONFLICT(content) WHERE kind<>'image' DO UPDATE SET updated_at=excluded.updated_at,
             title=CASE WHEN excluded.title<>'' THEN excluded.title ELSE clips.title END,
@@ -1864,7 +1887,8 @@ impl Store {
                 |row| row.get(0),
             )
             .map_err(sql_error)?;
-        if capture {
+        if let Some(context) = capture {
+            Self::apply_capture(&tx, id, context)?;
             // A repeat keeps the stored kind, e.g. text later saved as code.
             let kind: String = tx
                 .query_row("SELECT kind FROM clips WHERE id=?1", [id], |row| row.get(0))
@@ -2479,6 +2503,18 @@ impl Store {
                 &clip.tags
             };
             metadata.manual_tags = privacy::union(&metadata.manual_tags, manual_tags);
+            for app in clip.app_tags.iter().take(privacy::MAX_APP_TAGS) {
+                metadata.apply_capture(&CaptureContext {
+                    app: Some(app.clone()),
+                    ..CaptureContext::default()
+                });
+            }
+            if metadata.origin_url.is_empty() {
+                metadata.apply_capture(&CaptureContext {
+                    origin_url: clip.origin_url.clone(),
+                    ..CaptureContext::default()
+                });
+            }
             // Imported scan version/classification cannot grant trust. Reclassify the final merged row.
             put_metadata(&tx, id, &metadata)?;
             scan_clip(&tx, id, &active_rules, false)?;
@@ -5079,12 +5115,105 @@ mod tests {
     }
 
     #[test]
+    fn capture_context_marks_privacy_app_tags_and_origin_without_query() {
+        let db = store();
+        let concealed = CaptureContext {
+            concealed: true,
+            app: Some("  原创密码本\n".into()),
+            origin_url: None,
+        };
+        let clip = db.capture_text("原创样例口令片段", &concealed).unwrap();
+        assert!(clip.is_private);
+        assert!(clip
+            .privacy_reasons
+            .contains(&privacy::CONCEALED_REASON.to_string()));
+        assert_eq!(clip.app_tags, vec!["原创密码本"]);
+        assert!(clip.tags.contains(&"原创密码本".to_string()));
+        // A later ordinary copy of the same text keeps the protection and adds the app.
+        let again = db
+            .capture_text(
+                "原创样例口令片段",
+                &CaptureContext {
+                    app: Some("原创编辑器".into()),
+                    ..CaptureContext::default()
+                },
+            )
+            .unwrap();
+        assert!(again.is_private);
+        assert_eq!(again.app_tags, vec!["原创密码本", "原创编辑器"]);
+
+        let browser = CaptureContext {
+            app: Some("原创浏览器".into()),
+            origin_url: Some("https://user:pw@linux.do/t/fixture?token=abc#frag".into()),
+            ..CaptureContext::default()
+        };
+        let page = db.capture_text("原创网页摘录", &browser).unwrap();
+        assert_eq!(
+            page.origin_url.as_deref(),
+            Some("https://linux.do/t/fixture")
+        );
+        assert!(!page.is_private);
+        assert!(
+            page.link_hosts.is_empty(),
+            "origin is not a link in the content"
+        );
+        let query = |sources: Vec<String>, tag: &str| HistoryQuery {
+            sources,
+            tag: tag.into(),
+            ..HistoryQuery::default()
+        };
+        let by_host = db
+            .history_page(&query(vec!["host:linux.do".into()], ""))
+            .unwrap();
+        assert_eq!(
+            by_host.clips.iter().map(|c| c.id).collect::<Vec<_>>(),
+            vec![page.id]
+        );
+        let by_source = db.history_page(&query(vec!["linuxdo".into()], "")).unwrap();
+        assert_eq!(by_source.clips.len(), 1);
+        let by_app = db.history_page(&query(vec![], "原创编辑器")).unwrap();
+        assert_eq!(
+            by_app.clips.iter().map(|c| c.id).collect::<Vec<_>>(),
+            vec![clip.id]
+        );
+        assert!(by_app.history.tags.contains(&"原创浏览器".to_string()));
+        assert!(by_app.history.hosts.contains(&"linux.do".to_string()));
+
+        // Domain rules also match the browser origin.
+        let mut rules = db.privacy_rules().unwrap();
+        rules.rules.push(privacy::PrivacyRule {
+            id: "origin-rule".into(),
+            name: "原创来源规则".into(),
+            enabled: true,
+            condition: "domain".into(),
+            value: "linux.do".into(),
+            tag: None,
+            mark_private: true,
+        });
+        let other = db.capture_text("原创另一段摘录", &browser).unwrap();
+        assert!(!other.is_private);
+        db.save_privacy_rules(&rules).unwrap();
+        let rescanned = db
+            .capture_text("原创另一段摘录", &CaptureContext::default())
+            .unwrap();
+        assert!(rescanned.is_private, "{:?}", rescanned.privacy_reasons);
+    }
+
+    #[test]
     fn clip_stats_count_captures_repeats_and_reuse_without_content() {
         let db = store();
-        let first = db.capture_text("原创星迹样例").unwrap();
-        db.capture_text("原创星迹样例").unwrap();
-        db.capture_text("https://linux.do/t/stats-fixture").unwrap();
-        db.capture_image(&image_fixture(31)).unwrap();
+        let first = db
+            .capture_text("原创星迹样例", &CaptureContext::default())
+            .unwrap();
+        db.capture_text("原创星迹样例", &CaptureContext::default())
+            .unwrap();
+        db.capture_text(
+            "https://linux.do/t/stats-fixture",
+            &CaptureContext::default(),
+        )
+        .unwrap();
+        db.capture_image(&image_fixture(31), &CaptureContext::default())
+            .unwrap();
         db.add("手动新建不算采集", "", None).unwrap();
         db.mark_copied(first.id).unwrap();
         let stats = db.clip_stats(7, 0).unwrap();
@@ -5128,11 +5257,19 @@ mod tests {
     #[test]
     fn clip_stats_repeat_keeps_saved_kind_and_hide_private_hosts() {
         let db = store();
-        let clip = db.capture_text("let fixture = 1").unwrap();
+        let clip = db
+            .capture_text("let fixture = 1", &CaptureContext::default())
+            .unwrap();
         db.save_code(Some(clip.id), "", "let fixture = 1", "rust", None)
             .unwrap();
-        db.capture_text("let fixture = 1").unwrap();
-        let private = db.capture_text("https://private.example/fixture").unwrap();
+        db.capture_text("let fixture = 1", &CaptureContext::default())
+            .unwrap();
+        let private = db
+            .capture_text(
+                "https://private.example/fixture",
+                &CaptureContext::default(),
+            )
+            .unwrap();
         db.set_clip_privacy(private.id, true, false).unwrap();
         let stats = db.clip_stats(1, 0).unwrap();
         assert_eq!(stats.kinds["code"].repeat, 1);
@@ -5185,7 +5322,8 @@ mod tests {
         let db = Store::from_connection(db.conn).unwrap();
         assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION);
         assert!(db.clip_stats(7, 0).unwrap().daily.is_empty());
-        db.capture_text("原创升级后计数").unwrap();
+        db.capture_text("原创升级后计数", &CaptureContext::default())
+            .unwrap();
         assert_eq!(db.clip_stats(7, 0).unwrap().daily[0].new, 1);
     }
 }

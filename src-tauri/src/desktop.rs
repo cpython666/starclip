@@ -2530,6 +2530,7 @@ fn monitor(app: AppHandle, context: Arc<Context>) {
                         return Err(format!("剪贴板读取失败：{error}"));
                     }
                 };
+                let source = crate::clipboard_source::read();
                 // A copy during the read may mix formats from two owners. Retry next poll.
                 if sequence.is_some() && sequence != clipboard_sequence() {
                     return Ok(None);
@@ -2576,10 +2577,10 @@ fn monitor(app: AppHandle, context: Arc<Context>) {
                                     return Err(error);
                                 }
                             };
-                            lock(&context.store)?.capture_image(&prepared)?;
+                            lock(&context.store)?.capture_image(&prepared, &source)?;
                         }
                         ClipboardContent::Text(text) => {
-                            lock(&context.store)?.capture_text(&text)?;
+                            lock(&context.store)?.capture_text(&text, &source)?;
                         }
                         ClipboardContent::Empty => {}
                     }

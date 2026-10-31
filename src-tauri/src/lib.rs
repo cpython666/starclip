@@ -4,6 +4,8 @@ pub mod appearance;
 pub mod capture;
 pub mod clip_stats;
 #[cfg(feature = "desktop")]
+mod clipboard_source;
+#[cfg(feature = "desktop")]
 mod desktop;
 pub mod handwriting;
 pub mod images;
