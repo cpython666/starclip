@@ -1734,11 +1734,27 @@ fn get_main_window_close_request(app: AppHandle) -> Result<Option<u64>> {
     app.state::<MainWindowSession>().pending_request()
 }
 
+/// 收起主窗后把焦点交还给上一个应用。macOS 在星伴仍可见时不会自动让出激活状态，
+/// 需要显式 deactivate；Windows 隐藏窗口时系统会激活下一个窗口。
+fn return_focus_to_previous_app(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app.run_on_main_thread(|| {
+            if let Some(mtm) = objc2::MainThreadMarker::new() {
+                objc2_app_kit::NSApplication::sharedApplication(mtm).deactivate();
+            }
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
+}
+
 #[tauri::command]
 async fn hide_window(
     app: AppHandle,
     release: Option<bool>,
     request_id: Option<u64>,
+    return_focus: Option<bool>,
 ) -> Result<MainWindowCloseResult> {
     let request = match request_id {
         Some(request) => request,
@@ -1759,6 +1775,9 @@ async fn hide_window(
             return Ok(outcome(false));
         };
         window.hide().map_err(|error| error.to_string())?;
+        if return_focus.unwrap_or(false) {
+            return_focus_to_previous_app(&app);
+        }
         if !release.unwrap_or(false) || app.state::<Updates>().ensure_idle().is_err() {
             return Ok(outcome(true));
         }

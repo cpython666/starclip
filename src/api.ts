@@ -339,8 +339,8 @@ export const api = {
     const blob = format === 'md' ? new Blob([data], { type: 'text/markdown;charset=utf-8' }) : new Blob([Uint8Array.from(atob(data), (c) => c.charCodeAt(0))], { type: 'image/png' });
     download(blob, filename); return true;
   },
-  async hideWindow(release = false, requestId?: number): Promise<{ requestId: number; pending: boolean }> {
-    if (isDesktop) return invoke('hide_window', { release, requestId });
+  async hideWindow(release = false, requestId?: number, returnFocus = false): Promise<{ requestId: number; pending: boolean }> {
+    if (isDesktop) return invoke('hide_window', returnFocus ? { release, requestId, returnFocus } : { release, requestId });
     return { requestId: requestId ?? 0, pending: false };
   },
   async getWindowCloseRequest(): Promise<number | null> {

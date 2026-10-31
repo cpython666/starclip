@@ -159,6 +159,9 @@ pub struct Settings {
     pub show_startup: bool,
     #[serde(default = "default_sticker_pack")]
     pub sticker_pack: String,
+    /// 复制记录后收起主窗口，回到原应用即可粘贴。
+    #[serde(default = "default_hide_after_copy")]
+    pub hide_after_copy: bool,
 }
 
 /// Window behavior is saved independently from capture and retention settings.
@@ -212,6 +215,9 @@ fn default_show_startup() -> bool {
 fn default_sticker_pack() -> String {
     "auto".into()
 }
+fn default_hide_after_copy() -> bool {
+    true
+}
 
 impl Default for Settings {
     fn default() -> Self {
@@ -227,6 +233,7 @@ impl Default for Settings {
             retention_days: 0,
             show_startup: true,
             sticker_pack: default_sticker_pack(),
+            hide_after_copy: default_hide_after_copy(),
         }
     }
 }

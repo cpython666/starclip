@@ -37,6 +37,8 @@ export interface Settings {
   maxHistory: number;
   retentionDays: number;
   alwaysOnTop: boolean;
+  /** 复制后收起主窗口；旧偏好缺省视为开启。 */
+  hideAfterCopy?: boolean;
   shortcut: string;
 }
 export interface HistoryQuery {

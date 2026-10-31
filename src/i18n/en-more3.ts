@@ -325,4 +325,9 @@ export const enMore3: Record<string, string> = {
   "大小未知": "Size unknown",
   "自动识别": "Auto-detect",
   "自动识别 · {language}": "Auto-detect · {language}",
+  "复制后收起窗口": "Hide after copying",
+  "回车、双击或 {key} 1–9 复制后收起星笺，回到原应用直接粘贴": "After copying with Return, double-click or {key} 1–9, Starclip hides so you can paste straight into the previous app",
+  "快选复制": "Quick copy",
+  "按住 {key} 查看序号；搜索框内也可用，回车复制第一条": "Hold {key} to see numbers. Also works in the search box, where Return copies the first result",
+  "已复制，回到原应用即可粘贴": "Copied. Paste it in the previous app",
 }
