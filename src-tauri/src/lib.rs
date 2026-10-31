@@ -2,6 +2,7 @@ pub mod ai_access;
 pub mod ai_transport;
 pub mod appearance;
 pub mod capture;
+pub mod clip_stats;
 #[cfg(feature = "desktop")]
 mod desktop;
 pub mod handwriting;
@@ -103,6 +104,8 @@ mod capability_tests {
             "record_usage_event",
             "flush_telemetry",
             "clear_telemetry_queue",
+            "get_clip_stats",
+            "clear_clip_stats",
         ] {
             assert!(main_commands["commands"]["allow"]
                 .as_array()
